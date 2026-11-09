@@ -512,3 +512,6 @@ Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 - Terrain arena pages that stop growing at 32 MiB on 64-bit Android, one emptied page kept as a
   spare and the first page made while the level loads (`gfx/arena.rs` `page_ceiling`, `prewarm`,
   `keep_spare`), from its commits acfb2bae43 and 8c08d71508 (`growth_limit`, `prewarm`, `spare`).
+- Fifo for a new swapchain on Android until the settings apply (`first_present_mode` in `gfx.rs`),
+  from its `Renderer::new_with_context`, and the title menu held to 60 FPS on Android while resources
+  load (`loading_frame_due` in `game.rs`), from its commit f5cf0231bc.
