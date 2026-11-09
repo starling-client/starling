@@ -1,0 +1,24 @@
+[package]
+name = "voicechat_engine"
+version = "2.0.0"
+edition = "2024"
+description = "Complex Voice Chat for Horizon: a Simple Voice Chat compatible client (protocol, groups, Opus, UDP, audio)."
+license = "MIT"
+publish = false
+
+[features]
+default = ["rnnoise"]
+rnnoise = ["dep:nnnoiseless"]
+
+[dependencies]
+cpal = "0.16"
+log = "0.4"
+nnnoiseless = { version = "0.5", optional = true }
+png = "0.18"
+ring = "0.17"
+
+[build-dependencies]
+cc = "1.6"
+
+[lints]
+workspace = true

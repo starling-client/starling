@@ -4,6 +4,9 @@
 //! OptionsList screens and drawn with the shared widgets.
 use std::time::Instant;
 
+#[path = "voicechat_menu.rs"]
+pub mod voicechat_menu;
+
 pub use crate::settings::Opt;
 
 use crate::{
@@ -3683,6 +3686,10 @@ impl OptionsUi {
         atlas: &HudAtlas,
         cursor: (f32, f32),
     ) {
+        if voicechat_menu::shows(self) {
+            voicechat_menu::draw(batch, atlas, cursor);
+            return;
+        }
         let (w, h) = (batch.width, batch.height);
         if let Some(error) = &self.resource_error {
             ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
@@ -4037,6 +4044,12 @@ impl OptionsUi {
         drag: bool,
         right: bool,
     ) -> Vec<Event> {
+        if voicechat_menu::shows(self) {
+            if !right {
+                voicechat_menu::click(x, y, size, drag);
+            }
+            return Vec::new();
+        }
         if self.resource_error.is_some() {
             if !drag
                 && !right
@@ -4461,6 +4474,10 @@ impl OptionsUi {
         }
     }
     pub fn release(&mut self) -> Vec<Event> {
+        if voicechat_menu::shows(self) {
+            voicechat_menu::release();
+            return Vec::new();
+        }
         self.scrollbar_drag_y = None;
         if let Some(p) = &mut self.pack_screen {
             p.release();
@@ -4533,6 +4550,10 @@ impl OptionsUi {
         framebuffer: [i32; 2],
         amount: f32,
     ) -> Vec<Event> {
+        if voicechat_menu::shows(self) {
+            voicechat_menu::wheel(amount);
+            return Vec::new();
+        }
         self.size = size;
         self.framebuffer = framebuffer;
         if let Some(level) = Self::graphics_level(self.page()) {
@@ -4653,6 +4674,10 @@ impl OptionsUi {
         amount: f32,
     ) {
         self.touch_start();
+        if voicechat_menu::shows(self) {
+            voicechat_menu::wheel(amount);
+            return;
+        }
         self.scroll_at(s, size, cursor, amount);
     }
     /// The mouse wheel at the cursor.
@@ -4828,6 +4853,10 @@ impl OptionsUi {
     }
     /// Typed text (the language search box).
     pub fn type_text(&mut self, atlas: &HudAtlas, text: &str) {
+        if voicechat_menu::shows(self) {
+            voicechat_menu::type_text(text);
+            return;
+        }
         if self.resource_error.is_some() {
             return;
         }
@@ -4935,6 +4964,13 @@ impl OptionsUi {
         shift: bool,
     ) -> Vec<Event> {
         use winit::keyboard::KeyCode as K;
+        if voicechat_menu::shows(self) {
+            if !voicechat_menu::key(key) && key == K::Escape {
+                // Fall through so Escape closes the menu.
+            } else {
+                return Vec::new();
+            }
+        }
         if self.page() == Page::HdrCalibration
             && let Some(c) = &mut self.calibration
         {

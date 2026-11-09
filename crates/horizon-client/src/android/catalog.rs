@@ -93,6 +93,10 @@ pub struct Config {
     pub fast_chunk_upload: bool,
     #[serde(default)]
     pub experimental_leaf_culling: bool,
+    #[serde(default = "default_true")]
+    pub svc_enabled: bool,
+    #[serde(default = "default_true")]
+    pub svc_rnnoise: bool,
     #[serde(default)]
     pub disable_launcher_animations: bool,
     #[serde(default)]
@@ -176,6 +180,16 @@ impl Config {
         config.device.migrate_missing(&value, &legacy);
         config.name = truncate_player_name(&config.name);
         config.theme.sanitize();
+        if value.get("svc_enabled").is_none() {
+            config.svc_enabled = true;
+        }
+        if value.get("svc_rnnoise").is_none() {
+            config.svc_rnnoise = true;
+        }
+        horizon_client::android_runtime::set_experimental_svc(
+            config.svc_enabled,
+            config.svc_rnnoise,
+        );
         horizon_client::ui_theme::set_active_theme(config.theme.resolve());
         horizon_client::ui_theme::motion::set_reduced_motion(
             config.disable_launcher_animations
@@ -250,6 +264,7 @@ impl Config {
         horizon_client::android_runtime::set_experimental_leaf_culling(
             self.experimental_leaf_culling,
         );
+        horizon_client::android_runtime::set_experimental_svc(self.svc_enabled, self.svc_rnnoise);
         let game = self.game_home(home);
         let _ = std::fs::create_dir_all(&game);
         let options_path = game.join("options.txt");

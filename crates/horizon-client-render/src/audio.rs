@@ -792,6 +792,14 @@ fn cards_changed(seen: Option<&str>, cards: Option<&str>) -> bool {
         _ => true,
     }
 }
+static OUTPUT_TAP: std::sync::OnceLock<fn(&[f32], usize, u32)> = std::sync::OnceLock::new();
+
+/// Registers a non-blocking tap called with the mixed game audio output buffer
+/// `(samples, channels, sample_rate)` so voice chat echo suppression can track game music/SFX.
+pub fn set_output_tap(tap: fn(&[f32], usize, u32)) {
+    let _ = OUTPUT_TAP.set(tap);
+}
+
 #[cfg(feature = "audio")]
 fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &cpal::Device,
@@ -808,6 +816,9 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
             scratch.resize(data.len(), 0.0f32);
             if let Ok(mut m) = mixer.lock() {
                 mix(&mut m, &mut scratch, channels, rate);
+                if let Some(tap) = OUTPUT_TAP.get() {
+                    tap(&scratch, channels, rate);
+                }
             } else {
                 scratch.fill(0.0);
             }

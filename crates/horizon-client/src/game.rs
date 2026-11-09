@@ -202,6 +202,7 @@ mod native_entities;
 mod native_explosions;
 mod native_falling;
 mod native_hooks;
+pub(crate) mod voicechat;
 #[cfg(target_os = "android")]
 use android_bundled::{
     official_minimap, official_recipes, official_recipes_glue, official_zoom, smartf3,
@@ -14829,28 +14830,9 @@ impl Game<'_> {
         // Load the profile's scheme before drawing the first frame or outline.
         #[cfg(target_os = "android")]
         self.pad.touch.viewport(size[0], size[1]);
-        let raw_menu_blur = self.menu_blur();
-        #[cfg(target_os = "android")]
-        let in_world_stationary_overlay = !self.shows_panorama()
-            && self.player.is_some()
-            && !self.pad.touch_ui.floating_menu
-            && (self.singleplayer_paused()
-                || self.screen != Screen::Playing
-                || self.pad.touch.editor.is_some())
-            && (self.singleplayer_paused()
-                || self.pad.touch.editor.is_some()
-                || self.pad.touch.state().left == [0.0, 0.0]);
-        #[cfg(not(target_os = "android"))]
-        let in_world_stationary_overlay = false;
-        let menu_blur = if in_world_stationary_overlay {
-            raw_menu_blur.or(Some(0.0))
-        } else {
-            raw_menu_blur
-        };
-        let menu_blur_cache = ((self.singleplayer_paused() || self.screen == Screen::Options)
-            && !self.shows_panorama()
-            && menu_blur.is_some())
-            || in_world_stationary_overlay;
+        let menu_blur = self.menu_blur();
+        let menu_blur_cache =
+            self.singleplayer_paused() && !self.shows_panorama() && menu_blur.is_some();
         if !menu_blur_cache || !self.was_menu_blurred {
             if let Some(renderer) = self.renderer.as_mut() {
                 renderer.invalidate_menu_blur();
@@ -16736,6 +16718,23 @@ impl Game<'_> {
                 self.pad.in_use = true;
                 if !self.pad_in_menu() && !self.captured && self.focused {
                     self.capture(true);
+                }
+                {
+                    let batch = HudBatch::new([size.width, size.height]);
+                    let point = [
+                        touch.location.x as f32 / batch.scale,
+                        touch.location.y as f32 / batch.scale,
+                    ];
+                    if crate::game::voicechat::touch_hud(
+                        self,
+                        touch.id,
+                        point,
+                        touch.phase == TouchPhase::Started,
+                        matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled),
+                    ) {
+                        self.pad.touch.ignore(touch.id);
+                        return;
+                    }
                 }
                 if touch.phase == TouchPhase::Started {
                     let batch = HudBatch::new([size.width, size.height]);

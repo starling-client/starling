@@ -16,6 +16,7 @@ horizon-narrator = { path = "../horizon-narrator" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-anticheat = { path = "../horizon-anticheat" }
 horizon-client = { path = "../horizon-client", default-features = false }
+voicechat_engine = { path = "../voicechat-engine" }
 android_logger = "0.15"
 regex = "1"
 horizon-hdr = { path = "../horizon-hdr" }
@@ -53,6 +54,7 @@ serde_json = { version = "1.0.151", features = ["raw_value"] }
 # not a dev-dependency's, so builds, tests and examples share one build of naga, wgpu and this crate.
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out"] }
 # Sound (ALSA on Linux); the `audio` feature.
+cpal = { version = "0.16", optional = true }
 symphonia = { version = "0.5", default-features = false, features = ["ogg", "vorbis"] }
 miniz_oxide = "0.8"
 ab_glyph = "0.2.32"
@@ -74,7 +76,7 @@ rustix = { version = "1", default-features = false, features = ["std", "time", "
 
 [features]
 default = ["mods", "audio"]
-audio = ["horizon-client/audio"]
+audio = ["horizon-client/audio", "horizon-client-render/audio", "dep:cpal"]
 controllers = []
 mods = ["horizon-client/mods", "horizon-mods/runtime"]
 

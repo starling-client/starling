@@ -269,3 +269,16 @@ pub fn set_experimental_leaf_culling(enabled: bool) {
 pub fn experimental_leaf_culling() -> bool {
     EXPERIMENTAL_LEAF_CULLING.load(Ordering::Relaxed)
 }
+
+static EXPERIMENTAL_SVC_ENABLED: AtomicBool = AtomicBool::new(true);
+static EXPERIMENTAL_SVC_RNNOISE: AtomicBool = AtomicBool::new(true);
+pub fn set_experimental_svc(enabled: bool, rnnoise: bool) {
+    EXPERIMENTAL_SVC_ENABLED.store(enabled, Ordering::Relaxed);
+    EXPERIMENTAL_SVC_RNNOISE.store(rnnoise, Ordering::Relaxed);
+}
+pub fn experimental_svc_enabled() -> bool {
+    EXPERIMENTAL_SVC_ENABLED.load(Ordering::Relaxed)
+}
+pub fn experimental_svc_rnnoise() -> bool {
+    EXPERIMENTAL_SVC_RNNOISE.load(Ordering::Relaxed)
+}

@@ -340,6 +340,8 @@ pub(super) enum Action {
     ToggleZeroLatencyTouch,
     ToggleFastChunkUpload,
     ToggleExperimentalLeaves,
+    ToggleExperimentalSvc,
+    ToggleExperimentalSvcRnnoise,
     // Controls & Control Editor actions
     OpenControlEditor,
     CloseControlEditor,
@@ -1850,7 +1852,9 @@ impl Launcher {
                 let rich_summary = if crate::catalog::source_only_mod(p) {
                     "Native .hnmod temporarily unsupported on Android; built-in mods are available."
                 } else {
-                    self.catalog.enriched_summaries.get(&p.id)
+                    self.catalog
+                        .enriched_summaries
+                        .get(&p.id)
                         .map_or(p.summary.as_str(), String::as_str)
                 };
                 let summary = ui.fit_text(Face::Regular, 12.5, rich_summary, text_max);
@@ -5205,7 +5209,7 @@ impl Launcher {
             }
             SettingsCategory::Experimental => {
                 let c = &self.catalog.config;
-                let count = 10;
+                let count = 13;
                 let max_scroll = (count as f32 * step_y - (list_bottom - list_top)).max(0.0);
                 self.catalog.scroll = self.catalog.scroll.clamp(0.0, max_scroll);
                 self.list_view = Some([list_top, list_bottom, max_scroll]);
@@ -5220,7 +5224,13 @@ impl Launcher {
                     "Balanced Default"
                 };
 
-                let rows: [(&str, &str, SettingControl<'_>); 10] = [
+                let svc_badge = if c.svc_enabled {
+                    "SVC Enabled"
+                } else {
+                    "SVC Disabled"
+                };
+
+                let rows: [(&str, &str, SettingControl<'_>); 13] = [
                     (
                         "PERFORMANCE PROFILES & GPU PIPELINE",
                         "Hardware-tuned presets for Mali-G52 / Adreno GPUs and high-refresh displays",
@@ -5279,6 +5289,21 @@ impl Launcher {
                             c.experimental_leaf_culling,
                             Action::ToggleExperimentalLeaves,
                         ),
+                    ),
+                    (
+                        "VOICE CHAT & ACOUSTIC CONDITIONING",
+                        "Built-in Simple Voice Chat 2.6.x (Complex Voice Chat v2.0.0) & RNNoise filter",
+                        SettingControl::SectionHeader(svc_badge, Icon::Flask),
+                    ),
+                    (
+                        "Built-in Simple Voice Chat (SVC)",
+                        "Enables proximity voice chat, groups, V-menu & UDP Opus audio on SVC servers",
+                        SettingControl::Toggle(c.svc_enabled, Action::ToggleExperimentalSvc),
+                    ),
+                    (
+                        "SVC RNNoise & Echo Suppression",
+                        "Post-AEC RNNoise neural denoiser, NLMS echo filter & smart speaker ducking",
+                        SettingControl::Toggle(c.svc_rnnoise, Action::ToggleExperimentalSvcRnnoise),
                     ),
                 ];
 
@@ -5672,6 +5697,34 @@ impl Launcher {
             Some(Action::ToggleExperimentalLeaves) => {
                 self.catalog.config.experimental_leaf_culling ^= true;
                 self.catalog.config.save(&self.home)?;
+            }
+            Some(Action::ToggleExperimentalSvc) => {
+                self.catalog.config.svc_enabled ^= true;
+                self.catalog.config.save(&self.home)?;
+                horizon_client::android_runtime::set_experimental_svc(
+                    self.catalog.config.svc_enabled,
+                    self.catalog.config.svc_rnnoise,
+                );
+                self.catalog.status = if self.catalog.config.svc_enabled {
+                    "Built-in Simple Voice Chat enabled."
+                } else {
+                    "Built-in Simple Voice Chat disabled."
+                }
+                .into();
+            }
+            Some(Action::ToggleExperimentalSvcRnnoise) => {
+                self.catalog.config.svc_rnnoise ^= true;
+                self.catalog.config.save(&self.home)?;
+                horizon_client::android_runtime::set_experimental_svc(
+                    self.catalog.config.svc_enabled,
+                    self.catalog.config.svc_rnnoise,
+                );
+                self.catalog.status = if self.catalog.config.svc_rnnoise {
+                    "SVC RNNoise & echo suppression filter enabled."
+                } else {
+                    "SVC RNNoise & echo suppression filter disabled."
+                }
+                .into();
             }
             Some(Action::ToggleFastChunkUpload) => {
                 self.catalog.config.fast_chunk_upload = !self.catalog.config.fast_chunk_upload;
