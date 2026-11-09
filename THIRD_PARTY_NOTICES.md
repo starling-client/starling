@@ -515,3 +515,5 @@ Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 - Fifo for a new swapchain on Android until the settings apply (`first_present_mode` in `gfx.rs`),
   from its `Renderer::new_with_context`, and the title menu held to 60 FPS on Android while resources
   load (`loading_frame_due` in `game.rs`), from its commit f5cf0231bc.
+- Shadow maps of at most 4096 on Android (`shadow_side_limit` in `gfx/pack_shadow.rs`), from
+  `max_shadow` in its `gfx/pack_shadow.rs` and `gfx/native_shadow.rs`.
