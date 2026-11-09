@@ -647,6 +647,7 @@ pub(super) fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         block_flicker: 0.0,
         boss_darken: 0.0,
         menu_blur: None,
+        menu_blur_cache: false,
         chunk_fade: 0.0,
         post_effects: crate::post_chain::Request::none(),
     }

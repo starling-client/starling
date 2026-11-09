@@ -498,3 +498,14 @@ state of Starling's `crates/horizon-client-render/src/touch.rs` at the same comm
 
 `crates/horizon-client-render/src/android_runtime.rs` and `android_runtime/tests/` are adapted from the
 input part of Starling's `crates/horizon-client-render/src/android_runtime.rs` at the same commit.
+
+## Horizon Android performance work
+
+Adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates),
+under the MIT license (the same [LICENSE](LICENSE) as this repository).
+Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
+
+- The blurred backdrop a paused menu keeps and draws again in place of the world and the blur
+  (`menu_blur.rs` `keep` and `draw_kept`, `Renderer::draw_kept_menu`, `Game::menu_blur_cache`),
+  from its commit 77b9e17f76 (`menu_blur_cache`, `blit_cached`). Here only a paused single-player
+  game keeps it, and a changed setting forgets it.
