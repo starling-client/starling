@@ -509,3 +509,6 @@ Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
   (`menu_blur.rs` `keep` and `draw_kept`, `Renderer::draw_kept_menu`, `Game::menu_blur_cache`),
   from its commit 77b9e17f76 (`menu_blur_cache`, `blit_cached`). Here only a paused single-player
   game keeps it, and a changed setting forgets it.
+- Terrain arena pages that stop growing at 32 MiB on 64-bit Android, one emptied page kept as a
+  spare and the first page made while the level loads (`gfx/arena.rs` `page_ceiling`, `prewarm`,
+  `keep_spare`), from its commits acfb2bae43 and 8c08d71508 (`growth_limit`, `prewarm`, `spare`).

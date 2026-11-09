@@ -115,6 +115,14 @@ pub struct Arena {
     pages: Vec<Option<Page>>,
     stride: u64,
     page_limit: u64,
+    /// Vertices past which a page stops growing and the arena starts another,
+    /// below `page_limit` (`page_ceiling`: 64-bit Android).
+    growth_limit: Option<u64>,
+    /// A video-memory buffer of `initial_capacity` vertices for the next page of
+    /// that size: an emptied page kept (`trim`, `clear`) or one made ahead of the
+    /// first upload (`prewarm`). Only in arenas of `PAGE_BYTES` pages.
+    spare: Option<wgpu::Buffer>,
+    keeps_spare: bool,
     initial_capacity: u64,
     usage: wgpu::BufferUsages,
     /// A page being emptied (`Arena::close`): nothing is placed in it.
@@ -197,11 +205,19 @@ impl Arena {
             bytes = bytes.min(limits.max_storage_buffer_binding_size);
         }
         let page_limit = (bytes / stride) / GRAIN * GRAIN;
-        let capacity = capacity.next_multiple_of(GRAIN).min(page_limit);
+        let ceiling = page_ceiling(page_bytes);
+        let growth_limit = (ceiling < page_bytes)
+            .then(|| (ceiling.min(bytes) / stride / GRAIN * GRAIN).max(GRAIN));
+        let capacity = capacity
+            .next_multiple_of(GRAIN)
+            .min(growth_limit.unwrap_or(page_limit).min(page_limit));
         Self {
             pages: Vec::new(),
             stride,
             page_limit,
+            growth_limit,
+            spare: None,
+            keeps_spare: page_bytes == PAGE_BYTES,
             initial_capacity: capacity,
             usage,
             closing: None,
@@ -221,14 +237,17 @@ impl Arena {
         capacity: u64,
         spill: bool,
     ) -> Option<(wgpu::Buffer, bool)> {
+        if let Some(buffer) = self.take_spare(capacity) {
+            return Some((buffer, false));
+        }
         let usage = self.usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
         let (label, bytes) = ("Section buffer arena", capacity * self.stride);
         #[cfg(test)]
         let local = (!self.video_memory_full)
-            .then(|| try_create(device, label, bytes, usage))
+            .then(|| create_page(device, label, bytes, usage))
             .flatten();
         #[cfg(not(test))]
-        let local = try_create(device, label, bytes, usage);
+        let local = create_page(device, label, bytes, usage);
         let local = local.map(|buffer| (buffer, false));
         local.or_else(|| {
             // Mappable buffers are placed in host-visible memory, which the
@@ -240,7 +259,7 @@ impl Arena {
             {
                 return None;
             }
-            let buffer = try_create(device, label, bytes, usage | wgpu::BufferUsages::MAP_WRITE)?;
+            let buffer = create_page(device, label, bytes, usage | wgpu::BufferUsages::MAP_WRITE)?;
             if !std::mem::replace(&mut self.spilled, true) {
                 log::warn!(
                     "Horizon: video memory is full; more terrain is kept in system memory \
@@ -377,12 +396,12 @@ impl Arena {
         }
         let last = self.pages.len().saturating_sub(1);
         if let Some(page) = self.pages.last().and_then(Option::as_ref)
-            && page.capacity < self.page_limit
+            && page.capacity < self.ceiling()
             && self.closing != Some(last as u32)
         {
             let current = page.capacity;
             let grown = self.grown(current, len);
-            if (grown - current >= len || grown == self.page_limit)
+            if (grown - current >= len || grown == self.ceiling())
                 && self.grow(device, encoder, last, grown)
                 && let Some(start) = self.pages[last].as_mut().unwrap().free.take(len)
             {
@@ -394,6 +413,7 @@ impl Arena {
         } else {
             1 << 20
         }
+        .min(self.ceiling())
         .max(len)
         .min(self.page_limit);
         // A page just large enough when memory is short.
@@ -622,7 +642,7 @@ impl Arena {
             PAGE_BYTES / self.stride
         };
         let step = current.min(limit);
-        (current + step).max(current + len).min(self.page_limit)
+        (current + step).max(current + len).min(self.ceiling())
     }
     /// Moves a page into a larger buffer; false (the page unchanged) when
     /// there is no memory for it. A page past `PAGE_BYTES` grows in video
@@ -661,16 +681,20 @@ impl Arena {
     /// Reclaim after an upload batch, so replacing a section can reuse its range. Gives back
     /// the buffers of the pages it emptied, for a [`Graveyard`].
     pub fn trim(&mut self) -> Vec<wgpu::Buffer> {
-        let mut released = Vec::new();
+        let mut emptied = Vec::new();
         for page in &mut self.pages {
             if page
                 .as_ref()
                 .is_some_and(|p| p.free.0.len() == 1 && p.free.0.get(&0) == Some(&p.capacity))
                 && let Some(p) = page.take()
             {
-                released.push(p.buffer);
+                emptied.push(p);
             }
         }
+        let released = emptied
+            .into_iter()
+            .filter_map(|p| self.keep_spare(p))
+            .collect();
         if self.closing.is_some_and(|page| !self.has_page(page)) {
             self.closing = None;
         }
@@ -683,8 +707,73 @@ impl Arena {
     /// Drops every page; gives back their buffers, for a [`Graveyard`].
     pub fn clear(&mut self) -> Vec<wgpu::Buffer> {
         self.closing = None;
-        self.pages.drain(..).flatten().map(|p| p.buffer).collect()
+        let pages: Vec<Page> = self.pages.drain(..).flatten().collect();
+        pages
+            .into_iter()
+            .filter_map(|p| self.keep_spare(p))
+            .collect()
     }
+    /// Makes the first page's buffer ahead of the first upload (on the level
+    /// loading screen), where the arena has no page and no spare: the first
+    /// sections then do not wait for the driver to allocate it.
+    pub fn prewarm(&mut self, device: &wgpu::Device) {
+        if !self.keeps_spare || self.spare.is_some() || self.pages.iter().any(Option::is_some) {
+            return;
+        }
+        if let Some((buffer, false)) = self.create(device, self.initial_capacity, false) {
+            self.spare = Some(buffer);
+        }
+    }
+    /// The vertices a page grows to at most (`growth_limit`, within `page_limit`).
+    fn ceiling(&self) -> u64 {
+        self.growth_limit
+            .map_or(self.page_limit, |limit| limit.min(self.page_limit))
+    }
+    /// The spare buffer (`spare`) for a page of `capacity` vertices.
+    fn take_spare(&mut self, capacity: u64) -> Option<wgpu::Buffer> {
+        if capacity == self.initial_capacity {
+            self.spare.take()
+        } else {
+            None
+        }
+    }
+    /// An emptied page's buffer, unless it becomes the spare (`spare`): one in
+    /// video memory of the first page's size, where none is kept yet.
+    fn keep_spare(&mut self, page: Page) -> Option<wgpu::Buffer> {
+        if self.keeps_spare
+            && self.spare.is_none()
+            && !page.host
+            && page.capacity == self.initial_capacity
+        {
+            self.spare = Some(page.buffer);
+            None
+        } else {
+            Some(page.buffer)
+        }
+    }
+}
+
+/// The bytes past which pages of `page_bytes` stop growing: 32 MiB on 64-bit
+/// Android for `PAGE_BYTES` pages (section vertices and their indices). A
+/// phone's driver takes long to make a large buffer, and a page that grows is
+/// copied while both buffers are held, so new pages of this size come instead.
+/// Translucent quads' large pages keep their size. Adapted from
+/// Vasysik/horizon-android (`Arena::growth_limit`, its commits acfb2bae43 and
+/// 8c08d71508), MIT, copyright (c) 2026 Ludovic Marie and the Horizon
+/// contributors; see THIRD_PARTY_NOTICES.md.
+#[cfg(all(target_os = "android", target_pointer_width = "64"))]
+fn page_ceiling(page_bytes: u64) -> u64 {
+    if page_bytes == PAGE_BYTES {
+        32 << 20
+    } else {
+        page_bytes
+    }
+}
+/// The bytes past which pages of `page_bytes` stop growing: all of them here
+/// (see the 64-bit Android one).
+#[cfg(not(all(target_os = "android", target_pointer_width = "64")))]
+fn page_ceiling(page_bytes: u64) -> u64 {
+    page_bytes
 }
 
 /// Frames a released page waits before it is freed: by then the GPU is done with the frames that
@@ -756,6 +845,19 @@ pub(super) fn try_create(
     });
     // Native error scopes resolve at once.
     pollster::block_on(scope.pop()).is_none().then_some(buffer)
+}
+
+/// `try_create` for a page's buffer, in a span of its own: a phone's driver can take hundreds of
+/// milliseconds here. Adapted from Vasysik/horizon-android (`arena_buffer_create`), MIT.
+fn create_page(
+    device: &wgpu::Device,
+    label: &str,
+    size: u64,
+    usage: wgpu::BufferUsages,
+) -> Option<wgpu::Buffer> {
+    crate::spans::time("arena_buffer_create", || {
+        try_create(device, label, size, usage)
+    })
 }
 
 #[cfg(test)]

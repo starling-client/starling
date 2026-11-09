@@ -7160,8 +7160,11 @@ impl Renderer {
         self.lod_pending = None;
         self.detail_columns.clear();
         self.detail_revision += 1;
-        // A dimension change drops every page at once: freed later, off this thread.
+        // A dimension change drops every page at once: freed later, off this thread. One
+        // page's buffer stays for the next level's first sections, or is made now, while
+        // its loading screen shows (`Arena::prewarm`).
         self.graveyard.add(self.arena.clear());
+        self.arena.prewarm(&self.device);
         if let Some(gpu) = &mut self.gpu_culling {
             gpu.records.clear();
             // The chunk fade-in time they were decided with stays.
