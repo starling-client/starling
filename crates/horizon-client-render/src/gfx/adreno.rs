@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // Adapted from Vasysik/horizon-android; see THIRD_PARTY_NOTICES.md and LICENSE.
 //! What only Adreno on Android's Vulkan takes: the GPU Vasysik's Android fork measured these
-//! paths on (an Adreno 710). Every other GPU keeps the usual pipelines and draw order.
+//! paths on (an Adreno 710). Every other GPU keeps the usual pipelines and draw order, but for the
+//! sky after solid terrain, which every GPU behind Android's Vulkan takes (`late_sky::wanted`).
 
 /// Adreno on Android's Vulkan.
 pub(super) fn adreno_vulkan(info: &wgpu::AdapterInfo) -> bool {

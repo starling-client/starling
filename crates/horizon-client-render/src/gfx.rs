@@ -334,6 +334,18 @@ fn first_present_mode(_modes: &[wgpu::PresentMode]) -> wgpu::PresentMode {
     wgpu::PresentMode::Fifo
 }
 
+/// Whether sections are drawn with indirect multi-draws where the device takes them: not on
+/// Android, which draws each section with a call of its own instead (as OpenGL without indirect
+/// draws does), as Vasysik's Android fork does on every Android GPU (its commit 77b9e17f76,
+/// `multi_draw`): it measured per-section indirect draws at 46.05 ms of GPU against about 22 ms
+/// for direct ones on an Adreno 710. Frames drawn flat (`flat`: Adreno's Vulkan from 512
+/// sections, PowerVR's always) are not per-section draws at all. `horizon-ctl section-draws
+/// indirect` brings them back for an A/B check. Adapted from Vasysik/horizon-android, MIT,
+/// copyright (c) 2026 Ludovic Marie and the Horizon contributors.
+fn indirect_draws_wanted() -> bool {
+    !cfg!(target_os = "android")
+}
+
 /// Two solid passes only where a discard costs the GPU its hidden surface removal: Apple's tiled
 /// GPUs, behind Metal, and Adreno (Vasysik's Android fork measured 25-27% less GPU time on an
 /// Adreno 710). A Mali-G57 gained no GPU time from it, and PowerVR hasn't been measured. Elsewhere
@@ -1647,6 +1659,9 @@ pub struct Renderer {
     indirect_capacity: u64,
     /// Indirect draws may set `first_instance` (the section origin).
     pub multi_draw: bool,
+    /// The device takes indirect multi-draws, which `multi_draw` may still leave off
+    /// (`indirect_draws_wanted`, `set_indirect_draws`).
+    indirect_capable: bool,
     base_vertex: bool,
     /// Per-frame scratch, kept to avoid allocating every frame.
     visible: Vec<resident::Visible>,
@@ -5295,11 +5310,12 @@ impl Renderer {
             .get_downlevel_capabilities()
             .flags
             .contains(wgpu::DownlevelFlags::BASE_VERTEX);
-        let multi_draw = device
+        let indirect_capable = device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
             && indirect_execution;
-        let batchable = translucent_batchable(&adapter.get_info(), multi_draw);
+        let multi_draw = indirect_capable && indirect_draws_wanted();
+        let batchable = translucent_batchable(&adapter.get_info(), indirect_capable);
         crate::graphics::offer_translucent_batching(batchable);
         let translucent_batching = batchable && translucent_batching;
         let gpu_culling_offer = gpu_culling::offer(
@@ -5362,7 +5378,7 @@ impl Renderer {
         let indirect = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Section draws"),
             size: 1024 * 20,
-            usage: if multi_draw {
+            usage: if indirect_capable {
                 wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST
             } else {
                 wgpu::BufferUsages::COPY_DST
@@ -5398,7 +5414,7 @@ impl Renderer {
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
         let stars = stars::Stars::new(&device, frame_format);
         let custom_sky = custom_sky::CustomSky::new(&device, frame_format);
-        let late_sky = adreno::adreno_vulkan(&adapter_info)
+        let late_sky = late_sky::wanted(&adapter_info)
             .then(|| {
                 late_sky::LateSky::new(
                     &adreno::TerrainModule {
@@ -5652,6 +5668,7 @@ impl Renderer {
             indirect,
             indirect_capacity: 1024,
             multi_draw,
+            indirect_capable,
             base_vertex,
             visible: Vec::new(),
             visible_lods: Vec::new(),
@@ -6142,6 +6159,15 @@ impl Renderer {
                 .menu_blur
                 .as_ref()
                 .is_some_and(|b| b.kept([self.config.width, self.config.height], radius))
+    }
+    /// Whether per-section draws are indirect multi-draws rather than one call per section.
+    pub fn indirect_draws(&self) -> bool {
+        self.multi_draw
+    }
+    /// Switches per-section draws between indirect multi-draws, where the device takes them,
+    /// and one call per section, for A/B checks.
+    pub fn set_indirect_draws(&mut self, on: bool) {
+        self.multi_draw = on && self.indirect_capable;
     }
     /// Whether frames that may take it draw the sky after solid terrain (`late_sky`).
     pub fn late_sky_on(&self) -> bool {

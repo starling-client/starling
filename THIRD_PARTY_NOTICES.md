@@ -446,10 +446,16 @@ after solid terrain (`gfx/late_sky.rs` and the far-plane vertex entries in `terr
 9771fbce2b).
 
 The fork takes them on every Android Vulkan GPU it allows; here they follow `splits_solid`, which
-holds on Adreno. Starling's sunrise fan is geometry, so it has a far-plane entry of its own. The
+holds on Adreno, but for the sky after solid terrain, which every GPU behind Android's Vulkan takes
+(`late_sky::wanted`), as in the fork. Starling's sunrise fan is geometry, so it has a far-plane
+entry of its own. The
 fork's two specialization constants are one here, which also leaves out the distant tiles' sampling,
 and its terrain shaders also cover flat frames. The indirect offset fix in 1a115395f8 doesn't apply:
 Starling's solid passes don't rebase the indirect buffer.
+
+Drawing each section with a call of its own on Android, rather than with indirect multi-draws
+(`indirect_draws_wanted` in `gfx.rs`), follows the same revision's commit 77b9e17f76, which turned
+indirect multi-draws off on every Android GPU.
 
 ## Horizon Android documents provider
 
@@ -514,6 +520,6 @@ Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
   `keep_spare`), from its commits acfb2bae43 and 8c08d71508 (`growth_limit`, `prewarm`, `spare`).
 - Fifo for a new swapchain on Android until the settings apply (`first_present_mode` in `gfx.rs`),
   from its `Renderer::new_with_context`, and the title menu held to 60 FPS on Android while resources
-  load (`loading_frame_due` in `game.rs`), from its commit f5cf0231bc.
+  load (`loading_frame_due` in `game/runtime/loading_screen.rs`), from its commit f5cf0231bc.
 - Shadow maps of at most 4096 on Android (`shadow_side_limit` in `gfx/pack_shadow.rs`), from
   `max_shadow` in its `gfx/pack_shadow.rs` and `gfx/native_shadow.rs`.
