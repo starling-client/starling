@@ -1033,7 +1033,7 @@ impl Game<'_> {
                 self.native_level_tick_post(level);
             }
             // Starling: the old hook, for the mods made for it (native_compat.rs).
-            self.native_level_tick_post_old(&dim.id());
+            self.native_level_tick_post_old(dim.id());
             self.publish_server_debug(dim);
             // An entity that crossed into a level that already ticked this
             // server tick is in it when the tick ends (`addDuringTeleport`).
