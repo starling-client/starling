@@ -901,20 +901,33 @@ fn all_points<'a>(
             "{origin}: {path}: no function every build compiles that can be a point"
         ));
     }
+    // Starling: two functions whose points take one name are no error here: the later one is no
+    // point. A native mod's own modules can make them (`pickupnotifier::Config::label` and
+    // `pickupnotifier_config::label`, 2026-11-12), and upstream's refusal failed the whole build;
+    // nothing can name such a point, since no build ever had it.
     let mut names = std::collections::BTreeMap::new();
-    for (_, found) in &points {
+    let mut kept = Vec::with_capacity(points.len());
+    for (index, found) in points {
         let shape = found.shape()?;
-        for variant in [shape.variant(), shape.return_variant()] {
-            if let Some(other) = names.insert(variant.to_string(), found.target()) {
-                return Err(format!(
-                    "the points of {other} and {} have one name, {}: rename one",
-                    found.target(),
-                    shape.name
-                ));
-            }
+        let variants = [
+            shape.variant().to_string(),
+            shape.return_variant().to_string(),
+        ];
+        if let Some(other) = variants.iter().find_map(|variant| names.get(variant)) {
+            eprintln!(
+                "the points of {other} and {} have one name, {}: {} is no point",
+                found.target(),
+                shape.name,
+                found.target()
+            );
+            continue;
         }
+        for variant in variants {
+            names.insert(variant, found.target());
+        }
+        kept.push((index, found));
     }
-    Ok(points)
+    Ok(kept)
 }
 
 /// The game's points, by name: every point function of the game module, and the listed ones of

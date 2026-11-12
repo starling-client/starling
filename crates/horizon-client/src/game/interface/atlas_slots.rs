@@ -50,6 +50,20 @@ impl<K: PartialEq> AtlasSlots<K> {
         self.held.push((key, slot, self.frame));
         Some((slot, evicted))
     }
+    /// Starling: `claim` as Horizon had it, which the site's native mods call: always a slot, the
+    /// least recently shown one even when it shows something this frame.
+    #[allow(dead_code)]
+    pub(super) fn claim_old(&mut self, key: K) -> (usize, Option<K>) {
+        if self.count == 0 {
+            return (0, None);
+        }
+        if self.held.len() < self.count || self.held[0].2 != self.frame {
+            return self.claim(key).unwrap_or((0, None));
+        }
+        let (old, slot, _) = self.held.remove(0);
+        self.held.push((key, slot, self.frame));
+        (slot, Some(old))
+    }
     /// The atlas was replaced: every slot is blank.
     pub(super) fn forget(&mut self) {
         self.held.clear();
