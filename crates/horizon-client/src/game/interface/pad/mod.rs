@@ -701,8 +701,9 @@ impl Game<'_> {
     }
 
     /// A bound action: a vanilla mapping acts as its default key or mouse
-    /// button, like a rebound keyboard key.
-    fn pad_action(&mut self, action: &str, down: bool) -> Result<()> {
+    /// button, like a rebound keyboard key. (Starling: the touch chat and camera
+    /// buttons act through it too, game/starling/mobile_controls.)
+    pub(super) fn pad_action(&mut self, action: &str, down: bool) -> Result<()> {
         let Some(route) = gamepad::route(action) else {
             log::warn!("Horizon: controller action {action} has no handler");
             return Ok(());
