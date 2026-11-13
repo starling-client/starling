@@ -6181,6 +6181,16 @@ impl Renderer {
         self.late_sky_on = on;
         Ok(())
     }
+    /// Which A/B switches this device takes: flat draws, indirect multi-draws, the late sky
+    /// and occlusion culling (Starling's performance test offers only these).
+    pub fn draw_choices(&self) -> [bool; 4] {
+        [
+            self.flat.is_some(),
+            self.indirect_capable,
+            self.late_sky.is_some(),
+            self.cull.is_some(),
+        ]
+    }
     /// Whether one of Horizon's own packs reads the water mirror, which needs the frame's
     /// `water_plane`.
     pub fn wants_water_plane(&self) -> bool {

@@ -292,6 +292,7 @@ pub(crate) fn export_from(home: &Path, player: &Path) -> Result<PathBuf, String>
                             || matches!(
                                 name.as_str(),
                                 "android-exits.json"
+                                    | "perf-sessions.json"
                                     | "current-session.json"
                                     | "previous-session.json"
                                     | "last-rust-panic.txt"
@@ -306,7 +307,10 @@ pub(crate) fn export_from(home: &Path, player: &Path) -> Result<PathBuf, String>
         files.sort_by_key(|p| {
             let name = p.file_name().unwrap().to_string_lossy();
             let priority = match name.as_ref() {
-                "current-session.json" | "previous-session.json" | "android-exits.json" => 0,
+                "current-session.json"
+                | "previous-session.json"
+                | "android-exits.json"
+                | "perf-sessions.json" => 0,
                 "latest.log" | "previous.log" | "previous-run.log" | "previous-error.txt" => 1,
                 n if n.starts_with("horizon-performance-") => 2,
                 _ => 3,

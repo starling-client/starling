@@ -69,6 +69,9 @@ impl Game<'_> {
                 &[&r.info.name, &format!("{:?}", r.info.backend)],
             ));
         }
+        let (buttons, notes) = self.perf_lab_page();
+        self.ui.options.perf_lab = buttons;
+        self.ui.options.perf_lab_notes = notes;
     }
 
     pub(super) fn toggle_diagnostic_recording(&mut self) {
@@ -92,6 +95,8 @@ impl Game<'_> {
     }
 
     pub(super) fn export_diagnostics(&mut self) {
+        // The performance test's averages up to now go in the report.
+        self.perf_lab_save(true);
         export_diagnostics();
     }
     pub(super) fn open_diagnostics(&mut self) {
@@ -165,6 +170,12 @@ pub(super) fn status() -> Vec<String> {
                 log::info!("Diagnostic report exported: {}", path.display());
                 *NOTICE.lock().unwrap_or_else(|e| e.into_inner()) =
                     Some("starling.diagnostics.exported");
+                // The share sheet opens with it: the report lands in the app's own files,
+                // which a player can't reach (#401).
+                #[cfg(target_os = "android")]
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    let _ = crate::android::share_diagnostic(name);
+                }
             }
             Err(error) => {
                 log::warn!("Diagnostic export failed: {error}");

@@ -1610,8 +1610,14 @@ impl Game<'_> {
                         }
                     }
                     let mut diagnostic_sample = None;
+                    // Starling: the frame for the performance test's averages (perf_lab.rs).
+                    let mut lab_sample = None;
                     if let Some(r) = self.renderer.as_mut() {
                         let cpu = now.elapsed().saturating_sub(r.last_wait);
+                        if rendered {
+                            let ms = |d: Duration| d.as_secs_f32() * 1000.0;
+                            lab_sample = Some((ms(elapsed), ms(cpu), r.gpu_times.last().copied()));
+                        }
                         if rendered {
                             let ms = |d: Duration| d.as_secs_f32() * 1000.0;
                             self.frame_graph.record(
@@ -1685,6 +1691,7 @@ impl Game<'_> {
                         crate::performance::submit(sample, context);
                     }
                     self.platform_diagnostic_heartbeat();
+                    self.perf_lab_frame(lab_sample);
                     self.limit_frame();
                     let paused = self.pauses_game();
                     if paused != self.pause {

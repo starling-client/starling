@@ -461,6 +461,7 @@ impl Game<'_> {
                 Event::DiagnosticsOpen => self.open_diagnostics(),
                 Event::DiagnosticsRecord => self.toggle_diagnostic_recording(),
                 Event::DiagnosticsGpu => self.toggle_diagnostic_gpu(),
+                Event::PerfLab(i) => self.perf_lab_next(i),
                 Event::ButtonClick => self.audio.play_button_click(),
                 Event::DebugEntriesChanged => self.debug_entries.invalidate(),
                 Event::Changed => {
