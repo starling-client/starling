@@ -48,13 +48,7 @@ pub(super) fn set_up_surface(
     }
     config.present_mode = keep_mode
         .filter(|mode| caps.present_modes.contains(mode))
-        .unwrap_or_else(|| {
-            if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-                wgpu::PresentMode::Mailbox
-            } else {
-                wgpu::PresentMode::Fifo
-            }
-        });
+        .unwrap_or_else(|| super::first_present_mode(&caps.present_modes));
     if log_step {
         startup_step(format_args!(
             "device ready; configuring the surface ({}x{} {:?}, {:?}){}",

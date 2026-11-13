@@ -9,6 +9,12 @@
 //! width and height with half the radius: the same blur, a quarter of the
 //! pixels. At full size they took 250 ms of a CPU per frame at 1440x900, and
 //! every blurred menu ran at 3 FPS (#5185).
+//!
+//! Under a paused single-player menu the world does not move: `keep` holds the
+//! blurred frame and `draw_kept` puts it back on the next frames, which then
+//! draw neither the world nor the blur. Adapted from Vasysik/horizon-android
+//! (`MenuBlur::blit_cached`, its commit 77b9e17f76), MIT, copyright (c) 2026
+//! Ludovic Marie and the Horizon contributors; see THIRD_PARTY_NOTICES.md.
 
 /// `blur.json`: the passes' directions, ping-ponging between the copied
 /// frame and a swap texture; the last one writes the frame.
@@ -41,6 +47,8 @@ pub struct MenuBlur {
     format: wgpu::TextureFormat,
     /// Blur at half size (`new`'s `software`).
     half: bool,
+    /// The frame size and radius of the blurred frame `keep` holds.
+    kept: Option<([u32; 2], f32)>,
 }
 impl MenuBlur {
     /// `format` is the swapchain's; the blur works in its non-sRGB view. `software`:
@@ -140,6 +148,7 @@ impl MenuBlur {
             size: [0, 0],
             format,
             half: software,
+            kept: None,
         }
     }
     /// The size the blur's rounds run at for a frame of `size`.
@@ -154,6 +163,7 @@ impl MenuBlur {
         if self.size == size && !self.targets.is_empty() {
             return;
         }
+        self.kept = None;
         self.size = size;
         let work = self.work_size(size);
         let sizes = if self.half {
@@ -189,6 +199,63 @@ impl MenuBlur {
     /// screen that does, which makes them again.
     pub fn release(&mut self) {
         self.targets.clear();
+        self.kept = None;
+    }
+    /// Drop the frame `keep` holds: the next blurred menu blurs the world again.
+    pub fn forget(&mut self) {
+        self.kept = None;
+    }
+    /// Whether `keep` holds a frame of `size` blurred by `radius`.
+    pub fn kept(&self, size: [u32; 2], radius: f32) -> bool {
+        self.kept == Some((size, radius)) && !self.targets.is_empty()
+    }
+    /// The target `keep` copies into: one of the frame's size that `apply`'s
+    /// last pass has already read (the copied frame at half size, else the
+    /// first ping-pong target).
+    fn kept_target(&self) -> usize {
+        if self.half { 2 } else { 0 }
+    }
+    /// After `apply` blurred `frame` (and what was drawn before it) at `size`
+    /// by `radius`: hold a copy of it for `draw_kept`.
+    pub fn keep(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &wgpu::Texture,
+        size: [u32; 2],
+        radius: f32,
+    ) {
+        if self.targets.is_empty() || self.size != size {
+            return;
+        }
+        encoder.copy_texture_to_texture(
+            frame.as_image_copy(),
+            self.targets[self.kept_target()].0.as_image_copy(),
+            wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+        );
+        self.kept = Some((size, radius));
+    }
+    /// Draw the frame `keep` holds into `target` (the frame's non-sRGB view):
+    /// a radius of 0 samples each pixel at its centre, a plain copy.
+    pub fn draw_kept(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+    ) {
+        if self.kept.is_none() || self.targets.is_empty() {
+            return;
+        }
+        let data = Uniform {
+            size_dir: [self.size[0] as f32, self.size[1] as f32, 0.0, 0.0],
+            radius: [0.0; 4],
+        };
+        let source = &self.targets[self.kept_target()].1;
+        self.pass(device, queue, encoder, 0, data, source, target, None);
     }
     /// Blur `frame` (the swapchain texture) in place through `target`, its
     /// non-sRGB view, by `radius` pixels (`menuBackgroundBlurriness`).
@@ -384,6 +451,7 @@ mod tests {
         let mut encoder = device.create_command_encoder(&Default::default());
         let view = frame.create_view(&Default::default());
         blur.apply(device, queue, &mut encoder, &frame, &view, size, 2.0, None);
+        blur.keep(&mut encoder, &frame, size, 2.0);
         encoder.copy_texture_to_buffer(
             frame.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
@@ -458,6 +526,73 @@ mod tests {
                     assert!((120..=136).contains(&v), "{name} size: {v} at ({x}, {row})");
                 }
             }
+        }
+    }
+
+    /// A paused menu's next frames draw the kept blurred frame exactly as it was blurred, at
+    /// full size and at half size; a forgotten one is not drawn.
+    #[test]
+    fn a_kept_frame_draws_back_as_it_was_blurred() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            return;
+        };
+        let size = [64, 8];
+        let extent = wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        };
+        for software in [false, true] {
+            let mut blur = MenuBlur::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb, software);
+            let first = blurred(&device, &queue, &mut blur, size);
+            assert!(blur.kept(size, 2.0));
+            assert!(!blur.kept(size, 3.0));
+            let frame = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let out = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(size[0] * size[1] * 4),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            blur.draw_kept(
+                &device,
+                &queue,
+                &mut encoder,
+                &frame.create_view(&Default::default()),
+            );
+            encoder.copy_texture_to_buffer(
+                frame.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &out,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(size[0] * 4),
+                        rows_per_image: None,
+                    },
+                },
+                extent,
+            );
+            queue.submit([encoder.finish()]);
+            out.slice(..).map_async(wgpu::MapMode::Read, |_| ());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            assert_eq!(out.slice(..).get_mapped_range().unwrap().to_vec(), first);
+            blur.forget();
+            assert!(!blur.kept(size, 2.0));
         }
     }
 

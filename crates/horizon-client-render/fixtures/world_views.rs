@@ -608,5 +608,6 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         chunk_fade: 0.0,
         post_effects: client::post_chain::Request::none(),
         menu_blur: None,
+        menu_blur_cache: false,
     }
 }

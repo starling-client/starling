@@ -8,6 +8,22 @@ use horizon_shaders::SHADOW_COLORS;
 type Ops<T> = wgpu::Operations<T>;
 type Color = wgpu::Color;
 
+/// The largest shadow map side this device makes, of `device_max`: at most 4096 on a phone. An
+/// 8192 map is 256 MiB of depth alone, more than a phone can spare beside the world; 4096 is
+/// what the pack gets instead. Adapted from Vasysik/horizon-android (`max_shadow` in its
+/// `gfx/pack_shadow.rs` and `gfx/native_shadow.rs`), MIT, copyright (c) 2026 Ludovic Marie and
+/// the Horizon contributors.
+#[cfg(target_os = "android")]
+pub(super) fn shadow_side_limit(device_max: u32) -> u32 {
+    device_max.min(4096)
+}
+
+/// The largest shadow map side this device makes: `device_max` here (see the Android one).
+#[cfg(not(target_os = "android"))]
+pub(super) fn shadow_side_limit(device_max: u32) -> u32 {
+    device_max
+}
+
 /// Loaded and stored.
 pub(super) fn load<T>() -> Ops<T> {
     wgpu::Operations {
@@ -131,9 +147,10 @@ impl ShadowTargets {
         doubled: u16,
         depth1: bool,
     ) -> Self {
-        let size = shadow
-            .resolution
-            .clamp(1, device.limits().max_texture_dimension_2d);
+        let size = shadow.resolution.clamp(
+            1,
+            shadow_side_limit(device.limits().max_texture_dimension_2d),
+        );
         let copy = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
         let depth = wgpu::TextureFormat::Depth32Float;
         let color = std::array::from_fn(|n| {

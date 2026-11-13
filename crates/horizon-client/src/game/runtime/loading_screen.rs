@@ -3,6 +3,24 @@
 //! an unclean last exit, a fullscreen the window system could not show.
 use super::*;
 
+/// When the next frame of the title menu drawn while the resources load is due, if that is still
+/// ahead (`last`: when the last one started). On Android at most 60 a second: it ran uncapped
+/// until the game's own frame limit took over, heating the phone while it prepared. Adapted from
+/// Vasysik/horizon-android (its commit f5cf0231bc), MIT, copyright (c) 2026 Ludovic Marie and
+/// the Horizon contributors.
+#[cfg(target_os = "android")]
+fn loading_frame_due(last: Option<Instant>) -> Option<Instant> {
+    let next = last? + Duration::from_nanos(1_000_000_000 / 60);
+    (Instant::now() < next).then_some(next)
+}
+
+/// When the next frame of the title menu drawn while the resources load is due: at once here
+/// (see the Android one).
+#[cfg(not(target_os = "android"))]
+fn loading_frame_due(_last: Option<Instant>) -> Option<Instant> {
+    None
+}
+
 /// The event loop; on Android, the activity's (horizon-android).
 pub(super) fn event_loop() -> Result<EventLoop<()>> {
     #[cfg(target_os = "android")]
@@ -417,6 +435,10 @@ impl Loading {
             return;
         }
         self.poll_menu_realms(event_loop);
+        if let Some(next) = loading_frame_due(self.menu.diagnostic_frame) {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+            return;
+        }
         if let Some(w) = &self.window {
             if self.options.as_ref().is_some_and(|o| o.offscreen) {
                 self.draw();

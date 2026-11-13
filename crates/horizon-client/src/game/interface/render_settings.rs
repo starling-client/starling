@@ -131,6 +131,10 @@ impl Game<'_> {
     }
 
     pub(super) fn apply_settings(&mut self) {
+        // A paused menu's kept blurred frame shows the world as the old settings drew it.
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.forget_menu_blur();
+        }
         // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
         let abilities = self.chat_abilities();
         self.ui.chat.set_abilities(&self.gui.atlas.font, abilities);
