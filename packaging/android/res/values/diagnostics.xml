@@ -11,4 +11,9 @@
     <string name="diagnostics_failed">Diagnostic operation failed: %1$s</string>
     <string name="diagnostics_no_report">Export a report first.</string>
     <string name="diagnostics_close">Close</string>
+    <string name="diagnostics_api">Graphics API for the next start</string>
+    <string name="diagnostics_api_auto">Auto</string>
+    <string name="diagnostics_api_vulkan">Vulkan</string>
+    <string name="diagnostics_api_opengl">OpenGL ES</string>
+    <string name="diagnostics_api_set">Starling starts with %1$s next time. If it still fails, try another one.</string>
 </resources>
