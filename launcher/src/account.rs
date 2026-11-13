@@ -7,7 +7,7 @@
 //! output.
 //!
 //! The owner gate ([`launch`]): the launcher starts the game only while an account in it owns
-//! Minecraft: Java Edition, as other launchers do. Offline names play behind such an account.
+//! Minecraft: Java Edition, as other launchers do, and the game plays as the selected account.
 //! The game binary itself, its harnesses and the servers don't go through the launcher's gate.
 //!
 //! The Azure app (client ID) is Horizon's own and is configuration: `HORIZON_MSA_CLIENT_ID` at
@@ -18,10 +18,10 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The keychain service name every secret is stored under.
-pub const SERVICE: &str = "dev.playhorizon.launcher";
+pub const SERVICE: &str = crate::identity::KEYCHAIN_SERVICE;
 const SCOPE: &str = "XboxLive.signin offline_access";
 pub const NOT_CONFIGURED: &str = "This build of the launcher has no Microsoft sign-in (HORIZON_MSA_CLIENT_ID), so it can't start the game.";
 /// What every Play says while no account in the launcher owns the game.
@@ -655,6 +655,122 @@ impl SecretStore for MemoryStore {
     }
 }
 
+/// How long a call to the system keyring may take before the launcher gives up on it (#12179). An
+/// unlock prompt the player is typing a password into counts as an answer still coming, so this is
+/// longer than a working keyring ever takes, short enough that Play says what is wrong.
+pub const KEYCHAIN_WAIT: Duration = Duration::from_secs(20);
+
+/// What the launcher says when the system keyring didn't answer within `wait`.
+pub fn keyring_no_answer(wait: Duration) -> String {
+    crate::i18n::trf(
+        "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.",
+        &[("seconds", &wait.as_secs().max(1).to_string())],
+    )
+}
+
+/// One call to a [`Bounded`] keyring: its answer, or that the caller gave up on it.
+struct Call<T> {
+    answer: Option<T>,
+    gave_up: bool,
+}
+
+/// A keyring whose calls give up after `wait` (#12179): a Secret Service that never answers (a
+/// stuck KWallet or GNOME Keyring daemon) otherwise holds the account lock forever, and Play stays
+/// on "Starting…" with nothing said. Each call runs on a thread of its own; one given up on keeps
+/// running there, and while it does, later calls fail at once instead of piling up behind it.
+pub struct Bounded {
+    keyring: std::sync::Arc<dyn SecretStore>,
+    wait: Duration,
+    /// Calls given up on that haven't come back yet.
+    stuck: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Bounded {
+    pub fn new(keyring: impl SecretStore + 'static, wait: Duration) -> Self {
+        Self {
+            keyring: std::sync::Arc::new(keyring),
+            wait,
+            stuck: Default::default(),
+        }
+    }
+
+    fn call<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&dyn SecretStore) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let no_answer = || {
+            let said = keyring_no_answer(self.wait);
+            eprintln!("Horizon: {said}");
+            Err(said)
+        };
+        if self.stuck.load(SeqCst) > 0 {
+            return no_answer();
+        }
+        let call = std::sync::Arc::new((
+            Mutex::new(Call::<Result<T, String>> {
+                answer: None,
+                gave_up: false,
+            }),
+            std::sync::Condvar::new(),
+        ));
+        let (keyring, stuck, theirs) = (self.keyring.clone(), self.stuck.clone(), call.clone());
+        let spawned = std::thread::Builder::new()
+            .name("keyring".into())
+            .spawn(move || {
+                let answer = f(keyring.as_ref());
+                let (slot, done) = &*theirs;
+                let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+                if slot.gave_up {
+                    stuck.fetch_sub(1, SeqCst);
+                } else {
+                    slot.answer = Some(answer);
+                    done.notify_one();
+                }
+            });
+        if let Err(e) = spawned {
+            return Err(e.to_string());
+        }
+        let (slot, done) = &*call;
+        let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut slot, _) = done
+            .wait_timeout_while(slot, self.wait, |call| call.answer.is_none())
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(answer) = slot.answer.take() {
+            return answer;
+        }
+        // Under the call's lock: the thread, when it ends, sees this and counts itself back.
+        slot.gave_up = true;
+        self.stuck.fetch_add(1, SeqCst);
+        drop(slot);
+        no_answer()
+    }
+}
+
+impl SecretStore for Bounded {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        let key = key.to_string();
+        self.call(move |keyring| keyring.get(&key))
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        let (key, secret) = (key.to_string(), secret.to_string());
+        self.call(move |keyring| keyring.set(&key, &secret))
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        let key = key.to_string();
+        self.call(move |keyring| keyring.delete(&key))
+    }
+    fn persistent(&self) -> bool {
+        self.keyring.persistent()
+    }
+    fn lock_file(&self) -> Option<PathBuf> {
+        self.keyring.lock_file()
+    }
+    fn operations(&self) -> &Mutex<()> {
+        self.keyring.operations()
+    }
+}
+
 /// The secrets file in the launcher's data folder, when no keychain answers (#5095): many Linux
 /// systems run no Secret Service, and sign-ins would otherwise last one run. One JSON object, key
 /// to secret, encrypted with a key of this computer's ([`seal`]), readable and writable by the
@@ -711,22 +827,30 @@ impl FileStore {
     fn read(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
         match std::fs::read(&self.path) {
             // Only where the file breaks: serde's own message can quote what the file holds.
-            Ok(bytes) => serde_json::from_slice(&unseal(&bytes).ok_or_else(|| {
-                format!(
-                    "{} can't be read on this computer: it was written on another one, or changed. \
-                     Remove it and sign in again.",
-                    self.path.display()
-                )
-            })?)
-            .map_err(|e| {
-                format!(
-                    "{} can't be read ({:?} error at line {}, column {}).",
-                    self.path.display(),
-                    e.classify(),
-                    e.line(),
-                    e.column()
-                )
-            }),
+            Ok(bytes) => {
+                let (json, old) = self.unseal(&bytes)?.ok_or_else(|| {
+                    format!(
+                        "{} can't be read on this computer: it was written on another one, or changed. \
+                         Remove it and sign in again.",
+                        self.path.display()
+                    )
+                })?;
+                let secrets = serde_json::from_slice(&json).map_err(|e| {
+                    format!(
+                        "{} can't be read ({:?} error at line {}, column {}).",
+                        self.path.display(),
+                        e.classify(),
+                        e.line(),
+                        e.column()
+                    )
+                })?;
+                // Sealed under the old key: sealed again under this install's. Every read runs
+                // under the lock; a write that fails leaves the old file, read again next time.
+                if old {
+                    let _ = self.write(&secrets);
+                }
+                Ok(secrets)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
             Err(e) => Err(self.shown(e)),
         }
@@ -747,7 +871,7 @@ impl FileStore {
             .path
             .with_extension(format!("json.{}.{n}.tmp", std::process::id()));
         let json = serde_json::to_vec(secrets).map_err(|e| e.to_string())?;
-        let sealed = seal(&json)?;
+        let sealed = self.seal(&json)?;
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -804,50 +928,124 @@ impl FileStore {
             Ok(secrets.contains_key(key))
         })
     }
+
+    /// The install's own secret beside the file (`account-secrets.key`): 32 random bytes, readable
+    /// and writable by the player only, made at the first write when `make`. `None` when it isn't
+    /// there and not made.
+    fn install_secret(&self, make: bool) -> Result<Option<[u8; 32]>, String> {
+        let path = self.path.with_extension("key");
+        match std::fs::read(&path) {
+            Ok(bytes) => <[u8; 32]>::try_from(bytes).map(Some).map_err(|_| {
+                format!(
+                    "{} is damaged. Remove it and {} and sign in again.",
+                    path.display(),
+                    self.path.display()
+                )
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && make => {
+                let mut secret = [0u8; 32];
+                getrandom::fill(&mut secret).map_err(|e| e.to_string())?;
+                // Whole or not at all, as the secrets file: a temporary file, then a rename.
+                let tmp = path.with_extension(format!("key.{}.tmp", std::process::id()));
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                let written = options.open(&tmp).and_then(|mut file| {
+                    std::io::Write::write_all(&mut file, &secret)?;
+                    file.sync_all()
+                });
+                if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, &path)) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(format!("{}: {e}", path.display()));
+                }
+                Ok(Some(secret))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// `json` sealed for the file ([`SEALED`]), under [`file_key`] with this install's secret.
+    fn seal(&self, json: &[u8]) -> Result<Vec<u8>, String> {
+        use chacha20poly1305::{aead::Aead, KeyInit};
+        let key = file_key(&self.install_secret(true)?.expect("made"));
+        let mut nonce = [0u8; 12];
+        getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
+        let sealed = chacha20poly1305::ChaCha20Poly1305::new(&key)
+            .encrypt(&nonce.into(), json)
+            .map_err(|_| "the secrets couldn't be sealed".to_string())?;
+        Ok([SEALED, &nonce, &sealed].concat())
+    }
+
+    /// What [`Self::seal`] sealed, and whether it was sealed in format 1 ([`SEALED_V1`]), to seal
+    /// again; `None` for a file in another format, changed, sealed on another computer or by
+    /// another install, or whose install secret is gone.
+    fn unseal(&self, bytes: &[u8]) -> Result<Option<(Vec<u8>, bool)>, String> {
+        use chacha20poly1305::{aead::Aead, KeyInit};
+        let (key, old, rest) = if let Some(rest) = bytes.strip_prefix(SEALED) {
+            let Some(secret) = self.install_secret(false)? else {
+                return Ok(None);
+            };
+            (file_key(&secret), false, rest)
+        } else if let Some(rest) = bytes.strip_prefix(SEALED_V1) {
+            (file_key_v1(), true, rest)
+        } else {
+            return Ok(None);
+        };
+        let Some((nonce, sealed)) = rest.split_at_checked(12) else {
+            return Ok(None);
+        };
+        let nonce: [u8; 12] = nonce.try_into().expect("12 bytes");
+        Ok(chacha20poly1305::ChaCha20Poly1305::new(&key)
+            .decrypt(&nonce.into(), sealed)
+            .ok()
+            .map(|json| (json, old)))
+    }
 }
 
-/// The secrets file's first bytes: format 1, the JSON sealed with ChaCha20-Poly1305 under
+/// The secrets file's first bytes: format 2, the JSON sealed with ChaCha20-Poly1305 under
 /// [`file_key`], then a random 12-byte nonce and the ciphertext with its tag.
-const SEALED: &[u8] = b"HZSECv1\n";
+const SEALED: &[u8] = b"HZSECv2\n";
 
-/// The secrets file's key: this computer's identity (`/etc/machine-id` on Linux, `/etc/hostid` on
-/// FreeBSD) hashed with a constant of the launcher's. The tokens are never on disk in plain text,
-/// and a copy of the file taken off the computer (a backup, a synced home folder) can't be read
-/// elsewhere. On the computer itself, the file's mode (0600) is what keeps other users out.
-fn file_key() -> chacha20poly1305::Key {
-    use sha2::Digest;
-    let mut hash = sha2::Sha256::new();
-    hash.update(b"horizon-launcher account-secrets v1");
-    if let Some(id) = ["/etc/machine-id", "/var/lib/dbus/machine-id", "/etc/hostid"]
+/// Format 1, sealed under [`file_key_v1`]: still read, and sealed again in format 2 at once.
+const SEALED_V1: &[u8] = b"HZSECv1\n";
+
+/// This computer's identity: `/etc/machine-id` on Linux, `/etc/hostid` on FreeBSD.
+fn machine_id() -> Option<Vec<u8>> {
+    ["/etc/machine-id", "/var/lib/dbus/machine-id", "/etc/hostid"]
         .iter()
         .find_map(|path| std::fs::read(path).ok())
-    {
-        hash.update(id.trim_ascii());
-    }
+        .map(|id| id.trim_ascii().to_vec())
+}
+
+/// The secrets file's key: a constant of the launcher's, this computer's identity and the install's
+/// own random secret (`account-secrets.key`, 0600). The tokens are never on disk in plain text,
+/// and the key is never something every local user can work out (the machine id is readable by
+/// all, and some systems have none): it takes the install secret, which only the player can read.
+/// The file's mode (0600) is still what keeps other users out; the secret means a copy of the file
+/// alone, or one left readable by others while the secret wasn't, can't be read either.
+fn file_key(install_secret: &[u8; 32]) -> chacha20poly1305::Key {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"horizon-launcher account-secrets v2");
+    let id = machine_id().unwrap_or_default();
+    hash.update((id.len() as u64).to_le_bytes());
+    hash.update(&id);
+    hash.update(install_secret);
     hash.finalize()
 }
 
-/// `json` sealed for the secrets file ([`SEALED`]).
-fn seal(json: &[u8]) -> Result<Vec<u8>, String> {
-    use chacha20poly1305::{aead::Aead, KeyInit};
-    let mut nonce = [0u8; 12];
-    getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
-    let sealed = chacha20poly1305::ChaCha20Poly1305::new(&file_key())
-        .encrypt(&nonce.into(), json)
-        .map_err(|_| "the secrets couldn't be sealed".to_string())?;
-    Ok([SEALED, &nonce, &sealed].concat())
-}
-
-/// What [`seal`] sealed, or `None` for a file in another format, changed, or sealed on another
-/// computer.
-fn unseal(bytes: &[u8]) -> Option<Vec<u8>> {
-    use chacha20poly1305::{aead::Aead, KeyInit};
-    let rest = bytes.strip_prefix(SEALED)?;
-    let (nonce, sealed) = rest.split_at_checked(12)?;
-    let nonce: [u8; 12] = nonce.try_into().ok()?;
-    chacha20poly1305::ChaCha20Poly1305::new(&file_key())
-        .decrypt(&nonce.into(), sealed)
-        .ok()
+/// Format 1's key, only to read a file sealed before format 2: the constant and the machine id,
+/// which anyone on the computer can read (the bare constant where there is none).
+fn file_key_v1() -> chacha20poly1305::Key {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"horizon-launcher account-secrets v1");
+    if let Some(id) = machine_id() {
+        hash.update(id);
+    }
+    hash.finalize()
 }
 
 /// A file entry for an account signed out while the keychain was away: the keychain's copy, if any,
@@ -1428,7 +1626,8 @@ fn keychain_or_why() -> Result<Box<dyn SecretStore>, String> {
         if std::env::var_os("HORIZON_NO_KEYCHAIN").is_some() {
             return Err("HORIZON_NO_KEYCHAIN is set.".into());
         }
-        SystemStore.get("probe").map(|_| Box::new(SystemStore) as _)
+        let keychain = Bounded::new(SystemStore, KEYCHAIN_WAIT);
+        keychain.get("probe").map(|_| Box::new(keychain) as _)
     }
     #[cfg(not(all(
         not(test),
@@ -1452,7 +1651,10 @@ pub fn store() -> &'static dyn SecretStore {
         .get_or_init(|| {
             #[cfg(all(not(test), any(target_os = "linux", target_os = "freebsd")))]
             if std::env::var_os("HORIZON_NO_KEYCHAIN").is_none() {
-                return Box::new(Layered::new(Box::new(SystemStore), FileStore::launcher()));
+                return Box::new(Layered::new(
+                    Box::new(Bounded::new(SystemStore, KEYCHAIN_WAIT)),
+                    FileStore::launcher(),
+                ));
             }
             keychain_or_why().unwrap_or_else(|why| {
                 let _ = NO_KEYCHAIN_WHY.set(why);
@@ -1491,33 +1693,14 @@ pub fn in_secrets_file() -> bool {
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Accounts {
     pub accounts: Vec<Account>,
-    /// The UUID of the account the game starts with; none plays offline.
+    /// The UUID of the account the game starts with; none: the first one.
     pub selected: Option<String>,
-    /// Offline names the player keeps, to switch between (`--name`): no account, no skin.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub offline: Vec<String>,
-    /// The offline name that plays when no account is selected; none: the name the game made up
-    /// (`horizon-player.txt`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offline_selected: Option<String>,
-    /// Each offline name's skin and cape (`skins`), by the name in lowercase.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub looks: std::collections::BTreeMap<String, crate::skins::Look>,
+    /// Offline names an older launcher kept (`offline`), read only so that the next save also
+    /// deletes their skins and capes (`skins/<name>.png`, `skins/<name>.cape.png`). Its
+    /// `offline_selected` and `looks` are dropped on read.
+    #[serde(default, rename = "offline", skip_serializing)]
+    old_offline: Vec<String>,
 }
-
-/// Who plays, as the quick switch lists them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Player {
-    /// A Microsoft account, by UUID.
-    Microsoft(String),
-    /// An offline name.
-    Offline(String),
-    /// Offline as the name the game made up.
-    GameName,
-}
-
-const OFFLINE_NEEDS_OWNER: &str =
-    "Offline names need a Microsoft account that owns Minecraft: Java Edition in the launcher.";
 
 /// The secrets an account keeps in `store`, if it still has them there.
 fn secrets_in(store: &dyn SecretStore, uuid: &str) -> Option<Secrets> {
@@ -1526,12 +1709,6 @@ fn secrets_in(store: &dyn SecretStore, uuid: &str) -> Option<Secrets> {
         .ok()
         .flatten()
         .and_then(|s| serde_json::from_str(&s).ok())
-}
-
-/// Whether `name` can be an offline name: 3 to 16 letters, digits or `_`, as account names are.
-pub fn valid_offline_name(name: &str) -> bool {
-    (3..=16).contains(&name.chars().count())
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 impl Accounts {
@@ -1555,7 +1732,18 @@ impl Accounts {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, text + "\n").map_err(|e| e.to_string())
+        std::fs::write(path, text + "\n").map_err(|e| e.to_string())?;
+        // An older launcher's offline names: their skins and capes go too, missing files are fine.
+        if let Some(skins) = path.parent().map(|dir| dir.join("skins")) {
+            for name in &self.old_offline {
+                let key = name.to_ascii_lowercase();
+                for file in [format!("{key}.png"), format!("{key}.cape.png")] {
+                    let _ = std::fs::remove_file(skins.join(file));
+                }
+            }
+            let _ = std::fs::remove_dir(&skins);
+        }
+        Ok(())
     }
     pub fn selected(&self) -> Option<&Account> {
         let uuid = self.selected.as_ref()?;
@@ -1597,7 +1785,7 @@ impl Accounts {
         Ok(())
     }
     /// Whether an account here owned the game at its last check (the keychain's answer, no
-    /// request): what Play and offline names need.
+    /// request): what Play needs.
     pub fn has_owner(&self, store: &dyn SecretStore) -> bool {
         // The selected account first: it owning the game ends the search after one account's
         // item — every account's item read can ask for the keychain (macOS, #4912).
@@ -1607,110 +1795,13 @@ impl Accounts {
             .any(|a| secrets_in(store, &a.uuid).is_some_and(|s| s.owns))
     }
 
-    /// Who plays now.
-    pub fn player(&self) -> Player {
-        match (self.selected(), &self.offline_selected) {
-            (Some(a), _) => Player::Microsoft(a.uuid.clone()),
-            (None, Some(name)) => Player::Offline(name.clone()),
-            (None, None) => Player::GameName,
+    /// Plays as the signed-in account `uuid`.
+    pub fn play_as(&mut self, uuid: &str) -> Result<(), String> {
+        if !self.accounts.iter().any(|a| a.uuid == uuid) {
+            return Err("That account isn't signed in.".into());
         }
-    }
-
-    /// Plays as `who`: an account, an offline name (kept, only beside an account that owns the
-    /// game), or the game's own name.
-    pub fn play_as(&mut self, store: &dyn SecretStore, who: Player) -> Result<(), String> {
-        self.play_as_with(store, who, false)
-    }
-
-    /// [`Self::play_as`], where `offline_without_owner` (the window's hidden developer option,
-    /// `backend::Settings::dev_offline`) lets an offline name play without an account that owns
-    /// the game.
-    pub fn play_as_with(
-        &mut self,
-        store: &dyn SecretStore,
-        who: Player,
-        offline_without_owner: bool,
-    ) -> Result<(), String> {
-        match who {
-            Player::Microsoft(uuid) => {
-                if !self.accounts.iter().any(|a| a.uuid == uuid) {
-                    return Err("That account isn't signed in.".into());
-                }
-                self.selected = Some(uuid);
-            }
-            Player::Offline(name) => {
-                if !offline_without_owner && !self.has_owner(store) {
-                    return Err(OFFLINE_NEEDS_OWNER.into());
-                }
-                let name = self.add_offline(&name)?;
-                self.selected = None;
-                self.offline_selected = Some(name);
-            }
-            Player::GameName => {
-                self.selected = None;
-                self.offline_selected = None;
-            }
-        }
+        self.selected = Some(uuid.to_string());
         Ok(())
-    }
-
-    /// Keeps an offline name (once, in any case); returns it as kept.
-    fn add_offline(&mut self, name: &str) -> Result<String, String> {
-        let name = name.trim();
-        if !valid_offline_name(name) {
-            return Err(format!(
-                "{name}: an offline name is 3 to 16 letters, digits or _"
-            ));
-        }
-        if let Some(kept) = self.offline.iter().find(|n| n.eq_ignore_ascii_case(name)) {
-            return Ok(kept.clone());
-        }
-        self.offline.push(name.to_string());
-        Ok(name.to_string())
-    }
-
-    /// Forgets an offline name: its look and its skin and cape files (`skins`) go with it; if
-    /// it was playing, the game's own name plays.
-    pub fn remove_offline(&mut self, name: &str, skins_dir: &Path) -> Result<(), String> {
-        let before = self.offline.len();
-        self.offline.retain(|n| !n.eq_ignore_ascii_case(name));
-        self.looks.remove(&name.to_ascii_lowercase());
-        if self.offline.len() == before {
-            return Err(format!("No offline name {name}."));
-        }
-        crate::skins::forget(skins_dir, name);
-        if self
-            .offline_selected
-            .as_ref()
-            .is_some_and(|n| n.eq_ignore_ascii_case(name))
-        {
-            self.offline_selected = None;
-        }
-        Ok(())
-    }
-
-    /// An offline name's look (the default: no skin of its own).
-    pub fn look(&self, name: &str) -> crate::skins::Look {
-        self.looks
-            .get(&name.to_ascii_lowercase())
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// The game's variables for the offline name that plays: its skin and cape.
-    pub fn look_env(&self) -> Vec<(&'static str, String)> {
-        match self.name_arg() {
-            Some(name) => crate::skins::env(&crate::skins::dir(), name, &self.look(name)),
-            None => Vec::new(),
-        }
-    }
-
-    /// The game's `--name` for this run: the offline name, when one plays.
-    pub fn name_arg(&self) -> Option<&str> {
-        match self.selected() {
-            Some(_) => None,
-            None => self.offline_selected.as_deref(),
-        }
     }
 
     /// A renewed profile (its name or skin changed) in place of the old one; who plays stays.
@@ -1720,8 +1811,7 @@ impl Accounts {
         }
     }
 
-    /// Sign out: the secrets leave the keychain, the account the list. Offline names stay, but
-    /// play only once an account that owns the game is back.
+    /// Sign out: the secrets leave the keychain, the account the list.
     pub fn remove(&mut self, store: &dyn SecretStore, uuid: &str) -> Result<(), String> {
         let _operation = session::lock(store)?;
         store.delete(uuid)?;
@@ -1734,19 +1824,42 @@ impl Accounts {
 }
 
 /// No account in the launcher owns Minecraft: Java Edition: the game must not start.
-#[derive(Debug, PartialEq)]
-pub struct NoOwner;
+#[derive(Debug, Default, PartialEq)]
+pub struct NoOwner {
+    /// Why a sign-in couldn't be read, when the keyring didn't give it (#12179), or why the
+    /// account that plays can't: what is said instead of the refusal, which would tell a
+    /// signed-in player to sign in.
+    pub keyring: Option<String>,
+}
 impl std::fmt::Display for NoOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{NEEDS_OWNER}.")
+        match &self.keyring {
+            Some(why) => write!(f, "{why}"),
+            None => write!(f, "{NEEDS_OWNER}."),
+        }
+    }
+}
+
+impl NoOwner {
+    /// The same refusal for the window, which has Settings rather than a command to name.
+    pub fn in_window(&self) -> String {
+        use crate::i18n::tr;
+        if let Some(why) = &self.keyring {
+            return why.clone();
+        }
+        format!(
+            "{}. {}",
+            tr(NEEDS_OWNER),
+            tr("Open Settings and sign in under Account.")
+        )
     }
 }
 
 /// The owner gate's pass for one launch.
 #[derive(Debug, Default)]
 pub struct Launch {
-    /// The selected account and its renewed session; none when an offline name plays, or when
-    /// its sign-in couldn't be renewed now (`offline` says why).
+    /// The selected account and its renewed session; none when its sign-in couldn't be renewed
+    /// now (`offline` says why).
     pub session: Option<(Account, Secrets)>,
     /// Why the selected account plays without its session this time.
     pub offline: Option<String>,
@@ -1782,13 +1895,31 @@ pub fn launch(
     order.sort_by_key(|a| Some(&a.uuid) != selected.as_ref());
     let mut pass = Launch::default();
     let mut owned = false;
+    let mut unreadable = None;
     for account in order {
         if owned {
             break;
         }
         let plays = Some(&account.uuid) == selected.as_ref();
         let operation = session::lock(store);
-        let Some(secrets) = secrets_in(store, &account.uuid) else {
+        let read = match store.get(&account.uuid) {
+            Ok(text) => text.and_then(|s| serde_json::from_str::<Secrets>(&s).ok()),
+            Err(why) => {
+                // Not "signed out": the keyring didn't say (#12179). With no owner, the refusal
+                // says this instead.
+                let said = crate::i18n::trf(
+                    "Can't read {name}'s sign-in: {why}",
+                    &[("name", &account.name), ("why", &why)],
+                );
+                eprintln!("Horizon: {said}");
+                if plays {
+                    pass.offline = Some(said.clone());
+                }
+                unreadable = Some(said);
+                continue;
+            }
+        };
+        let Some(secrets) = read else {
             if plays {
                 pass.offline = Some(format!(
                     "{} is no longer signed in on this computer. Sign in again.",
@@ -1839,24 +1970,36 @@ pub fn launch(
     if owned {
         Ok(pass)
     } else {
-        Err(NoOwner)
+        Err(NoOwner {
+            keyring: unreadable,
+        })
     }
 }
 
-/// The owner gate before the game starts. With the window's hidden developer option
-/// (`backend::Settings::dev_offline`, `offline_without_owner`) no owner is no refusal: the game
-/// starts offline, without a session and without an `owner`. Downloads never come through here:
-/// `backend::download_for_owner` asks [`launch`] itself, so the option never downloads the game.
+/// The owner gate before the game starts: [`launch`], where the account that plays (the selected
+/// one, else the first) must own the game itself, by the services' answer or, when they can't be
+/// asked, its last one. Never another account's ownership for a name of its own.
 pub fn launch_for_game(
     ep: &Endpoints,
     client_id: Option<&str>,
     store: &dyn SecretStore,
     accounts: &mut Accounts,
-    offline_without_owner: bool,
 ) -> Result<Launch, NoOwner> {
-    match launch(ep, client_id, store, accounts) {
-        Err(NoOwner) if offline_without_owner => Ok(Launch::default()),
-        pass => pass,
+    if accounts.selected().is_none() {
+        accounts.selected = accounts.accounts.first().map(|a| a.uuid.clone());
+    }
+    let pass = launch(ep, client_id, store, accounts)?;
+    let owns = accounts
+        .selected()
+        .and_then(|a| secrets_in(store, &a.uuid))
+        .is_some_and(|s| s.owns);
+    if owns {
+        Ok(pass)
+    } else {
+        // Why that account can't play (it doesn't own the game, signed out, an unread keyring).
+        Err(NoOwner {
+            keyring: pass.offline,
+        })
     }
 }
 
@@ -1868,6 +2011,12 @@ pub fn write_session_file(
     secrets: &Secrets,
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    // The folder too is this user's only (the files already are).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
     // Leftovers of games that never started (refused by the game after two minutes anyway).
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
@@ -1900,6 +2049,72 @@ pub fn write_session_file(
     });
     std::io::Write::write_all(&mut file, body.to_string().as_bytes()).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// How long a game takes a session file: it refuses one older than this (the game's
+/// `MAX_SESSION_FILE_AGE`), so the launcher deletes it then if it is still there.
+const SESSION_FILE_LIFE: Duration = Duration::from_secs(120);
+
+/// The session files this launcher wrote for games it starts, until they are gone: a game
+/// deletes each as it reads it; the rest go when the game would refuse them anyway
+/// ([`SESSION_FILE_LIFE`], a game that never started or crashed first) or when the launch failed
+/// ([`discard_unread_sessions`]). Nothing with a token stays on disk.
+static UNREAD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// [`write_session_file`] for a game this launcher is about to start (see [`UNREAD`]).
+fn write_launch_session_file(
+    dir: &Path,
+    account: &Account,
+    secrets: &Secrets,
+) -> Result<PathBuf, String> {
+    let path = write_session_file(dir, account, secrets)?;
+    let Ok(mut unread) = UNREAD.lock() else {
+        return Ok(path);
+    };
+    if unread.is_empty() {
+        // One reaper while files wait; it ends with the list (under its lock, so a file added
+        // as it ends starts the next).
+        let _ = std::thread::Builder::new()
+            .name("Session files".into())
+            .spawn(|| loop {
+                std::thread::sleep(Duration::from_secs(5));
+                let Ok(mut unread) = UNREAD.lock() else {
+                    return;
+                };
+                reap(&mut unread, SESSION_FILE_LIFE);
+                if unread.is_empty() {
+                    return;
+                }
+            });
+    }
+    unread.push(path.clone());
+    Ok(path)
+}
+
+/// Deletes the files of `unread` older than `life` (the game would refuse them) and forgets
+/// those gone (read).
+fn reap(unread: &mut Vec<PathBuf>, life: Duration) {
+    unread.retain(|path| {
+        let waiting = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .is_ok_and(|m| m.elapsed().is_ok_and(|age| age <= life));
+        if !waiting {
+            let _ = std::fs::remove_file(path);
+        }
+        waiting
+    });
+}
+
+/// Deletes the session files written for a launch whose game didn't start, or has ended: any it
+/// didn't read is left over (a game deletes those it reads).
+pub fn discard_unread_sessions() {
+    let files = UNREAD
+        .lock()
+        .map(|mut unread| std::mem::take(&mut *unread))
+        .unwrap_or_default();
+    for path in files {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Called under the account-operation lock, after the final profile is known. Rejected or
@@ -2009,35 +2224,43 @@ impl SignIn {
     }
 }
 
+/// What the game about to start gets from the accounts.
+#[derive(Debug, Default)]
+pub struct GameSession {
+    /// The playing account's session (`--session-file`); none: offline.
+    pub file: Option<PathBuf>,
+    /// Why the account plays offline this time, if it does.
+    pub offline: Option<String>,
+    /// The other accounts' sessions, for splitscreen players (`account_sessions`).
+    pub env: Vec<(&'static str, String)>,
+}
+
 /// The owner gate for the game about to start, then the selected account's session in a file
-/// for it: the file (none: offline) and why the account plays offline this time, if it does.
-/// `offline_without_owner`: see [`launch_for_game`].
-pub fn session_for_game(
-    game_home: &Path,
-    offline_without_owner: bool,
-) -> Result<(Option<PathBuf>, Option<String>), NoOwner> {
+/// for it, and the other accounts' for its splitscreen players.
+pub fn session_for_game(game_home: &Path) -> Result<GameSession, NoOwner> {
     let mut accounts = Accounts::load();
     let pass = launch_for_game(
         &Endpoints::live(),
         client_id().as_deref(),
         store(),
         &mut accounts,
-        offline_without_owner,
     )?;
+    let env = split_sessions(
+        game_home,
+        &mut accounts,
+        pass.session.as_ref().map(|(a, _)| a.uuid.as_str()),
+    );
     if let Err(e) = accounts.save() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
-    Ok(session_file(game_home, pass))
+    Ok(session_file(game_home, pass, env))
 }
 
 /// [`session_for_game`] for one launch as `who` (`play --account`, a signed-in account): who
 /// plays changes for this launch only, so several games can play as several accounts at once
 /// (#4952). What the services renewed (tokens, names, skins) is still kept; which account
 /// `account select` picked is not touched.
-pub fn session_for_game_as(
-    game_home: &Path,
-    who: &Player,
-) -> Result<(Option<PathBuf>, Option<String>), String> {
+pub fn session_for_game_as(game_home: &Path, who: &str) -> Result<GameSession, String> {
     let mut accounts = Accounts::load();
     let pass = launch_as(
         &Endpoints::live(),
@@ -2049,7 +2272,16 @@ pub fn session_for_game_as(
     if let Err(e) = accounts.save() {
         eprintln!("Horizon: the accounts are not saved: {e}");
     }
-    Ok(session_file(game_home, pass?))
+    let pass = pass?;
+    let env = split_sessions(
+        game_home,
+        &mut accounts,
+        pass.session.as_ref().map(|(a, _)| a.uuid.as_str()),
+    );
+    if let Err(e) = accounts.save() {
+        eprintln!("Horizon: the accounts are not saved: {e}");
+    }
+    Ok(session_file(game_home, pass, env))
 }
 
 /// The owner gate as `who`, on `accounts`, which keeps its choice of player.
@@ -2058,33 +2290,171 @@ fn launch_as(
     client_id: Option<&str>,
     store: &dyn SecretStore,
     accounts: &mut Accounts,
-    who: &Player,
+    who: &str,
 ) -> Result<Launch, String> {
-    let chosen = (
-        accounts.selected.clone(),
-        accounts.offline_selected.clone(),
-        accounts.offline.clone(),
-    );
+    let chosen = accounts.selected.clone();
     let pass = accounts
-        .play_as(store, who.clone())
-        .and_then(|()| launch(ep, client_id, store, accounts).map_err(|e| e.to_string()));
-    (
-        accounts.selected,
-        accounts.offline_selected,
-        accounts.offline,
-    ) = chosen;
+        .play_as(who)
+        .and_then(|()| launch_for_game(ep, client_id, store, accounts).map_err(|e| e.to_string()));
+    accounts.selected = chosen;
     pass
 }
 
-/// The game's session file for a launch that passed the gate, or why it plays offline.
-fn session_file(game_home: &Path, pass: Launch) -> (Option<PathBuf>, Option<String>) {
-    let Some((account, secrets)) = pass.session else {
-        return (None, pass.offline);
+/// The game's session files for a launch that passed the gate.
+fn session_file(game_home: &Path, pass: Launch, env: Vec<(&'static str, String)>) -> GameSession {
+    let mut out = GameSession {
+        env,
+        offline: pass.offline,
+        ..GameSession::default()
     };
-    match write_session_file(&game_home.join("sessions"), &account, &secrets) {
-        Ok(file) => (Some(file), None),
-        Err(e) => (None, Some(e)),
+    if let Some((account, secrets)) = pass.session {
+        match write_launch_session_file(&game_home.join("sessions"), &account, &secrets) {
+            Ok(file) => out.file = Some(file),
+            Err(e) => out.offline = Some(e),
+        }
     }
+    out
+}
+
+fn split_sessions(
+    game_home: &Path,
+    accounts: &mut Accounts,
+    playing: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    if splitscreen_on(game_home) {
+        // The launch may override the saved player.
+        let selected = std::mem::replace(&mut accounts.selected, playing.map(str::to_owned));
+        let env = account_sessions(
+            &Endpoints::live(),
+            client_id().as_deref(),
+            store(),
+            &game_home.join("sessions"),
+            accounts,
+        );
+        accounts.selected = selected;
+        env
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether the game's Splitscreen setting is on (`horizon-extras.txt`, `splitscreen:true`): only
+/// then do the other accounts' sessions go to it.
+fn splitscreen_on(game_home: &Path) -> bool {
+    std::fs::read_to_string(game_home.join("horizon-extras.txt"))
+        .is_ok_and(|text| text.lines().any(|l| l.trim() == "splitscreen:true"))
+}
+
+/// The signed-in accounts but the one that plays, each its session in a file of its own, for
+/// the game's splitscreen players to sign in with (`HORIZON_ACCOUNT_SESSIONS`: name, uuid and
+/// file each). A token known to own the game and not due goes as it is; otherwise it is renewed
+/// and asked about (`check`), and an account that can't be renewed, doesn't own the game or
+/// whose token names another profile is left out: the game starts all the same. Nothing with one
+/// account.
+/// How long Play spends renewing the other accounts' sessions, in all: past it, the rest are
+/// offered only with a token that still holds (no request starts; one under way finishes).
+const OTHERS_WAIT: Duration = Duration::from_secs(10);
+
+fn account_sessions(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    dir: &Path,
+    accounts: &mut Accounts,
+) -> Vec<(&'static str, String)> {
+    account_sessions_until(
+        ep,
+        client_id,
+        store,
+        dir,
+        accounts,
+        Instant::now() + OTHERS_WAIT,
+    )
+}
+
+fn account_sessions_until(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    dir: &Path,
+    accounts: &mut Accounts,
+    deadline: Instant,
+) -> Vec<(&'static str, String)> {
+    let others: Vec<Account> = accounts
+        .accounts
+        .iter()
+        .filter(|a| Some(&a.uuid) != accounts.selected.as_ref())
+        .cloned()
+        .collect();
+    let mut list = Vec::new();
+    for account in others {
+        let skipped =
+            |reason: &str| json!({ "name": account.name, "uuid": account.uuid, "skipped": reason });
+        // Under the account lock, as every renewal is: a refresh token Microsoft rotates here is
+        // not lost to another launcher renewing the same account at once. Still busy at the
+        // deadline: no request, the token while it holds.
+        let operation = session::lock_within(
+            store,
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
+        let Some(secrets) = secrets_in(store, &account.uuid) else {
+            list.push(skipped("Sign in again in the launcher."));
+            continue;
+        };
+        let fallback = skipped("Sign in again in the launcher.");
+        let before = serde_json::to_string(&secrets).ok();
+        let uuid = account.uuid.clone();
+        // An account the services sent back to sign-in (a refused refresh, a token now for
+        // another profile) is never handed over, whatever its token's time says.
+        let holds = |s: &Secrets, margin: u64| {
+            s.owns && !s.sign_in_required && s.minecraft_expires_at > now() + margin
+        };
+        let known = holds(&secrets, RENEW_BEFORE);
+        let late = operation.is_err() || Instant::now() >= deadline;
+        let (account, secrets) = match known {
+            true => (Some(account), secrets),
+            // Out of time: its token while it holds, else Sign in again.
+            false if late => (holds(&secrets, 60).then_some(account), secrets),
+            false => match check(ep, client_id, &account, secrets) {
+                Check::Owns(renewed, secrets) => {
+                    accounts.update(renewed.clone());
+                    (Some(renewed), secrets)
+                }
+                Check::DoesNot(secrets) => (None, secrets),
+                Check::NoAnswer(e, secrets) => {
+                    eprintln!("{}'s session for splitscreen: {e}", account.name);
+                    // Its token may still hold (no network): offered only while it does. A token
+                    // for another profile is marked sign-in required, so it never is.
+                    (holds(&secrets, 60).then_some(account), secrets)
+                }
+            },
+        };
+        // A renewed token, or the services' answer, kept for the next launch.
+        let after = serde_json::to_string(&secrets).ok();
+        if let (true, Some(text)) = (after != before, after) {
+            let _ = store.set(&uuid, &text);
+        }
+        drop(operation);
+        let Some(account) = account else {
+            list.push(if secrets.owns { fallback } else {
+                json!({ "name": fallback["name"], "uuid": uuid, "skipped": "This account needs Minecraft: Java Edition ownership confirmed in the launcher." })
+            });
+            continue;
+        };
+        match write_launch_session_file(dir, &account, &secrets) {
+            Ok(file) => {
+                list.push(json!({ "name": account.name, "uuid": account.uuid, "file": file }))
+            }
+            Err(_) => list.push(fallback),
+        }
+    }
+    if list.is_empty() {
+        return Vec::new();
+    }
+    vec![(
+        "HORIZON_ACCOUNT_SESSIONS",
+        serde_json::Value::from(list).to_string(),
+    )]
 }
 
 /// Who plays the real Minecraft: Java Edition (a Java instance), past the owner gate itself
@@ -2122,7 +2492,7 @@ fn java_player_with(
         .session
         .or(pass.owner)
         .or_else(kept)
-        .ok_or_else(|| NoOwner.to_string())?;
+        .ok_or_else(|| NoOwner::default().to_string())?;
     Ok(crate::java_launch::Player {
         name: account.name,
         uuid: account.uuid,

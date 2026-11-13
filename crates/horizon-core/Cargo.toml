@@ -12,6 +12,8 @@ rng-trace = []
 
 [dependencies]
 libm = "=0.2.16"
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+serde = { version = "1", features = ["derive"] }
 
 [[bin]]
 name = "horizon-parity"

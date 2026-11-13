@@ -158,6 +158,11 @@ impl MaterialRuleLibrary {
                 density: self.compiler.get_sampler(self.roots[roots[0]])?,
                 richness: self.compiler.get_sampler(self.roots[roots[1]])?,
                 filler_gap: self.compiler.get_sampler(self.roots[roots[2]])?,
+                positive_y: self
+                    .compiler
+                    .graph()
+                    .positive_y_bounds(self.roots[roots[0]])?
+                    .unwrap_or([i32::MIN, i32::MAX]),
             },
         });
         self.compiled.insert(key, value.clone());
@@ -268,18 +273,20 @@ impl Loader<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        DATA_VERSION,
-        nbt::Tag,
-        registry::BlockRegistry,
-        worldgen::{
-            anchor::WorldGenerationContext,
-            material_condition::{MaterialConditions, MaterialSurfaceQueries},
-        },
-    };
     use horizon_core::{
         position::BlockPos,
         random::{LegacyRandom, RandomSource},
+    };
+    use {
+        crate::{
+            DATA_VERSION,
+            registry::BlockRegistry,
+            worldgen::{
+                anchor::WorldGenerationContext,
+                material_condition::{MaterialConditions, MaterialSurfaceQueries},
+            },
+        },
+        horizon_core::nbt::Tag,
     };
     struct Surface;
     impl MaterialSurfaceQueries for Surface {

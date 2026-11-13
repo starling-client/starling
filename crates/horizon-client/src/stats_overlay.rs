@@ -68,7 +68,7 @@ impl StatsView {
                         "cpu {:.1} ms   gpu {:.1} ms   worst {:.1} ms",
                         f.cpu_ms, f.gpu_ms, f.worst_ms
                     ),
-                    color::TEXT,
+                    color::text(),
                 ));
             }
             None => lines.push(("no frames yet".into(), color::MUTED)),
@@ -80,7 +80,7 @@ impl StatsView {
                 mb(s.pss_bytes),
                 mb(s.heap_bytes)
             ),
-            color::TEXT,
+            color::text(),
         ));
         lines.push((
             format!(
@@ -88,7 +88,7 @@ impl StatsView {
                 mb(self.gpu_allocated),
                 mb(self.gpu_reserved)
             ),
-            color::TEXT,
+            color::text(),
         ));
         lines.push((
             format!(
@@ -99,14 +99,14 @@ impl StatsView {
                 self.meshing,
                 self.pending_uploads
             ),
-            color::TEXT,
+            color::text(),
         ));
         lines.push((
             format!(
                 "draw calls {} ({} sections)",
                 self.draw_calls, self.drawn_sections
             ),
-            color::TEXT,
+            color::text(),
         ));
         let clock = s
             .cpu_mhz
@@ -118,7 +118,7 @@ impl StatsView {
                 celsius(s.gpu_celsius),
                 celsius(s.battery_celsius)
             ),
-            color::TEXT,
+            color::text(),
         ));
         let thermal = match s.thermal_status {
             Some(status) => {
@@ -161,7 +161,7 @@ impl StatsView {
             width,
             height,
             6.0,
-            color::with_alpha(color::BG, 0.72),
+            color::with_alpha(color::bg(), 0.72),
         );
         for (i, (line, tint)) in lines.iter().enumerate() {
             ui.text(

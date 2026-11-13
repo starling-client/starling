@@ -1,0 +1,318 @@
+//! Source-only native packages. Reading a package never executes its code.
+use super::Facts;
+use std::{collections::BTreeMap, io::Read, path::Path};
+
+pub const MIXINS_REV: &str = "5a64af938ec86b00d53d16a408aabc0038fb3e57";
+
+/// Where the prebuilt game (#589) is released: one `prebuilt-<commit>` prerelease per daily build
+/// of this fork's main (Diverges from upstream: horizon-rust/horizon has none).
+pub const PREBUILT_REPO: &str = "arismoko/horizon";
+/// The release tag before a prebuilt game's Horizon commit.
+pub const PREBUILT_TAG: &str = "prebuilt-";
+
+/// Every prebuilt archive's name starts with this, as `prebuilt-game.yml` names it. The `v3` is the
+/// archive's layout, the one the launcher reads: a release made before it has no archive by this
+/// name, so its commit builds from source. Bump it with the workflow when the layout changes.
+pub const PREBUILT_ARCHIVE: &str = "horizon-prebuilt-v3-";
+
+/// The prebuilt game's archive for a rustc host target.
+pub fn prebuilt_archive(host: &str, server: bool) -> String {
+    let side = if server { "-server" } else { "" };
+    format!("{PREBUILT_ARCHIVE}{host}{side}.tar.gz")
+}
+
+/// Whether a valid package is native, irrespective of its install folder: a flat package with
+/// native code, or Starling's `horizon-native.json` bundle ([`legacy`]).
+pub fn holds(path: &Path) -> bool {
+    legacy::holds(path) || crate::Package::read(path).is_ok_and(|package| package.is_native())
+}
+
+pub mod legacy;
+
+/// Starling: a native mod in either format a phone holds: Horizon's flat package ([`Bundle`]), or
+/// the bundle the registry's index publishes as `.hnmod` and Starling's build service compiles
+/// ([`legacy::Bundle`]), as 0.8.0 read them.
+pub enum Any {
+    Flat(Bundle),
+    Legacy(legacy::Bundle),
+}
+
+impl Any {
+    pub fn read(path: &Path) -> Result<Self, String> {
+        if legacy::holds(path) {
+            legacy::Bundle::read(path).map(Any::Legacy)
+        } else {
+            Bundle::read(path).map(Any::Flat)
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        match self {
+            Any::Flat(b) => &b.manifest.id,
+            Any::Legacy(b) => &b.manifest.id,
+        }
+    }
+
+    pub fn version(&self) -> &str {
+        match self {
+            Any::Flat(b) => &b.manifest.version,
+            Any::Legacy(b) => &b.manifest.version,
+        }
+    }
+
+    pub fn facts(&self) -> Facts {
+        match self {
+            Any::Flat(b) => b.facts(),
+            Any::Legacy(b) => b.manifest.facts(),
+        }
+    }
+
+    /// What Starling's build service is sent for it.
+    pub fn for_build(&self) -> Result<Vec<u8>, String> {
+        match self {
+            Any::Flat(b) => b.for_build(),
+            Any::Legacy(b) => b.for_build(),
+        }
+    }
+}
+
+/// A flat native mod and its checked, archive-relative files.
+pub struct Bundle {
+    pub manifest: crate::Manifest,
+    pub files: BTreeMap<String, Vec<u8>>,
+}
+
+impl Bundle {
+    pub fn read(path: &Path) -> Result<Self, String> {
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        let package = crate::Package::read_zip(&mut zip)?;
+        if !package.is_native() {
+            return Err("not a native package".into());
+        }
+        let mut files = BTreeMap::new();
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+            if entry.is_dir() {
+                continue;
+            }
+            let name = entry.name().map_err(|e| e.to_string())?.into_owned();
+            let size = entry.size();
+            let mut bytes = Vec::new();
+            (&mut entry)
+                .take(size.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("{name}: {e}"))?;
+            if bytes.len() as u64 != size {
+                return Err(format!("{name}: invalid expanded size"));
+            }
+            files.insert(name, bytes);
+        }
+        Ok(Self {
+            manifest: package.manifest,
+            files,
+        })
+    }
+
+    /// The bundle as the Android build service needs it (Starling): its manifest and sources,
+    /// without the content only the game reads (`assets/`, `data/`), so a mod's assets don't
+    /// count against the request's size. The same files always make the same bytes, which is
+    /// how the service knows it built them before.
+    pub fn for_build(&self) -> Result<Vec<u8>, String> {
+        use std::io::Write as _;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .last_modified_time(zip::DateTime::default());
+        for (name, bytes) in &self.files {
+            if name.starts_with("assets/") || name.starts_with("data/") {
+                continue;
+            }
+            zip.start_file(name.as_str(), options)
+                .map_err(|e| e.to_string())?;
+            zip.write_all(bytes).map_err(|e| e.to_string())?;
+        }
+        Ok(zip.finish().map_err(|e| e.to_string())?.into_inner())
+    }
+
+    /// Registry facts from the one package manifest, never Cargo metadata.
+    pub fn facts(&self) -> Facts {
+        let native = self.manifest.native.as_ref().expect("native bundle");
+        Facts {
+            id: Some(self.manifest.id.clone()),
+            version: Some(self.manifest.version.clone()),
+            api: format!("native-1/{}/{}", native.horizon, native.mixins),
+            game: Some(native.game.clone()),
+            ..Facts::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn manifest() -> String {
+        format!(
+            "id = 'veinminer'\nname = 'Veinminer'\nversion = '0.3.0'\napi = '0.2'\ncapabilities = ['registries']\n[native]\ngame = '26.3'\nhorizon = '{}'\nmixins = '{}'\n",
+            "a".repeat(40),
+            "b".repeat(40)
+        )
+    }
+
+    fn read(name: &str, manifest: &str, extras: &[(&str, &[u8])]) -> Result<Bundle, String> {
+        let path =
+            std::env::temp_dir().join(format!("native-bundle-{name}-{}.hmod", std::process::id()));
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in [
+            (crate::manifest::MANIFEST, manifest.as_bytes()),
+            (
+                "Cargo.toml",
+                b"[package]\nname='other'\nversion='9'\n".as_slice(),
+            ),
+            ("src/lib.rs", b"fn hook() {}".as_slice()),
+        ]
+        .into_iter()
+        .chain(extras.iter().copied())
+        {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        let result = Bundle::read(&path);
+        std::fs::remove_file(path).unwrap();
+        result
+    }
+
+    #[test]
+    fn facts_use_manifest_identity_and_exact_build_pins() {
+        let bundle = read("facts", &manifest(), &[]).unwrap();
+        let facts = bundle.facts();
+        assert_eq!(facts.id.as_deref(), Some("veinminer"));
+        assert_eq!(facts.version.as_deref(), Some("0.3.0"));
+        assert_eq!(
+            facts.api,
+            format!("native-1/{}/{}", "a".repeat(40), "b".repeat(40))
+        );
+        assert_eq!(facts.game.as_deref(), Some("26.3"));
+    }
+
+    #[test]
+    fn package_carries_resources_and_code_together() {
+        let bytes = [0, 255, 42];
+        let bundle = read(
+            "resources",
+            &manifest(),
+            &[
+                ("data/veinminer/table.bin", &bytes),
+                ("assets/veinminer/lang/en_us.json", b"{}"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(bundle.files["data/veinminer/table.bin"], bytes);
+        assert_eq!(bundle.files["src/lib.rs"], b"fn hook() {}");
+        assert!(bundle.files.contains_key(crate::manifest::MANIFEST));
+    }
+
+    #[test]
+    fn what_goes_to_the_build_service_leaves_the_content_out_and_repeats() {
+        let big = [7u8; 4096];
+        let bundle = read(
+            "for-build",
+            &manifest(),
+            &[
+                ("assets/veinminer/big.bin", &big),
+                ("data/veinminer/loot.json", b"{}"),
+            ],
+        )
+        .unwrap();
+        let sent = bundle.for_build().unwrap();
+        assert_eq!(sent, bundle.for_build().unwrap());
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&sent)).unwrap();
+        let mut names: Vec<String> = (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned())
+            .collect();
+        names.sort();
+        let mut expected = vec![
+            crate::manifest::MANIFEST.to_string(),
+            "Cargo.toml".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        expected.sort();
+        assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn refuses_old_paths_unsafe_entries_and_unknown_fields() {
+        for (i, name) in [
+            "horizon-native.json",
+            "horizon-mixin.toml",
+            "native/rust/src/lib.rs",
+            "rust/src/lib.rs",
+            "../escape.rs",
+            "src/../escape.rs",
+            "src/blob.bin",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(
+                read(&format!("invalid-{i}"), &manifest(), &[(name, b"bad")]).is_err(),
+                "{name}"
+            );
+        }
+        assert!(read("unknown", &(manifest() + "unexpected = true\n"), &[]).is_err());
+        assert!(read("pin", &manifest().replace(&"a".repeat(40), "main"), &[]).is_err());
+        assert!(
+            read(
+                "magic",
+                &manifest(),
+                &[("assets/veinminer/file.bin", b"MZ bad")]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn classification_uses_the_validated_package_not_install_folder() {
+        let root = std::env::temp_dir().join(format!("native-kind-{}", std::process::id()));
+        for (folder, native) in [("content", true), ("native", false)] {
+            let dir = root.join(folder);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("test.hmod");
+            let text = manifest();
+            let (text, files) = if native {
+                (
+                    text.as_str(),
+                    vec![
+                        (
+                            "Cargo.toml",
+                            b"[package]\nname='example'\nversion='1'".as_slice(),
+                        ),
+                        ("src/lib.rs", b"fn hook() {}".as_slice()),
+                    ],
+                )
+            } else {
+                (text.split("[native]").next().unwrap(), vec![])
+            };
+            std::fs::write(&path, crate::Package::write_files(text, &files).unwrap()).unwrap();
+            assert_eq!(holds(&path), native);
+            if native {
+                let directory = dir.join("source");
+                zip::ZipArchive::new(std::fs::File::open(&path).unwrap())
+                    .unwrap()
+                    .extract(&directory)
+                    .unwrap();
+                assert!(holds(&directory));
+                std::fs::remove_file(directory.join(crate::manifest::MANIFEST)).unwrap();
+                assert!(
+                    !holds(&directory),
+                    "Cargo alone is not a valid native package"
+                );
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

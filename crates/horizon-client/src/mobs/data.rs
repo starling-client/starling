@@ -6,12 +6,22 @@
 use super::keyframes::Animation;
 use super::path::PathType;
 use crate::blocks::{BlockFacts, Fluid};
+use horizon_assets::resource_source::ResourceRoot;
+use horizon_world::registry::BlockStateId;
+pub use mod_api::entity::mobs::PathComputationType;
 use serde_json::Value;
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    path::Path,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
-pub const LAND: u16 = 1;
-pub const WATER: u16 = 2;
-pub const AIR: u16 = 4;
+const LAND: u16 = 1;
+const WATER: u16 = 2;
+const AIR: u16 = 4;
+/// Set in a state's override byte once a mod part answered `isPathfindable` for it.
+const OVERRIDDEN: u8 = 0x80;
 /// `isValidSpawn` for a typical monster (zombie).
 pub const VALID_SPAWN: u16 = 8;
 /// `isValidSpawn` for ocelots/parrots (leaves allowed).
@@ -25,6 +35,15 @@ pub const STURDY_TOP: u16 = 256;
 /// BlockState.isSolid
 pub const SOLID: u16 = 512;
 pub const SOLID_RENDER: u16 = 1024;
+
+/// The path flag bit of `kind`.
+fn path_bit(kind: PathComputationType) -> u16 {
+    match kind {
+        PathComputationType::Land => LAND,
+        PathComputationType::Water => WATER,
+        PathComputationType::Air => AIR,
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct StateData {
@@ -42,6 +61,9 @@ pub enum Placement {
 }
 pub struct MobData {
     pub states: Vec<StateData>,
+    /// Each state's `isPathfindable` answers a mod part gave (see [`MobData::set_pathfindable`]),
+    /// by state: [`OVERRIDDEN`] plus one bit per [`PathComputationType`]. Zero for the rest.
+    pub pathfindable_overrides: std::sync::OnceLock<Vec<AtomicU8>>,
     pub placements: HashMap<String, Placement>,
     /// Each entity type's `SpawnPlacements.getHeightmapType`.
     pub heightmaps: HashMap<String, String>,
@@ -66,13 +88,20 @@ pub struct MobData {
     pub entity_tags: HashMap<String, std::collections::HashSet<String>>,
     /// The villager POI type of every block state (`PoiTypes.forState`),
     /// worked out the first time a villager looks for one.
-    pub pois: std::sync::OnceLock<Vec<Option<super::villager_brain::Poi>>>,
+    pub pois: std::sync::OnceLock<Vec<Option<horizon_world::poi::PoiType>>>,
     /// [`MobData::placement`] of each species' entity type (by `Species as
     /// usize`), worked out the first time a spawn asks.
     pub species_placements: std::sync::OnceLock<Vec<Placement>>,
+    /// The spawn rules mods declared (`RegisterSpawnPlacementsEvent`), by
+    /// entity type id: resolved once at load by [`MobData::register_mod_spawn`],
+    /// empty with no mod. Their placement type and heightmap sit in
+    /// [`MobData::placements`] and [`MobData::heightmaps`] as vanilla's do.
+    pub mod_spawns: HashMap<String, mod_api::SpawnPlacementRule>,
 }
 impl MobData {
-    pub fn load(root: &Path, facts: &BlockFacts) -> Self {
+    pub fn load(root: &ResourceRoot, facts: &BlockFacts) -> Self {
+        let source = root.source();
+        let root = root.prepared();
         let parsed: Option<Value> = fs::read(root.join("mob-data.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok());
@@ -95,13 +124,14 @@ impl MobData {
         data.entity_tags =
             crate::items::load_tags(root, "entity_type", &horizon_world::loot::PackOverlay::NONE)
                 .unwrap_or_default();
-        data.villager_hats = std::sync::RwLock::new(super::villager_hats::VillagerHats::load(root));
+        data.villager_hats =
+            std::sync::RwLock::new(super::villager_hats::VillagerHats::load(source));
         data.armor_atlases = std::sync::RwLock::new(crate::custom_armor::load(root));
         data.equipment = std::sync::RwLock::new(crate::equipment::load(root));
-        let random = horizon_optifine::random_textures::RandomTextures::scan(root);
-        let blinks = horizon_optifine::blink::Blinks::scan(root, &random);
-        let mut emissive = horizon_optifine::emissive::Emissive::scan(root, &random);
-        emissive.pair_beside(root, blinks.files());
+        let random = horizon_optifine::random_textures::RandomTextures::scan(source);
+        let blinks = horizon_optifine::blink::Blinks::scan(source, &random);
+        let mut emissive = horizon_optifine::emissive::Emissive::scan(source, &random);
+        emissive.pair_beside(source, blinks.files());
         data.emissive = std::sync::RwLock::new(std::sync::Arc::new(emissive));
         data.blinks = std::sync::RwLock::new(blinks);
         data.random_textures = std::sync::RwLock::new(random);
@@ -114,6 +144,45 @@ impl MobData {
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
             .map(|v| Self::from_json(&v).animations)
             .unwrap_or_default()
+    }
+    /// `BlockState.isPathfindable(type)`: the block's own answer, or the one a mod part gave.
+    pub fn pathfindable(&self, state: BlockStateId, kind: PathComputationType) -> bool {
+        let given = self
+            .pathfindable_overrides
+            .get()
+            .and_then(|table| table.get(state.0 as usize))
+            .map_or(0, |slot| slot.load(Ordering::Relaxed));
+        if given & OVERRIDDEN != 0 {
+            u16::from(given) & path_bit(kind) != 0
+        } else {
+            self.state(state).flags & path_bit(kind) != 0
+        }
+    }
+    /// Replace the answers mod parts gave. With `asked`, `answer` is called once per state and
+    /// type with the block's own answer, so the answers depend on the state and the type alone;
+    /// without it, every state answers as its block does.
+    pub fn set_pathfindable(
+        &self,
+        asked: bool,
+        answer: impl Fn(BlockStateId, PathComputationType, bool) -> bool,
+    ) {
+        let table = self
+            .pathfindable_overrides
+            .get_or_init(|| self.states.iter().map(|_| AtomicU8::new(0)).collect());
+        for (i, slot) in table.iter().enumerate() {
+            let state = BlockStateId(i as u32);
+            let given = if asked {
+                PathComputationType::ALL
+                    .into_iter()
+                    .filter(|&kind| {
+                        answer(state, kind, self.state(state).flags & path_bit(kind) != 0)
+                    })
+                    .fold(OVERRIDDEN, |bits, kind| bits | path_bit(kind) as u8)
+            } else {
+                0
+            };
+            slot.store(given, Ordering::Relaxed);
+        }
     }
     pub fn entity_has(&self, tag: &str, entity: &str) -> bool {
         self.entity_tags
@@ -161,6 +230,7 @@ impl MobData {
             .map(|(k, a)| (k.clone(), Animation::parse(a)))
             .collect();
         Self {
+            pathfindable_overrides: Default::default(),
             states,
             placements,
             heightmaps,
@@ -176,6 +246,7 @@ impl MobData {
             entity_tags: HashMap::new(),
             pois: Default::default(),
             species_placements: Default::default(),
+            mod_spawns: Default::default(),
         }
     }
     /// Without the export, approximate path types from the gameplay facts.
@@ -224,6 +295,7 @@ impl MobData {
             })
             .collect();
         Self {
+            pathfindable_overrides: Default::default(),
             states,
             placements: HashMap::new(),
             heightmaps: HashMap::new(),
@@ -239,9 +311,10 @@ impl MobData {
             entity_tags: HashMap::new(),
             pois: Default::default(),
             species_placements: Default::default(),
+            mod_spawns: Default::default(),
         }
     }
-    pub fn state(&self, id: horizon_world::registry::BlockStateId) -> StateData {
+    pub fn state(&self, id: BlockStateId) -> StateData {
         self.states
             .get(id.0 as usize)
             .copied()
@@ -262,6 +335,35 @@ impl MobData {
             .get(entity)
             .copied()
             .unwrap_or(Placement::OnGround)
+    }
+    /// `SpawnPlacements.isSpawnPositionOk`'s placement type for `entity`, a type
+    /// of species `s`: a mod type's declared one, else the species'.
+    pub fn entity_placement(&self, entity: &str, s: super::Species) -> Placement {
+        if self.mod_spawns.contains_key(entity) {
+            self.placement(entity)
+        } else {
+            self.species_placement(s)
+        }
+    }
+    /// Take a mod's spawn rule for its entity type `id` (`SpawnPlacements.register`).
+    pub fn register_mod_spawn(&mut self, id: &str, rule: &mod_api::SpawnPlacementRule) {
+        use mod_api::Heightmap as H;
+        use mod_api::SpawnPlacementType as T;
+        let placement = match rule.placement {
+            T::OnGround => Placement::OnGround,
+            T::InWater => Placement::InWater,
+            T::InLava => Placement::InLava,
+            _ => Placement::NoRestrictions,
+        };
+        let heightmap = match rule.heightmap {
+            H::WorldSurface => "WORLD_SURFACE",
+            H::MotionBlocking => "MOTION_BLOCKING",
+            H::OceanFloor => "OCEAN_FLOOR",
+            _ => "MOTION_BLOCKING_NO_LEAVES",
+        };
+        self.placements.insert(id.to_owned(), placement);
+        self.heightmaps.insert(id.to_owned(), heightmap.to_owned());
+        self.mod_spawns.insert(id.to_owned(), rule.clone());
     }
     /// [`MobData::placement`] of the species' entity type, without building
     /// its id: natural spawning asks it for every position it tries.

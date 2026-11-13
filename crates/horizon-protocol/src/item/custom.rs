@@ -43,7 +43,7 @@ pub fn install(first: i32, mut names: Vec<String>) -> Result<(), InstallError> {
         return Err(InstallError::InvalidRange);
     }
     if names.iter().any(|name| {
-        horizon_world::identifier::Identifier::parse_namespaced(name)
+        horizon_core::identifier::Identifier::parse_namespaced(name)
             .is_none_or(|id| id.namespace() == "minecraft")
     }) {
         return Err(InstallError::InvalidName);
@@ -58,32 +58,24 @@ pub fn install(first: i32, mut names: Vec<String>) -> Result<(), InstallError> {
 }
 
 /// Validate an opaque value against the same limits used by the network reader.
-pub fn validate(value: &horizon_world::nbt::Tag) -> crate::Result<()> {
-    if matches!(value, horizon_world::nbt::Tag::End) {
+pub fn validate(value: &horizon_core::nbt::Tag) -> crate::Result<()> {
+    if matches!(value, horizon_core::nbt::Tag::End) {
         return Err(crate::Error::new("a component value cannot be NBT End"));
     }
-    let bytes = horizon_world::nbt::write_network(
-        value,
-        horizon_world::nbt::Limits {
-            max_bytes: crate::buf::NBT_QUOTA,
-            ..Default::default()
-        },
-    )
-    .map_err(|error| crate::Error::new(error.to_string()))?;
-    Reader::new(&bytes).nbt()?;
+    crate::buf::check_network_nbt(value)?;
     // Disk NBT canonicalizes NaNs, and its reader normalizes negative zero.
     // Reject values that would change when saved and reloaded.
-    let limits = horizon_world::nbt::Limits {
+    let limits = horizon_core::nbt::Limits {
         max_bytes: crate::buf::NBT_QUOTA + 2,
         ..Default::default()
     };
-    let named = horizon_world::nbt::NamedTag {
+    let named = horizon_core::nbt::NamedTag {
         name: "".into(),
         tag: value.clone(),
     };
-    let saved = horizon_world::nbt::write_named(&named, limits)
+    let saved = horizon_core::nbt::write_named(&named, limits)
         .map_err(|error| crate::Error::new(error.to_string()))?;
-    let (loaded, _) = horizon_world::nbt::read_named(&saved, limits)
+    let (loaded, _) = horizon_core::nbt::read_named(&saved, limits)
         .map_err(|error| crate::Error::new(error.to_string()))?;
     if loaded.tag != *value {
         return Err(crate::Error::new(

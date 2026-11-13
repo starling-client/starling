@@ -38,50 +38,22 @@ fn gles_source(source: &str) -> String {
         .find("fn sprite_level(")
         .expect("terrain level function");
     let end = level + source[level..].find("\n}\n").expect("terrain level end") + 3;
+    // The rotated grid's taps: the include unrolls them.
     let rgss = source
-        .find("fn sample_rgss(")
-        .expect("terrain RGSS function");
-    let rgss_end = rgss + source[rgss..].find("\n}\n").expect("terrain RGSS end") + 3;
+        .find("fn rotated_grid(")
+        .expect("terrain rotated grid function");
+    let rgss_end = rgss
+        + source[rgss..]
+            .find("\n}\n")
+            .expect("terrain rotated grid end")
+        + 3;
     let mut output = String::with_capacity(source.len());
     output.push_str(&source[..start]);
     output.push_str(include_str!("terrain_gles.wgsl.inc"));
     output.push_str(&source[end..rgss]);
     output.push_str(&source[rgss_end..]);
-
-    // Adreno 304 renders broken terrain with the separated scalar varyings.
-    // Pack values sharing their interpolation qualifier; leave the vertex
-    // buffers, texture sampling, fade, lighting, fog and HDR arithmetic alone.
-    let start = output
-        .find("struct TerrainOut {")
-        .expect("terrain interface");
-    let end = output[start..]
-        .find("struct SkyOut {")
-        .expect("sky interface")
-        + start;
-    let fields_end = output[start..]
-        .find("\n}\n")
-        .expect("terrain interface end")
-        + start
-        + 3;
-    let mut body = output[fields_end..end].to_owned();
-    for (member, packed) in [
-        ("emissive_layer", "codes.w"),
-        ("layer", "codes.x"),
-        ("emission", "codes.y"),
-        ("fade", "codes.z"),
-        ("spherical", "distances.x"),
-        ("cylindrical", "distances.y"),
-        ("visibility", "distances.z"),
-        ("height", "distances.w"),
-    ] {
-        for variable in ["in", "out"] {
-            body = body.replace(
-                &format!("{variable}.{member}"),
-                &format!("{variable}.{packed}"),
-            );
-        }
-    }
-    output.replace_range(start..end, &(PACKED_INTERFACE.to_owned() + &body));
+    // Adreno 304 rendered broken terrain with the separated scalar varyings: terrain.wgsl
+    // itself now packs them (`TerrainWire`, its integers flat in one vector), so they stay.
     output
 }
 
@@ -121,17 +93,6 @@ fn unroll_emissive_lookup(mut source: String) -> String {
     source
 }
 
-const PACKED_INTERFACE: &str = "struct TerrainOut {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) @interpolate(flat) codes: vec4<u32>,
-    @location(2) color: vec4<f32>,
-    @location(3) distances: vec4<f32>,
-    @location(4) local: vec3<f32>,
-    @location(5) scene: vec2<f32>,
-}
-";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,11 +114,13 @@ mod tests {
         for index in 0..7 {
             assert!(source.contains(&format!("array_index == {index}u")));
         }
-        assert!(source.contains("let whole = in.codes.y > 4u"));
-        assert!(source.contains("if in.codes.w != 0xffffffffu"));
-        assert!(!source.contains("in.height"));
-        assert!(!source.contains("out.emissive_layer"));
-        let module = naga::front::wgsl::parse_str(&source).unwrap();
+        assert!(source.contains("fn rotated_grid("));
+        assert!(!source.contains("emissive_layers[i]"));
+        assert!(source.contains("out.emissive_layer = legacy_emissive_layer(sprite_layer);"));
+        // The renderer puts the HDR prelude (`HDR_WRITE_LIGHT`) in front, as gfx.rs does.
+        let module =
+            naga::front::wgsl::parse_str(&(include_str!("../hdr_light.wgsl").to_owned() + &source))
+                .unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -179,7 +142,7 @@ mod tests {
                 .iter()
                 .filter(|m| matches!(m.binding, Some(naga::Binding::Location { .. })))
                 .count(),
-            6
+            5
         );
     }
 

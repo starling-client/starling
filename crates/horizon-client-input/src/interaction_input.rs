@@ -22,7 +22,7 @@ pub trait InteractionWorld {
     fn using_item(&self) -> bool;
     fn release_using(&mut self);
     fn start_attack(&mut self) -> bool;
-    fn start_use(&mut self);
+    fn start_use(&mut self, held: bool);
     fn pick(&mut self);
     fn use_delay(&self) -> u32;
     fn continue_attack(&mut self, down: bool);
@@ -51,11 +51,6 @@ impl InteractionInput {
     pub fn press(&mut self, button: Button) {
         self.clicks[button as usize] += 1;
     }
-    /// Whether a click waits for the next tick.
-    pub fn has_clicks(&self) -> bool {
-        self.clicks.iter().any(|&c| c > 0)
-    }
-
     pub fn tick(&mut self, world: &mut impl InteractionWorld, attack_down: bool, use_down: bool) {
         let [attack, use_item, pick] = std::mem::take(&mut self.clicks);
         world.pick_hit_result();
@@ -71,14 +66,14 @@ impl InteractionInput {
                 instant |= world.start_attack();
             }
             for _ in 0..use_item {
-                world.start_use();
+                world.start_use(false);
             }
             for _ in 0..pick {
                 world.pick();
             }
         }
         if use_down && world.use_delay() == 0 && !world.using_item() {
-            world.start_use();
+            world.start_use(true);
         }
         world.continue_attack(!instant && attack_down);
         world.release_hit_result();
@@ -109,6 +104,7 @@ mod tests {
         delay: u32,
         begin_using: bool,
         events: Vec<&'static str>,
+        use_attempts: Vec<bool>,
     }
     impl InteractionWorld for World {
         fn pick_hit_result(&mut self) {}
@@ -124,7 +120,8 @@ mod tests {
             self.events.push("attack");
             false
         }
-        fn start_use(&mut self) {
+        fn start_use(&mut self, held: bool) {
+            self.use_attempts.push(held);
             if !self.destroying {
                 self.events.push("use");
                 self.delay = 4;
@@ -193,6 +190,7 @@ mod tests {
         world.events.clear();
         input.tick(&mut world, false, true);
         assert_eq!(world.events, ["continue"]);
+        assert_eq!(world.use_attempts, [false, true, true]);
     }
 
     #[test]
@@ -244,7 +242,7 @@ mod tests {
             }
             !self.block
         }
-        fn start_use(&mut self) {
+        fn start_use(&mut self, _held: bool) {
             // BlockItem.place: the clicked block, now air, can be replaced.
             if self.target().is_some() && !self.block {
                 self.block = true;

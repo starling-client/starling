@@ -2,7 +2,9 @@
 
 <!-- Generated from launcher/src/cli.rs by cli_tools::markdown(); a test fails when this file is out of date. Update it with: HORIZON_WRITE_DOCS=1 cargo test --manifest-path launcher/Cargo.toml the_launcher_reference -->
 
-Every command of `horizon-launcher`, and the tool `horizon-launcher mcp` offers for it. A tool's arguments are the command's, in snake_case. A tool runs the command with `--json` and returns what it printed. The tools that change the player's things for good need `confirm: true`. The tools that send something or reach other people say "only when the player asks". The game's own tools, `game_*`, are in [horizon-ctl-commands.md](horizon-ctl-commands.md). With No AI on, `mcp` and `agent-config` are hidden and refuse; every other command stays. See [agent-control.md](agent-control.md#no-ai).
+Every command of `horizon-launcher`, and the tool `horizon-launcher mcp` offers for it. A tool's arguments are the command's, in snake_case. A tool runs the command with `--json` and returns what it printed. The tools that change the player's things for good need `confirm: true`. The tools that send something or reach other people say "only when the player asks". The game's own tools, `game_*`, are in [horizon-ctl-commands.md](horizon-ctl-commands.md). For unsigned developer installations only, `HORIZON_LAUNCHER_DEVELOPER_OFFLINE=1` enables account-free Play. Only the exact value `1` enables it. The installed base must have persisted developer provenance, and the selected game must advertise `--developer-single-player` through `--launch-api`; older games must be rebuilt and reinstalled. Signed releases, Nightlies and their native descendants keep the account check. This mode supplies no session, blocks normal external connections and LAN hosting, and preserves managed launch leases, instance settings and unsigned labels. It is not a sandbox for native mods.
+
+With No AI on, `mcp` and `agent-config` are hidden and refuse; every other command stays. See [agent-control.md](agent-control.md#no-ai).
 
 ## `horizon-launcher completions`
 
@@ -34,6 +36,21 @@ Download and install a release (a tag such as v2026.10.13, or "latest").
 
 MCP: `install`.
 
+## `horizon-launcher developer-install`
+
+Install a local unsigned developer build from a trusted checkout.
+
+    horizon-launcher developer-install --program <PROGRAM> --trust-unsigned <CHECKOUT>
+
+- `CHECKOUT`: The trusted clean Horizon checkout to package
+- `--program`: The real horizon-client executable built from that committed checkout
+- `--trust-unsigned`: Allow executing this checkout's build code and unsigned game with your rights
+
+Example: horizon-launcher developer-install CHECKOUT --program CHECKOUT/target/debug/horizon-client --trust-unsigned
+This executes the checkout's build code and an unsigned game with your rights. Trust both before continuing.
+
+MCP: none: the player's switch.
+
 ## `horizon-launcher remove`
 
 Remove an installed version.
@@ -46,12 +63,16 @@ MCP: `remove`, needs `confirm: true`.
 
 ## `horizon-launcher import-build`
 
-Install a game program you have, such as a horizon-client built on your fork's Actions, as its own version on an installed release or Nightly's game files, and select it. Nothing signed it: it runs with your rights, and updates never replace it.
+Install a game program you have, such as a horizon-client built on your fork's Actions, as its own version on an installed base's game files, and select it. A local unsigned developer base is allowed only when explicitly selected or named with --version. Nothing signed it: it runs with your rights, and updates never replace it.
 
     horizon-launcher import-build <PATH>
 
 - `PATH`: The program (horizon-client, horizon-client.exe on Windows), or a zip holding it
 - `--trust-unsigned`: You picked this build yourself and trust it with full access to this computer
+
+The program must match this computer's executable format and carry the exact `horizon-game-executable;`
+identity signature embedded by ordinary and launcher-generated games. It carries no mod API level or build id,
+and is not a signature of authenticity. Unmarked programs are refused.
 
 MCP: none: the player's switch.
 
@@ -72,6 +93,7 @@ Start the client (needs a signed-in Microsoft account that owns Minecraft: Java 
 
     horizon-launcher play
 
+- `--allow-jar-downloads`: Allow missing original Java asset/data jars to be downloaded from Modrinth
 - `--instance`: The instance to play (its name or id; default: the selected one). A Java instance starts its Minecraft: Java Edition, downloaded with its Java the first time
 - `--world`: Open or create this world (a folder under saves) at once
 - `--creative`: Creative mode for a new world
@@ -88,24 +110,49 @@ Run a dedicated server here; type commands into its console.
 
     horizon-launcher server
 
+- `--allow-jar-downloads`: Allow missing original Java asset/data jars to be downloaded from Modrinth
 - `--dir`: The server's folder (default: the one the launcher uses)
 - `--accept-eula`: Agree to the Minecraft EULA (https://aka.ms/MinecraftEULA)
 
 MCP: `server`, `server_command`, `server_log`, `server_stop`.
 
+## `horizon-launcher storage`
+
+Show disposable storage by category as JSON. Builds must be idle.
+
+    horizon-launcher storage
+
+- `--clear`: Request cleanup of build-files, prebuilt-games, spare-game-builds, rust-compiler, other-caches or all rows; game-accessible caches refuse cleanup without enforceable lifetime exclusion
+
+MCP: `storage`.
+
+## `horizon-launcher native-lock`
+
+Generate the registry-only Cargo.lock for one native mod, without executing mod code.
+
+    horizon-launcher native-lock <FOLDER>
+
+- `FOLDER`
+- `--update-lock`: Explicitly replace an existing lock with newly resolved registry pins
+
+MCP: `native_lock`.
+
 ## `horizon-launcher native-build`
 
-Native mods (docs/native-mods.md): compile mixin bundles on the Horizon revision they pin, else the one the instance plays, with the launcher's own Rust, as the version the instance then plays. Not sandboxed: the mods' code runs with your rights.
+Native mods (docs/modding/src/how-to/native-mods.md): compile flat Rust mod projects against the instance's exact Horizon source revision with the launcher's own Rust, as the version the instance then plays. Not sandboxed: the mods' code runs with your rights.
 
     horizon-launcher native-build [FOLDER]
 
-- `FOLDER`: A mod folder (horizon-mixin.toml, or an unpacked .hnmod), or a folder of them (default: the native mods installed and turned on in the instance)
+- `--sync-internals`: Discover internal uses through compiler diagnostics. Prints resolved declarations as JSON for cargo horizon-mod internals sync; never installs or selects a game
+- `--catalog`
+- `--catalog-output`: Copy discovery catalogs into this caller-owned empty directory
+- `FOLDER`: A mod folder (horizon-mod.toml with [native], Cargo.toml and src/), or a folder of them (default: the native mods installed and turned on in the instance). Server exports also read wasm internals declarations from .hmod packages directly in this folder
 - `--server-output`: Export mode: build a standalone dedicated-server engine into this folder instead of an instance's build. Needs a mod FOLDER; no instance is read or changed, and no launcher config is written
+- `--allow-jar-downloads`: Allow exact-hash jar downloads into the local cache for the server export; jar bytes are never included in the exported folder
 - `--instance`: The instance whose installed native mods to build, and which then plays the build (default: the selected one)
 - `--update`: Move to the newest installed release or Nightly instead of the Horizon the instance plays (a full rebuild)
-- `--trust-native-code`: You read the mods' source and trust it with full access to this computer
-- `--allow-version-mismatch`: Build mods made for different Horizon versions together anyway, on the newest of them
-- `--profile` (performance, dev, release): The build profile: performance (the default: incremental, quick to rebuild), dev (quickest to rebuild a mod, slow game) or release (thin LTO: slowest to build, slightly faster game). Default: the native-profile setting
+- `--trust-native-code`: Allow native code for this install (remembered; revoke in Settings, Storage)
+- `--profile` (optimized, balanced, developer): This instance's build mode: optimized, balanced or developer. Remembers an explicit choice for this instance; otherwise uses its saved choice, starting at Balanced. Without a picker reason or explicit choice, installed mods use the prebuilt route
 
 MCP: none: the player's switch.
 
@@ -121,7 +168,7 @@ MCP: `notes`.
 
 ## `horizon-launcher links`
 
-Show the Discord, sponsor and website links.
+Show the website, roadmap and documentation links.
 
     horizon-launcher links
 
@@ -177,7 +224,7 @@ MCP: `account_sign_out`, needs `confirm: true`.
 
 ## `horizon-launcher account select`
 
-Play as this account, or as one of your offline names.
+Play as this account.
 
     horizon-launcher account select <WHO>
 
@@ -185,48 +232,13 @@ Play as this account, or as one of your offline names.
 
 MCP: `account_select`.
 
-## `horizon-launcher account offline`
-
-Play offline (LAN, offline-mode servers) beside a signed-in account that owns the game: as NAME (kept to switch back to; 3 to 16 letters, digits or _), or as the name the game made up.
-
-    horizon-launcher account offline [NAME]
-
-- `NAME`
-
-MCP: `account_offline`.
-
-## `horizon-launcher account forget-offline`
-
-Forget one of your offline names; its skin and cape go with it.
-
-    horizon-launcher account forget-offline <NAME>
-
-- `NAME`
-
-MCP: `account_forget_offline`.
-
-## `horizon-launcher account skin`
-
-Show or set an offline name's skin and cape: a 64x64 (or 64x32) skin PNG, a 64x32 cape PNG, the model. Kept by the launcher and given to the game when that name plays.
-
-    horizon-launcher account skin <NAME> [FILE]
-
-- `NAME`
-- `FILE`: The skin's PNG
-- `--model`: classic or slim arms
-- `--cape`: The cape's PNG
-- `--no-skin`: Back to the default skin
-- `--no-cape`: Take the cape off
-
-MCP: `account_skin`.
-
 ## `horizon-launcher settings`
 
-Show the launcher's settings, or set one (the Settings page): selected-version TAG, minecraft-dir PATH, server-dir PATH ("default" resets a folder), install-new-versions on|off, prune-old-versions on|off (delete old versions after an install, keeping the selected one, the ones instances use and the newest few), keep-versions N (how many of the newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent violet|blue|teal|green|amber|red|pink, background PATH (a picture behind Home; "default" shows Horizon's landscape), native-profile performance|dev|release (the profile native mods build with: performance is incremental, dev rebuilds a mod quickest for a slow game, release is slowest to build and slightly faster to play).
+Show the launcher's settings, or set one (the Settings page): selected-version TAG, game-architecture auto|x64|arm64, minecraft-dir PATH, server-dir PATH ("default" resets a folder), install-new-versions on|off, prune-old-versions on|off (delete old versions after an install, keeping the selected one, the ones instances use and the newest few), keep-versions N (how many of the newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port|socks5://host:port ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent violet|blue|teal|green|amber|red|pink|#rrggbb|DEGREES (a named accent, any colour, or any hue), background PATH (a picture behind Home; "default" shows Horizon's landscape), cache-limit-gib N (managed cache limit in GiB: 10, 25 (default), 50, 100; 0 disables automatic cleanup).
 
     horizon-launcher settings [KEY] [VALUE]
 
-- `KEY` (selected-version, minecraft-dir, server-dir, install-new-versions, prune-old-versions, keep-versions, opening-animation, proxy, while-playing, language, accent, background, native-profile)
+- `KEY` (selected-version, minecraft-dir, server-dir, install-new-versions, prune-old-versions, keep-versions, opening-animation, game-architecture, proxy, while-playing, language, accent, background, cache-limit-gib)
 - `VALUE`: The new value (with KEY)
 
 MCP: `settings`.
@@ -291,6 +303,17 @@ Linux: put Horizon in the applications menu (an entry and the icon, under $XDG_D
 - `--remove`: Remove the entry and the icon, and stop adding them back
 
 MCP: `desktop_entry`.
+
+## `horizon-launcher bug-report`
+
+Write a bug report to a file you attach to the issue by hand; nothing is sent (docs/telemetry.md).
+
+    horizon-launcher bug-report <TEXT>
+
+- `TEXT`
+- `--log`: Add the end of the game's log (names and worlds hidden, without chat)
+
+MCP: `bug_report`.
 
 ## `horizon-launcher data status`
 
@@ -384,7 +407,7 @@ Make an instance: empty but for your options and name, or a copy of another one'
 - `NAME`
 - `--copy`: The instance to copy (its name or id)
 - `--minecraft`: Make a Minecraft: Java Edition instance of this version (1.21.4, latest or latest-snapshot) instead of a Horizon one
-- `--loader`: With this mod loader: fabric or quilt
+- `--loader`: With this mod loader: fabric, quilt, forge or neoforge
 - `--loader-version`: The loader's version (default: its newest stable one)
 
 MCP: `instance_create`.
@@ -417,7 +440,7 @@ MCP: `instance_java`.
 
 ## `horizon-launcher instance loader`
 
-A Java instance's mod loader: fabric or quilt, or none. --list shows its versions.
+A Java instance's mod loader: fabric, quilt, forge or neoforge, or none. --list shows its versions.
 
     horizon-launcher instance loader <INSTANCE> <LOADER>
 
@@ -539,6 +562,7 @@ Import what a file is, as dropping it on the window does: a shared instance (a .
 
 - `FILE`
 - `--instance`: The instance a pack goes into
+- `--java`: A .mrpack becomes a Minecraft: Java Edition instance with its Minecraft version, mod loader, mods and overrides, instead of a Horizon instance or a Modpacks import
 
 MCP: `instance_import`.
 
@@ -548,7 +572,7 @@ List the instances other launchers keep (Prism Launcher, MultiMC, the official l
 
     horizon-launcher instance others
 
-- `--folder`: Look in this folder instead: a launcher's folder, its instances/ or one instance
+- `--folder`: Look in this folder instead: a launcher's folder, a folder of instances (its instances/, the CurseForge app's Instances) or one instance
 
 MCP: `instance_others`.
 
@@ -559,7 +583,7 @@ Copy another launcher's instance into a new Java instance: its Minecraft version
     horizon-launcher instance copy-from <NAME>
 
 - `NAME`: Its name, as `instance others` lists it
-- `--folder`: Look in this folder instead: a launcher's folder, its instances/ or one instance
+- `--folder`: Look in this folder instead: a launcher's folder, a folder of instances (its instances/, the CurseForge app's Instances) or one instance
 - `--as`: The new instance's name (default: the same)
 - `--minecraft`: The Minecraft version it plays, when its launcher doesn't say (the CurseForge app, the Modrinth App)
 
@@ -809,6 +833,7 @@ Play a ported pack as its own profile.
     horizon-launcher modpack play <PACK>
 
 - `PACK`
+- `--allow-jar-downloads`: Allow missing original Java asset/data jars to be downloaded from Modrinth
 
 MCP: `modpack_play`.
 
@@ -886,7 +911,7 @@ MCP: `mods_update`.
 
 ## `horizon-launcher mods add-github`
 
-Install a native mod from a GitHub link (docs/native-mods.md, "Install from GitHub"): https://github.com/OWNER/REPO (its latest release, else its default branch), .../releases/tag/TAG, .../tree/REF or .../commit/SHA. Resolved to an exact release file or commit, checked like a registry mod. NOT reviewed by the Horizon registry.
+Install a native mod from a GitHub link (docs/modding/src/how-to/native-mods.md, "Install from GitHub"): https://github.com/OWNER/REPO (its latest release, else its default branch), .../releases/tag/TAG, .../tree/REF or .../commit/SHA. Resolved to an exact release file or commit, checked like a registry mod. NOT reviewed by the Horizon registry.
 
     horizon-launcher mods add-github <URL>
 
@@ -894,7 +919,7 @@ Install a native mod from a GitHub link (docs/native-mods.md, "Install from GitH
 - `--mod`: The mod to install when the link holds several
 - `--all`: Install every mod the link holds
 - `--instance`: The instance (default: the selected one)
-- `--trust-native-code`: You read the mod's source (the link printed) and trust it with full access to this computer
+- `--trust-native-code`: Allow native code for this install (remembered; revoke in Settings, Storage)
 
 MCP: none: the player's switch.
 
@@ -907,7 +932,7 @@ Look for newer versions of the native mods installed from GitHub (the latest rel
 - `ID`: One mod (default: all of them)
 - `--check`: Only say what is newer
 - `--instance`: The instance (default: the selected one)
-- `--trust-native-code`: You read the new source and trust it with full access to this computer
+- `--trust-native-code`: Allow native code for this install (remembered; revoke in Settings, Storage)
 
 MCP: none: the player's switch.
 
@@ -924,7 +949,7 @@ MCP: `mods_remove`, needs `confirm: true`.
 
 ## `horizon-launcher mods enable`
 
-Turn on a mod the browser installed (horizon-mods.txt, as the game's Options > Mods does; in a Java instance, its file loses `.disabled`).
+Turn on a mod the browser installed (horizon-mods.txt; the game's Mods screen has no switch; in a Java instance, its file loses `.disabled`).
 
     horizon-launcher mods enable <PROJECT>
 

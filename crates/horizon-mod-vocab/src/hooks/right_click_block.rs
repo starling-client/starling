@@ -1,0 +1,28 @@
+//! The `right_click_block` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
+// catalog-order: 0039
+
+pub trait Hooks {
+    /// A player right clicks a block (NeoForge's
+    /// `PlayerInteractEvent.RightClickBlock`): once per hand, where
+    /// `useItemOn` starts, on the clicking client and on the server (`click`
+    /// says which, with the block, the hit, the hand and its stack, and the
+    /// player). Before the block's own use (a chest, a door, a lever) and the
+    /// item's (`Item.useOn`, `native_use_on`).
+    ///
+    /// `use_block` forces the block's use off (`False`) or on even while
+    /// sneaking with something in hand (`True`); `use_item` forces the
+    /// item's `useOn` off, or on even while the item cools down. Cancelling
+    /// skips both and answers `cancellation_result` in their place:
+    /// `Pass` (the default) goes on to the item's own use (`Item.use`) and
+    /// then the other hand, `Fail` ends the click, and `Success`,
+    /// `SuccessServer` or `Consume` end it as used, with the swing they name.
+    /// A mod that keeps players out of land cancels with `Fail`.
+    #[hook(
+        side = "both",
+        contract = "cancel",
+        out = "canceled",
+        neoforge = "PlayerInteractEvent.RightClickBlock",
+        cancellable = true
+    )]
+    fn right_click_block();
+}

@@ -24,6 +24,7 @@ struct Head {
 }
 
 impl Heads {
+    /// Asks for the heads of `accounts`; forgets the others.
     pub fn request(&mut self, accounts: &[account::Account], resources: PathBuf, tx: &Sender<Msg>) {
         self.0
             .retain(|uuid, _| accounts.iter().any(|a| &a.uuid == uuid));

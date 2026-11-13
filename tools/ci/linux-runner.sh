@@ -153,8 +153,6 @@ PARITY_LOCAL_JOBS=$jobs
 JAVA_HOME=$java
 HORIZON_SHARED_SOURCE=$source
 HORIZON_NO_AUDIO=1
-HORIZON_NO_HEARTBEAT=1
-HORIZON_TELEMETRY_URL=off
 HORIZON_LAUNCHER_NO_SELF_UPDATE=1
 EOF
     [ -n "$platform_env" ] && echo "$platform_env"
@@ -213,7 +211,7 @@ EOF
   systemctl --user enable horizon-runner-pause.service > /dev/null
   # The runner reads .env when it starts: stop it, unless it is in a job (that would cancel the job); the watcher
   # starts it again when it may run.
-  if pgrep -f "$dir/bin/Runner.Worker" > /dev/null; then echo "In a job: stop horizon-runner.service after it"
+  if pgrep -f "$dir/bin[^/]*/Runner.Worker" > /dev/null; then echo "In a job: stop horizon-runner.service after it"
   else systemctl --user stop horizon-runner.service; rm -f "$dir/paused"; fi
   systemctl --user restart horizon-runner-pause.service
   status

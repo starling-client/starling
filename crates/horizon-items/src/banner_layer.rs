@@ -1,5 +1,5 @@
 //! Banner pattern layers (`BannerPatternLayers`) and their NBT form.
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 use std::sync::Arc;
 
 /// `BannerPatternLayers.Layer`: a pattern id and the dye name it is painted in.

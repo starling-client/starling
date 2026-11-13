@@ -67,7 +67,13 @@ impl Launcher {
                 .id("official-players")
                 .cursor_pointer()
                 .hover(move |s| s.text_color(ink))
-                .child(format!("· {} on the official SMP", thousands(count)))
+                .child(format!(
+                    "· {}",
+                    trf(
+                        "{count} on the official SMP",
+                        &[("count", &thousands(count))]
+                    )
+                ))
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.go(Page::Servers);
                     cx.notify();
@@ -237,7 +243,15 @@ impl Launcher {
             .child(label(
                 tr(if running { "Running" } else { "Play" }).to_string(),
             ));
-        match play_press(ready, self.owner, self.preparing || running) {
+        match play_press(
+            ready,
+            if horizon_launcher::developer_offline::selected() {
+                Some(true)
+            } else {
+                self.owner
+            },
+            self.preparing || running,
+        ) {
             PlayPress::Nothing => play = disabled(play),
             PlayPress::Play => {
                 play = play.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -277,7 +291,7 @@ impl Launcher {
                     .child(label(tr("Folder").to_string()))
                     .on_click(move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&home);
-                        cx.open_with_system(&home);
+                        crate::glass_toast::open(cx, &home);
                     })
             }))
     }

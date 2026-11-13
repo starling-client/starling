@@ -2,16 +2,13 @@
 
 Starling's game is [Horizon](https://github.com/ludovic111/horizon)'s. This page keeps Horizon's own audit of each subsystem, as of the Horizon version Starling is built on: it was measured by Horizon's harnesses on the desktop, not on Android. The current audit is in [Horizon's README](https://github.com/ludovic111/horizon#project-status); the state of the Android port is in [Starling's README](../README.md#android-status).
 
-<img src="https://img.shields.io/badge/vanilla%20parity-100%25-F0795A" alt="Horizon's vanilla parity: 100%">
+The table below is the project's own audit of each subsystem. Every subsystem matches vanilla in every harness that compares it; that is a statement about what the harnesses compare, not proof that nothing else differs. The remaining known differences are listed below.
 
-The table below is the project's own audit of each subsystem. Every subsystem now matches vanilla in every harness that compares it. 100% means 100% of what the harnesses compare, not proof that nothing else differs. The remaining known differences are listed below.
-
-### Java parity: 100%
+### What the harnesses compare
 
 Each subsystem scores 0 (absent), 0.25 (started, not playable), 0.5 (playable,
 major vanilla features missing), 0.75 (playable, mostly complete) or 1 (complete
-and verified against vanilla by differential tests). The percentage is the
-average; `tests/test_parity.py` keeps it in sync with this table. Last audited
+and verified against vanilla by differential tests). `tests/test_parity.py` checks that every row has one of these scores. Last audited
 2026-10-13 against the harness results: all 281 harnesses pass on Linux, each
 rerun whenever one of its inputs changed, and the Mac mini now runs every one of
 them too (Rust uses Java's own float maths on each platform).

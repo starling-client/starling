@@ -1,18 +1,4 @@
 //! Template pools, pool elements and JigsawPlacement.
-use super::{
-    BoundingBox, Mirror, Rotation, StructureResources, StructureTemplate,
-    processor::{PlaceSettings, Processor, ProcessorList, place_in_world},
-};
-use crate::{
-    heightmap::HeightmapType,
-    nbt::{Compound, Tag},
-    worldgen::{
-        DecodeError,
-        block_feature::FeatureBlockBindings,
-        feature::FeatureWorld,
-        placement::{PlacementContext, PlacementQueryError},
-    },
-};
 use horizon_core::{
     geometry::Direction,
     position::BlockPos,
@@ -21,9 +7,28 @@ use horizon_core::{
 use serde_json::Value;
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     rc::Rc,
-    sync::{Arc, OnceLock, RwLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
+};
+use {
+    super::{
+        LazyTemplate, Mirror, Rotation, StructureResources, StructureTemplate,
+        processor::{PlaceSettings, Processor, ProcessorList, place_in_world},
+    },
+    horizon_core::bounding_box::BoundingBox,
+};
+use {
+    crate::{
+        heightmap::HeightmapType,
+        worldgen::{
+            DecodeError,
+            block_feature::FeatureBlockBindings,
+            feature::FeatureWorld,
+            placement::{PlacementContext, PlacementQueryError},
+        },
+    },
+    horizon_core::nbt::{Compound, Tag},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +49,7 @@ impl Projection {
 pub enum PoolElement {
     Empty,
     Single {
-        template: Arc<StructureTemplate>,
+        template: LazyTemplate,
         processors: ProcessorList,
         /// The element's `processors` as written: a list id or an inline list,
         /// saved back as it was.
@@ -69,14 +74,14 @@ pub enum PoolElement {
     },
 }
 #[derive(Clone, Debug)]
-pub struct Jigsaw {
+pub struct Jigsaw<'a> {
     pub pos: [i32; 3],
     pub front: Direction,
     pub top: Direction,
     pub rollable: bool,
-    pub name: Option<String>,
-    pub pool: String,
-    pub target: String,
+    pub name: Option<std::borrow::Cow<'a, str>>,
+    pub pool: std::borrow::Cow<'a, str>,
+    pub target: std::borrow::Cow<'a, str>,
     pub placement_priority: i32,
     pub selection_priority: i32,
 }
@@ -146,9 +151,7 @@ impl PoolElement {
                     .as_str()
                     .ok_or(DecodeError::Field("location"))?;
                 Self::Single {
-                    template: resources.template(location).ok_or_else(|| {
-                        DecodeError::Registry(format!("missing template {location}"))
-                    })?,
+                    template: resources.lazy_template(location),
                     processors: ProcessorList::decode(
                         &value["processors"].to_string(),
                         resources,
@@ -294,13 +297,13 @@ impl PoolElement {
         }
     }
     /// getShuffledJigsawBlocks.
-    pub fn shuffled_jigsaws(
-        &self,
+    pub fn shuffled_jigsaws<'a>(
+        &'a self,
         resources: &StructureResources,
         position: [i32; 3],
         rotation: Rotation,
         random: &mut impl RandomSource,
-    ) -> Vec<Jigsaw> {
+    ) -> Vec<Jigsaw<'a>> {
         match self {
             Self::Empty => Vec::new(),
             Self::Feature { .. } => vec![Jigsaw {
@@ -343,12 +346,12 @@ impl PoolElement {
     }
 }
 /// StructureTemplate.getJigsaws: palette chosen by a position-seeded random.
-fn template_jigsaws(
+fn template_jigsaws<'a>(
     resources: &StructureResources,
-    template: &StructureTemplate,
+    template: &'a StructureTemplate,
     position: [i32; 3],
     rotation: Rotation,
-) -> Vec<Jigsaw> {
+) -> Vec<Jigsaw<'a>> {
     if template.palettes().is_empty() {
         return Vec::new();
     }
@@ -368,7 +371,7 @@ fn template_jigsaws(
             let orientation = resources
                 .registry
                 .state(state)
-                .and_then(|s| s.properties.get("orientation").cloned())
+                .and_then(|s| s.properties.get("orientation").map(String::as_str))
                 .unwrap_or_default();
             let (front, top) = orientation.split_once('_').unwrap_or(("north", "up"));
             Jigsaw {
@@ -376,9 +379,9 @@ fn template_jigsaws(
                 front: direction(front),
                 top: direction(top),
                 rollable: j.rollable,
-                name: Some(j.name.clone()),
-                pool: j.pool.clone(),
-                target: j.target.clone(),
+                name: Some(std::borrow::Cow::Borrowed(&j.name)),
+                pool: std::borrow::Cow::Borrowed(&j.pool),
+                target: std::borrow::Cow::Borrowed(&j.target),
                 placement_priority: j.placement_priority,
                 selection_priority: j.selection_priority,
             }
@@ -431,10 +434,10 @@ impl Pool {
     /// YUNG's API's pick: `nextInt` of the entries' total weight, walked in
     /// `order` (indices into `raw`); the entry that takes it below zero.
     fn weighted(&self, order: &[usize], random: &mut impl RandomSource) -> Option<usize> {
-        let total: i32 = order.iter().map(|&i| self.raw[i].1).sum();
-        let mut pick = random.next_int_bound(total).ok()?;
+        let total: i64 = order.iter().map(|&i| i64::from(self.raw[i].1)).sum();
+        let mut pick = crate::worldgen::weighted::draw(total, random)?;
         order.iter().position(|&i| {
-            pick -= self.raw[i].1;
+            pick -= i64::from(self.raw[i].1);
             pick < 0
         })
     }
@@ -552,8 +555,12 @@ impl Pools {
                     match PoolElement::decode(&entry["element"], resources, bindings, None) {
                         Ok(element) => Arc::new(element),
                         Err(error) => {
-                            if std::env::var_os("HORIZON_JIGSAW_DEBUG").is_some() {
-                                eprintln!("pool {name}: {error}");
+                            // Vanilla refuses the data pack; here every structure using the
+                            // pool stops generating, so the reason is the only clue a mod author gets.
+                            // Once per pool: each worker decodes its own copy.
+                            static WARNED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+                            if WARNED.lock().unwrap().insert(name.to_owned()) {
+                                log::warn!("Horizon: template pool {name} is left out: {error}");
                             }
                             return None;
                         }
@@ -1071,6 +1078,37 @@ pub fn assemble_drawing(
     random: &mut impl RandomSource,
     position: [i32; 3],
 ) -> Option<([i32; 3], Vec<PoolPiece>)> {
+    let start = place_start(
+        draws, config, context, pools, resources, bindings, random, position,
+    )?;
+    Some(lay_out_children(
+        draws, start, config, context, pools, resources, bindings, random,
+    ))
+}
+
+/// A jigsaw's start piece in place ([`place_start`]), its children not laid out yet: vanilla's
+/// `Structure.GenerationStub`, whose position the structure's biome is checked at before
+/// `JigsawPlacement.addPieces` lays the rest out.
+pub struct PlacedStart {
+    /// The start position (`[centre x, start y, centre z]`).
+    pub position: [i32; 3],
+    center: PoolPiece,
+}
+
+/// The first half of [`assemble_drawing`]: the start piece drawn, rotated, projected to the
+/// heightmap and checked against the height limits. None when the start is invalid. The
+/// draws it makes come first in `random`, as in `assemble_drawing`.
+#[allow(clippy::too_many_arguments)]
+pub fn place_start(
+    draws: Draws,
+    config: &JigsawConfig<'_>,
+    context: &mut impl JigsawContext,
+    pools: &Pools,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    random: &mut impl RandomSource,
+    position: [i32; 3],
+) -> Option<PlacedStart> {
     let alias = |name: &str| {
         config
             .aliases
@@ -1140,6 +1178,29 @@ pub fn assemble_drawing(
         return None;
     }
     let cy = bottom + local[1];
+    Some(PlacedStart {
+        position: [cx, cy, cz],
+        center,
+    })
+}
+
+/// The second half of [`assemble_drawing`]: the children of a [`place_start`]ed start laid out
+/// to `config.max_depth`, with the same `random`. Returns the start position and every piece.
+#[allow(clippy::too_many_arguments)]
+pub fn lay_out_children(
+    draws: Draws,
+    start: PlacedStart,
+    config: &JigsawConfig<'_>,
+    context: &mut impl JigsawContext,
+    pools: &Pools,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    random: &mut impl RandomSource,
+) -> ([i32; 3], Vec<PoolPiece>) {
+    let PlacedStart {
+        position: [cx, cy, cz],
+        center,
+    } = start;
     let mut pieces = vec![center];
     if config.max_depth > 0 {
         let [h, v] = config.max_distance;
@@ -1160,7 +1221,7 @@ pub fn assemble_drawing(
             container,
         );
     }
-    Some(([cx, cy, cz], pieces))
+    ([cx, cy, cz], pieces)
 }
 
 /// The inner JigsawPlacement.addPieces: lays out the children of
@@ -1453,6 +1514,38 @@ impl Placer<'_, '_> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn wide_weights_jigsaw() {
+        use horizon_core::random::LegacyRandom;
+        for weights in [[1, 1, 1], [0, 2, 5], [7, 0, 1]] {
+            for seed in -20..20 {
+                let mut old = LegacyRandom::new(seed);
+                let mut new = old.clone();
+                let small = pool(&weights.map(|w| (w, json!({}))));
+                let mut at = old.next_int_bound(weights.iter().sum()).unwrap();
+                let expected = weights.iter().position(|w| {
+                    at -= w;
+                    at < 0
+                });
+                assert_eq!(small.weighted(&[0, 1, 2], &mut new), expected);
+                assert_eq!(new.next_long(), old.next_long());
+            }
+        }
+        let mut p = pool(&[(1, json!({})), (1, json!({})), (1, json!({}))]);
+        for (_, weight) in &mut Arc::get_mut(&mut p).unwrap().raw {
+            *weight = i32::MAX;
+        }
+        for seed in 0..30 {
+            assert!(
+                p.weighted(
+                    &[0, 1, 2],
+                    &mut horizon_core::random::LegacyRandom::new(seed)
+                )
+                .is_some()
+            );
+        }
+    }
 
     /// A pool of empty elements, told apart by identity, with these limits.
     fn pool(entries: &[(i32, Value)]) -> Arc<Pool> {

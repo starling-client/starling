@@ -83,6 +83,12 @@ fn player_list(players: &serde_json::Value, online: i64) -> Vec<Text> {
     lines
 }
 type Pings = Arc<Mutex<HashMap<String, Ping>>>;
+/// A saved server being dragged: where it is now, and whether it moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Held {
+    row: usize,
+    moved: bool,
+}
 /// Server icons by address as 64x64 RGBA (FaviconTexture), from servers.dat
 /// and then from each ping's favicon.
 type Icons = Arc<Mutex<HashMap<String, Arc<Vec<u8>>>>>;
@@ -97,6 +103,10 @@ pub enum Screen {
         /// Worlds announced on the local network, listed after the servers.
         lan: Scanner,
         scroll: crate::ui::Scroll,
+        /// The saved server held by a press that selected it, which the
+        /// pointer drags to another place in the list (Horizon's; vanilla
+        /// moves servers only with Shift+arrows and the icon's arrows).
+        held: Option<Held>,
     },
     /// Add (index None) or edit a server entry.
     Edit {
@@ -121,6 +131,8 @@ pub enum Screen {
     /// Join a friend's world with its invite code (Horizon's own, behind the
     /// title screen's Friends button).
     Friend {
+        /// The title and server list both open this page; cancellation returns to its parent.
+        from_title: bool,
         code: String,
         /// The relay for short codes (optional; saved on Join).
         relay: String,
@@ -130,17 +142,37 @@ pub enum Screen {
         reason: String,
         /// Auto-reconnect's next attempt, until it is cancelled.
         retry: Option<crate::reconnect::Retry>,
+        /// Wrapped reason lines, set by the last draw; the buttons sit below them.
+        lines: std::cell::Cell<usize>,
     },
 }
 /// What a click asks the title screen to do.
 pub enum Outcome {
     None,
     Back,
-    Connect { address: String, lan: bool },
+    Connect {
+        address: String,
+        lan: bool,
+    },
+    /// Another multiplayer screen (`Minecraft.setScreen`): the title opens it
+    /// through `Title::set_mode`, so a mod's `screen_opening` answer is heard
+    /// first.
+    Open(Box<Screen>),
+}
+
+/// The job of [`Screen::buttons`]'s button `id`, for the controller.
+pub fn button_action(id: u8) -> Option<crate::widgets::Action> {
+    use crate::widgets::Action;
+    match id {
+        46 => Some(Action::Back),
+        50 => Some(Action::Done),
+        51 | 53 | 57 | 59 => Some(Action::Cancel),
+        _ => None,
+    }
 }
 
 impl Screen {
-    /// The id native mods see for this screen (`NativeScreenView.id`, the
+    /// The id native mods see for this screen (`ScreenView.id`, the
     /// screen hooks): one per variant, a hook's contract, so it stays the
     /// same from release to release. A new variant must add one.
     pub fn id(&self) -> &'static str {
@@ -258,7 +290,15 @@ fn ping_all(servers: &[ServerEntry], pings: &Pings, icons: &Icons, file: &Path) 
                             }
                         }
                         // OnlineServerEntry: SUCCESSFUL only for this game's protocol.
-                        if protocol == i64::from(horizon_protocol::PROTOCOL_VERSION) {
+                        let joinable = protocol == i64::from(horizon_protocol::PROTOCOL_VERSION)
+                            || (crate::net::older_servers_enabled()
+                                && i32::try_from(protocol)
+                                    .ok()
+                                    .and_then(
+                                        horizon_protocol::adapter::ServerVersion::from_protocol,
+                                    )
+                                    .is_some());
+                        if joinable {
                             Ping::Ok {
                                 motd,
                                 players,
@@ -297,7 +337,7 @@ fn ping_all(servers: &[ServerEntry], pings: &Pings, icons: &Icons, file: &Path) 
 /// Save the list after a move or delete, keeping the icons pings stored in
 /// servers.dat since it was loaded, and the Code of Conduct accepted on a server.
 fn save_servers(file: &Path, servers: &mut [ServerEntry]) {
-    let _guard = SAVING.lock();
+    let _guard = servers::lock();
     let saved = servers::load(file);
     for entry in servers.iter_mut() {
         if let Some(s) = saved.iter().find(|s| s.ip == entry.ip) {
@@ -307,11 +347,9 @@ fn save_servers(file: &Path, servers: &mut [ServerEntry]) {
     }
     let _ = servers::save(file, servers);
 }
-/// Held while servers.dat is read and written back.
-static SAVING: Mutex<()> = Mutex::new(());
 /// Store `icon` on the entries for `address` (OnlineServerEntry.updateServerList).
 fn save_icon(file: &Path, address: &str, icon: Option<String>) {
-    let _guard = SAVING.lock();
+    let _guard = servers::lock();
     let mut list = servers::load(file);
     let mut changed = false;
     for entry in list.iter_mut().filter(|e| e.ip == address) {
@@ -329,84 +367,6 @@ pub fn save_server_icon(saves: &Path, address: &str, png: &[u8]) {
     if icon_pixels(png).is_some() {
         save_icon(&servers_file(saves), address, Some(crate::lan::base64(png)));
     }
-}
-
-/// Horizon's official survival server: a name and an address like any entry. The address is
-/// `horizon_telemetry::server_status::OFFICIAL_ADDRESS`, the one place it is kept.
-pub const OFFICIAL_SERVER: (&str, &str) = (
-    "Horizon Official",
-    horizon_telemetry::server_status::OFFICIAL_ADDRESS,
-);
-/// Beside servers.dat once the official server was offered, so a player who
-/// deletes it never gets it back: the address offered, so a new one moves the
-/// list once. The launcher writes the same file.
-const OFFICIAL_MARKER: &str = "horizon_official_server.txt";
-
-/// An address as the game connects to it: any case, 25565 when no port is given.
-fn address_key(ip: &str) -> Option<(String, u16)> {
-    servers::parse_address(ip).map(|(h, p)| (h.to_ascii_lowercase(), p))
-}
-
-/// Puts the official server at the top of the list in `game_dir`, once: not
-/// again after the player deletes it, and not when the list has its address.
-/// When it moved (the marker names another address), the entries for its
-/// earlier addresses move to the new one, once (`move_official`).
-pub fn add_official_server(game_dir: &Path) -> std::io::Result<()> {
-    let (name, address) = OFFICIAL_SERVER;
-    let marker = game_dir.join(OFFICIAL_MARKER);
-    // A marker that is there but can't be read: offered already, at an address not known.
-    let offered = match std::fs::read_to_string(&marker) {
-        Ok(text) => Some(text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => Some(String::new()),
-    };
-    if offered
-        .as_deref()
-        .is_some_and(|a| address_key(a) == address_key(address))
-    {
-        return Ok(());
-    }
-    let file = game_dir.join("servers.dat");
-    let _guard = SAVING.lock();
-    let mut list = servers::load(&file);
-    let previous = horizon_telemetry::server_status::OFFICIAL_PREVIOUS;
-    if move_official(&mut list, address, previous) {
-        servers::save(&file, &list)?;
-    }
-    if offered.is_none()
-        && !list
-            .iter()
-            .any(|s| address_key(&s.ip) == address_key(address))
-    {
-        servers::prepend(&file, &ServerEntry::new(name, address))?;
-    }
-    std::fs::write(marker, format!("{address}\n"))
-}
-
-/// Points the entries for an earlier official address at `address`, each
-/// keeping the player's name and fields. One entry for the server at most: an
-/// old one goes when the list already has `address`. Whether anything changed.
-fn move_official(list: &mut Vec<ServerEntry>, address: &str, previous: &[&str]) -> bool {
-    let new = address_key(address);
-    let old = |ip: &str| {
-        let ip = address_key(ip);
-        ip.is_some() && ip != new && previous.iter().any(|p| address_key(p) == ip)
-    };
-    let mut present = list.iter().any(|s| address_key(&s.ip) == new);
-    let mut changed = false;
-    list.retain_mut(|s| {
-        if !old(&s.ip) {
-            return true;
-        }
-        changed = true;
-        if present {
-            return false;
-        }
-        present = true;
-        s.ip = address.to_owned();
-        true
-    });
-    changed
 }
 
 /// The address and kind of list row `index`: saved servers, then discovered LAN games.
@@ -646,6 +606,7 @@ impl Screen {
             icons,
             lan: Scanner::start(),
             scroll: crate::ui::Scroll::default(),
+            held: None,
         }
     }
     pub fn buttons(&self, w: f32, h: f32) -> Vec<ButtonSpec> {
@@ -796,7 +757,7 @@ impl Screen {
                     quarter(h) + 96.0 + 18.0,
                     200.0,
                     &crate::lang::get_or("horizon.multiplayer.join", "Join"),
-                    horizon_friends::invite::parse(code).is_some(),
+                    crate::net::is_invite(code, false),
                     56,
                 ),
                 b(
@@ -808,10 +769,11 @@ impl Screen {
                     57,
                 ),
             ],
-            Self::Disconnected { retry, .. } => {
+            Self::Disconnected { retry, lines, .. } => {
+                let btn = disconnected_layout(h, lines.get(), retry.is_some()).buttons;
                 let mut v = vec![b(
                     half(w) - 100.0,
-                    half(h) + 30.0,
+                    btn,
                     200.0,
                     &crate::lang::get_or("gui.toMenu", "Back to Server List"),
                     true,
@@ -820,7 +782,7 @@ impl Screen {
                 if retry.is_some() {
                     v.push(b(
                         half(w) - 100.0,
-                        half(h) + 54.0,
+                        btn + 24.0,
                         200.0,
                         &crate::lang::get_or(
                             "horizon.multiplayer.cancel_reconnecting",
@@ -966,6 +928,14 @@ impl Screen {
                     parts.push(names.join(", "));
                 }
             }
+            Some(Ping::Incompatible { motd, version, .. }) => {
+                parts.push(t("multiplayer.status.incompatible", &[]));
+                parts.push(t(
+                    "multiplayer.status.version.narration",
+                    &[&version.plain()],
+                ));
+                parts.push(t("multiplayer.status.motd.narration", &[&motd.plain()]));
+            }
             Some(Ping::Failed(_)) => parts.push(t("multiplayer.status.no_connection", &[])),
             _ => parts.push(t("multiplayer.status.pinging", &[])),
         }
@@ -998,6 +968,7 @@ impl Screen {
                 icons,
                 lan,
                 scroll,
+                ..
             } => {
                 let (w, h) = (w.ceil(), h.ceil());
                 let title = crate::lang::get_or("multiplayer.title", "Play Multiplayer");
@@ -1237,11 +1208,17 @@ impl Screen {
                             let header = crate::lang::get_or("lanServer.title", "LAN World");
                             batch.text(atlas, &header, cx + 35.0, cy + 1.0, u32::MAX, false);
                             batch.text(atlas, &game.motd, cx + 35.0, cy + 12.0, gray, false);
-                            // LanServerEntry draws the address only while
-                            // `hideServerAddress` is off.
-                            if !hide_address {
-                                batch.text(atlas, &game.address, cx + 35.0, cy + 23.0, gray, false);
-                            }
+                            // NetworkServerEntry.extractContent: `hideServerAddress`
+                            // draws HIDDEN_ADDRESS_TEXT in the address's place.
+                            let hidden;
+                            let address = if hide_address {
+                                hidden =
+                                    crate::lang::get_or("selectServer.hiddenAddress", "(Hidden)");
+                                &hidden
+                            } else {
+                                &game.address
+                            };
+                            batch.text(atlas, address, cx + 35.0, cy + 23.0, gray, false);
                         }
                     }
                 }
@@ -1348,7 +1325,9 @@ impl Screen {
                     centered(batch, &line.plain(), top + 17.0 + i as f32 * 9.0, u32::MAX);
                 }
             }
-            Self::Friend { code, relay, focus } => {
+            Self::Friend {
+                code, relay, focus, ..
+            } => {
                 centered(
                     batch,
                     &crate::lang::get_or("horizon.multiplayer.join_friend", "Join a Friend"),
@@ -1380,19 +1359,27 @@ impl Screen {
                     *focus == 1,
                 );
             }
-            Self::Disconnected { reason, retry } => {
+            Self::Disconnected {
+                reason,
+                retry,
+                lines,
+            } => {
+                // DisconnectedScreen: the reason wraps to width - 50.
+                let wrapped = wrap(reason, (w.ceil() - 50.0).max(1.0), atlas);
+                lines.set(wrapped.len());
+                let l = disconnected_layout(h, wrapped.len(), retry.is_some());
                 centered(
                     batch,
                     &crate::lang::get_or("disconnect.lost", "Connection Lost"),
-                    half(h) - 40.0,
+                    l.title,
                     rgba(170, 170, 170, 255),
                 );
-                for (i, line) in wrap(reason, 300.0, atlas).iter().enumerate() {
-                    centered(batch, line, half(h) - 16.0 + i as f32 * 9.0, u32::MAX);
+                for (i, line) in wrapped.iter().enumerate() {
+                    centered(batch, line, l.message + i as f32 * 9.0, u32::MAX);
                 }
                 if let Some(r) = retry {
                     let text = r.text(std::time::Instant::now());
-                    centered(batch, &text, half(h) + 16.0, rgba(170, 170, 170, 255));
+                    centered(batch, &text, l.retry, rgba(170, 170, 170, 255));
                 }
             }
         }
@@ -1421,6 +1408,27 @@ impl Screen {
             _ => Outcome::None,
         }
     }
+    /// Move the selected saved server one row, as its arrows do: the pad's way to them, since a
+    /// click on a row lands at its centre. Whether there was one to move.
+    pub fn move_selected(&mut self, down: bool, saves: &Path) -> bool {
+        let Self::List {
+            servers, selected, ..
+        } = self
+        else {
+            return false;
+        };
+        let Some(k) = selected.filter(|k| *k < servers.len()) else {
+            return false;
+        };
+        let to = if down { k + 1 } else { k.wrapping_sub(1) };
+        if to < servers.len() {
+            servers.swap(k, to);
+            save_servers(&servers_file(saves), servers);
+            *selected = Some(to);
+        }
+        true
+    }
+
     pub fn click(
         &mut self,
         id: Option<u8>,
@@ -1446,19 +1454,19 @@ impl Screen {
                 }
             }
             (Self::List { .. }, Some(41)) => {
-                *self = Self::Direct {
+                return Outcome::Open(Box::new(Self::Direct {
                     address: String::new(),
-                }
+                }));
             }
-            (Self::List { .. }, Some(47)) => *self = Self::friend(),
+            (Self::List { .. }, Some(47)) => return Outcome::Open(Box::new(Self::friend(false))),
             (Self::List { .. }, Some(42)) => {
-                *self = Self::Edit {
+                return Outcome::Open(Box::new(Self::Edit {
                     index: None,
                     name: crate::lang::get_or("selectServer.defaultName", "Minecraft Server"),
                     address: String::new(),
                     focus: 1,
                     packs: None,
-                }
+                }));
             }
             (
                 Self::List {
@@ -1468,13 +1476,13 @@ impl Screen {
             ) => {
                 if let Some((i, s)) = selected.and_then(|i| servers.get(i).map(|s| (i, s.clone())))
                 {
-                    *self = Self::Edit {
+                    return Outcome::Open(Box::new(Self::Edit {
                         index: Some(i),
                         name: s.name,
                         address: s.ip,
                         focus: 0,
                         packs: s.accept_textures,
-                    };
+                    }));
                 }
             }
             (
@@ -1488,43 +1496,31 @@ impl Screen {
                     .and_then(|i| servers.get(i))
                     .map(|s| s.name.clone())
                 {
-                    let list = std::mem::replace(
-                        self,
-                        Self::Direct {
-                            address: String::new(),
-                        },
-                    );
-                    *self = Self::ConfirmDelete {
-                        list: Box::new(list),
+                    // The list stays shown until the confirmation opens.
+                    return Outcome::Open(Box::new(Self::ConfirmDelete {
+                        list: Box::new(self.clone()),
                         name,
                         lines: std::cell::Cell::new(1),
-                    };
+                    }));
                 }
             }
             // deleteCallback: yes removes the server and clears the
             // selection; either answer returns to the list as it was.
-            (Self::ConfirmDelete { .. }, Some(id @ (58 | 59))) => {
-                let Self::ConfirmDelete { list, .. } = std::mem::replace(
-                    self,
-                    Self::Direct {
-                        address: String::new(),
-                    },
-                ) else {
-                    unreachable!()
-                };
-                *self = *list;
+            (Self::ConfirmDelete { list, .. }, Some(id @ (58 | 59))) => {
+                let mut list = (**list).clone();
                 if id == 58
                     && let Self::List {
                         servers, selected, ..
-                    } = self
+                    } = &mut list
                     && let Some(i) = selected.take()
                     && i < servers.len()
                 {
                     servers.remove(i);
                     save_servers(&servers_file(saves), servers);
                 }
+                return Outcome::Open(Box::new(list));
             }
-            (Self::List { .. }, Some(45)) => *self = Self::list(saves),
+            (Self::List { .. }, Some(45)) => return Outcome::Open(Box::new(Self::list(saves))),
             (Self::List { .. }, Some(46)) => return Outcome::Back,
             (
                 Self::List {
@@ -1532,6 +1528,7 @@ impl Screen {
                     selected,
                     lan,
                     scroll,
+                    held,
                     ..
                 },
                 None,
@@ -1589,6 +1586,13 @@ impl Screen {
                         return Outcome::Connect { address, lan };
                     }
                     *selected = Some(index);
+                    // The press that selects a saved server can drag it.
+                    if let Some(Row::Server(k)) = row {
+                        *held = Some(Held {
+                            row: k,
+                            moved: false,
+                        });
+                    }
                 }
             }
             // CycleButton: Enabled, Disabled, Prompt, and round again.
@@ -1609,7 +1613,7 @@ impl Screen {
                 },
                 Some(50),
             ) => {
-                let mut list = servers::load(&servers_file(saves));
+                let (mut list, mut hidden) = servers::load_all(&servers_file(saves));
                 let mut entry = ServerEntry::new(name.trim(), address.trim());
                 entry.accept_textures = *packs;
                 match index.and_then(|i| list.get_mut(i)) {
@@ -1618,27 +1622,46 @@ impl Screen {
                         e.ip = entry.ip;
                         e.accept_textures = entry.accept_textures;
                     }
-                    None => list.push(entry),
+                    // addServerCallback: ServerList.unhide brings back a hidden entry
+                    // for the address, given the new name and icon
+                    // (copyNameIconFrom); it keeps its other settings.
+                    None => match hidden.iter().position(|h| h.ip == entry.ip) {
+                        Some(h) => {
+                            let mut e = hidden.remove(h);
+                            e.name = entry.name;
+                            e.icon = entry.icon;
+                            list.push(e);
+                        }
+                        None => list.push(entry),
+                    },
                 }
-                let _ = servers::save(&servers_file(saves), &list);
-                *self = Self::list(saves);
+                let _ = servers::save_all(&servers_file(saves), &list, &hidden);
+                return Outcome::Open(Box::new(Self::list(saves)));
             }
+            (
+                Self::Friend {
+                    from_title: true, ..
+                },
+                Some(57),
+            ) => return Outcome::Back,
             (
                 Self::Edit { .. }
                 | Self::Direct { .. }
                 | Self::Friend { .. }
                 | Self::Disconnected { .. },
                 Some(51 | 53 | 54 | 57),
-            ) => *self = Self::list(saves),
+            ) => return Outcome::Open(Box::new(Self::list(saves))),
             (Self::Disconnected { retry, .. }, Some(55)) => *retry = None,
             (Self::Direct { address }, Some(52)) => {
+                let address = direct_address(address);
+                remember_direct_join(saves, &address);
                 return Outcome::Connect {
-                    address: direct_address(address),
+                    address,
                     lan: false,
                 };
             }
             (Self::Friend { code, relay, .. }, Some(56)) => {
-                if horizon_friends::invite::parse(code).is_some() {
+                if crate::net::is_invite(code, false) {
                     crate::net::save_friends_relay(relay.trim());
                     let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
                     return Outcome::Connect {
@@ -1736,27 +1759,52 @@ impl Screen {
             }
         }
     }
-    /// The pointer moved: a held scrollbar follows it.
+    /// The pointer moved: a held scrollbar follows it, and a held server
+    /// moves to the saved server's row under the pointer, the others closing
+    /// up behind it; it stays selected.
     pub fn drag(&mut self, y: f32, size: (f32, f32)) {
         if let Self::List {
             servers,
+            selected,
             lan,
             scroll,
+            held,
             ..
         } = self
         {
-            let (top, bottom, _) = list_area(size.0.ceil(), size.1.ceil());
-            scroll.drag(
-                y,
-                top,
-                bottom,
-                content_height(servers.len(), lan.games().len()),
-            );
+            let (w, h) = (size.0.ceil(), size.1.ceil());
+            let (top, bottom, left) = list_area(w, h);
+            let games = lan.games().len();
+            scroll.drag(y, top, bottom, content_height(servers.len(), games));
+            if let Some(held) = held
+                && let Some(Row::Server(to)) =
+                    row_at(servers.len(), games, (left + 1.0, y), (w, h), scroll.amount)
+                && to != held.row
+            {
+                let server = servers.remove(held.row);
+                servers.insert(to, server);
+                *held = Held {
+                    row: to,
+                    moved: true,
+                };
+                *selected = Some(to);
+            }
         }
     }
-    pub fn release(&mut self) {
-        if let Self::List { scroll, .. } = self {
+    /// The button was released: a server that was dragged somewhere else is
+    /// saved there.
+    pub fn release(&mut self, saves: &Path) {
+        if let Self::List {
+            servers,
+            scroll,
+            held,
+            ..
+        } = self
+        {
             scroll.release();
+            if held.take().is_some_and(|h| h.moved) {
+                save_servers(&servers_file(saves), servers);
+            }
         }
     }
     /// The focused box, in GUI pixels: name at 66, address at 106
@@ -1799,8 +1847,9 @@ impl Screen {
         }
     }
     /// Join a friend, with the relay the player set before.
-    pub fn friend() -> Self {
+    pub fn friend(from_title: bool) -> Self {
         Self::Friend {
+            from_title,
             code: String::new(),
             relay: crate::net::friends_relay_setting().unwrap_or_default(),
             focus: 0,
@@ -1902,26 +1951,37 @@ impl Screen {
             *button = Some(buttons[next - 2]);
         }
     }
-    /// Escape: back to the list, or out of it (true).
-    pub fn escape(&mut self, saves: &Path) -> bool {
+    /// Escape: out of the list (`Back`), or back to it (`Open`).
+    pub fn escape(&self, saves: &Path) -> Outcome {
         match self {
-            Self::List { .. } => true,
+            Self::List { .. }
+            | Self::Friend {
+                from_title: true, ..
+            } => Outcome::Back,
             // ConfirmScreen.keyPressed: Escape answers no.
-            Self::ConfirmDelete { list, .. } => {
-                let list = std::mem::replace(
-                    &mut **list,
-                    Self::Direct {
-                        address: String::new(),
-                    },
-                );
-                *self = list;
-                false
-            }
-            _ => {
-                *self = Self::list(saves);
-                false
-            }
+            Self::ConfirmDelete { list, .. } => Outcome::Open(list.clone()),
+            _ => Outcome::Open(Box::new(Self::list(saves))),
         }
+    }
+}
+
+/// `JoinMultiplayerScreen.directJoinCallback`: an address no entry has, shown
+/// or hidden (`ServerList.get`), gets a hidden one named
+/// `selectServer.defaultName`, which keeps the server's resource pack and Code
+/// of Conduct answers. A friend's invite gets none.
+pub fn remember_direct_join(saves: &Path, address: &str) {
+    if address.starts_with(crate::net::FRIEND) {
+        return;
+    }
+    let file = servers_file(saves);
+    let _guard = servers::lock();
+    let (shown, hidden) = servers::load_all(&file);
+    if shown.iter().chain(&hidden).any(|s| s.ip == address) {
+        return;
+    }
+    let name = crate::lang::get_or("selectServer.defaultName", "Minecraft Server");
+    if let Err(e) = servers::add_hidden(&file, ServerEntry::new(&name, address)) {
+        log::warn!("could not save {}: {e}", file.display());
     }
 }
 
@@ -1929,15 +1989,35 @@ impl Screen {
 /// friend (a short relay code could be a host name, so it needs Join a Friend).
 fn direct_address(address: &str) -> String {
     let code: String = address.chars().filter(|c| !c.is_whitespace()).collect();
-    if matches!(
-        horizon_friends::invite::parse(&code),
-        Some(horizon_friends::invite::Parsed::Long(_))
-    ) {
+    if crate::net::is_invite(&code, true) {
         format!("{}{code}", crate::net::FRIEND)
     } else {
         address.trim().to_owned()
     }
 }
+/// Y positions on the disconnect screen.
+struct DisconnectedLayout {
+    title: f32,
+    message: f32,
+    retry: f32,
+    buttons: f32,
+}
+/// `DisconnectedScreen.init`: a vertical layout centred on the screen. The
+/// title and message cells pad 10 on each side, the buttons 2; the message
+/// is `lines` rows of 9, so the buttons always sit below it.
+fn disconnected_layout(h: f32, lines: usize, retry: bool) -> DisconnectedLayout {
+    let message_h = lines as f32 * 9.0 + 20.0;
+    let retry_h = if retry { 13.0 } else { 0.0 };
+    let buttons = if retry { 48.0 } else { 24.0 };
+    let top = half(h - (29.0 + message_h + retry_h + buttons));
+    DisconnectedLayout {
+        title: top + 10.0,
+        message: top + 39.0,
+        retry: top + 29.0 + message_h + 2.0,
+        buttons: top + 29.0 + message_h + retry_h + 2.0,
+    }
+}
+
 /// Greedy word wrap to a pixel width.
 pub fn wrap(text: &str, width: f32, atlas: &HudAtlas) -> Vec<String> {
     let mut lines = Vec::new();
@@ -1956,7 +2036,31 @@ pub fn wrap(text: &str, width: f32, atlas: &HudAtlas) -> Vec<String> {
                 line = candidate;
             }
         }
-        lines.push(line);
+        // `Font.wordWrap` also breaks a word that does not fit by itself: Chinese has no
+        // spaces, so its text only wraps between characters.
+        if HudBatch::text_width(atlas, &line) > width {
+            let mut rest = std::mem::take(&mut line);
+            while !rest.is_empty() {
+                let mut cut = 0;
+                let mut chunk = String::new();
+                for (at, ch) in rest.char_indices() {
+                    chunk.push(ch);
+                    if HudBatch::text_width(atlas, &chunk) > width && at > 0 {
+                        chunk.pop();
+                        break;
+                    }
+                    cut = at + ch.len_utf8();
+                }
+                if cut == 0 {
+                    // One character wider than the line: it goes out alone.
+                    cut = rest.chars().next().map_or(rest.len(), char::len_utf8);
+                }
+                lines.push(rest[..cut].to_owned());
+                rest = rest[cut..].to_owned();
+            }
+        } else {
+            lines.push(line);
+        }
     }
     lines
 }
@@ -1964,6 +2068,24 @@ pub fn wrap(text: &str, width: f32, atlas: &HudAtlas) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Screen::click` as the title applies it: an `Open` replaces the screen.
+    fn click(
+        screen: &mut Screen,
+        id: Option<u8>,
+        x: f32,
+        y: f32,
+        size: (f32, f32),
+        saves: &Path,
+    ) -> Outcome {
+        match screen.click(id, x, y, size, saves) {
+            Outcome::Open(next) => {
+                *screen = *next;
+                Outcome::None
+            }
+            outcome => outcome,
+        }
+    }
 
     #[test]
     fn servers_dat_is_beside_saves_or_in_the_player_dir() {
@@ -1979,6 +2101,57 @@ mod tests {
     }
 
     #[test]
+    fn incompatible_server_narration_matches_vanilla_order() {
+        struct Vanilla;
+        impl crate::lang::ResourceSource for Vanilla {
+            fn read(&self, path: &str) -> Option<Vec<u8>> {
+                (path == "assets/minecraft/lang/en_us.json").then(|| {
+                    br#"{
+                        "narrator.select": "Select %s",
+                        "multiplayer.status.incompatible": "Incompatible version",
+                        "multiplayer.status.version.narration": "Version %s",
+                        "multiplayer.status.motd.narration": "MOTD %s"
+                    }"#
+                    .to_vec()
+                })
+            }
+            fn namespaces(&self) -> Vec<String> {
+                vec!["minecraft".into()]
+            }
+        }
+
+        crate::lang::scoped(crate::lang::Language::load(&[&Vanilla], "en_us"), || {
+            let entry = ServerEntry::new("Vanilla Legacy", "127.0.0.1:25565");
+            let ping = Ping::Incompatible {
+                motd: Text::literal("A Server"),
+                players: None,
+                player_list: Vec::new(),
+                version: Text::literal("1.12.2"),
+            };
+            let narration = Screen::server_narration(&entry, Some(&ping));
+            assert!(narration.contains("Vanilla Legacy"));
+            assert!(narration.contains("1.12.2"));
+            assert!(narration.contains("A Server"));
+            assert!(narration.contains("Incompatible version"));
+            // Vanilla: name -> incompatible -> version -> motd
+            let select = crate::screen_narrator::translate("narrator.select", &["Vanilla Legacy"]);
+            let incomp = crate::screen_narrator::translate("multiplayer.status.incompatible", &[]);
+            let version = crate::screen_narrator::translate(
+                "multiplayer.status.version.narration",
+                &["1.12.2"],
+            );
+            let motd = crate::screen_narrator::translate(
+                "multiplayer.status.motd.narration",
+                &["A Server"],
+            );
+            assert_eq!(
+                narration,
+                crate::widgets::join_for_narration(&[&select, &incomp, &version, &motd])
+            );
+        });
+    }
+
+    #[test]
     fn only_discovered_entries_get_lan_authentication() {
         let address = "127.0.0.1:25565";
         let mut screen = Screen::List {
@@ -1991,6 +2164,7 @@ mod tests {
                 address: address.into(),
             }]),
             scroll: Default::default(),
+            held: None,
         };
         for (index, expected_lan) in [(0, false), (1, true)] {
             if let Screen::List { selected, .. } = &mut screen {
@@ -1999,7 +2173,14 @@ mod tests {
             let Outcome::Connect {
                 address: actual,
                 lan,
-            } = screen.click(Some(40), 0.0, 0.0, (640.0, 480.0), Path::new(""))
+            } = click(
+                &mut screen,
+                Some(40),
+                0.0,
+                0.0,
+                (640.0, 480.0),
+                Path::new(""),
+            )
             else {
                 panic!("join did not connect")
             };
@@ -2016,20 +2197,9 @@ mod tests {
     }
 
     #[test]
-    fn direct_connection_joins_a_pasted_invite_and_keeps_host_names() {
-        let invite = horizon_friends::invite::Invite {
-            secret: *b"0123456789",
-            port: 25580,
-            endpoints: vec!["192.168.1.20:25580".parse().unwrap()],
-            relay: None,
-        }
-        .encode();
-        assert_eq!(
-            direct_address(&format!(" {invite} ")),
-            format!("{}{invite}", crate::net::FRIEND)
-        );
+    fn direct_connection_keeps_host_names() {
         for host in ["localhost", "example.org:25566", "abcdefgh", "[::1]:25568"] {
-            assert_eq!(direct_address(host), host);
+            assert_eq!(direct_address(&format!(" {host} ")), host);
         }
     }
 
@@ -2104,6 +2274,7 @@ mod tests {
         assert_eq!(at(&direct, 427.0, 334.0), [(113.0, 191.0), (113.0, 215.0)]);
         assert_eq!(at(&direct, 320.0, 240.0), [(60.0, 168.0), (60.0, 192.0)]);
         let friend = Screen::Friend {
+            from_title: false,
             code: String::new(),
             relay: String::new(),
             focus: 0,
@@ -2112,8 +2283,14 @@ mod tests {
         let lost = Screen::Disconnected {
             reason: String::new(),
             retry: None,
+            lines: std::cell::Cell::new(1),
         };
-        assert_eq!(at(&lost, 427.0, 253.0), [(113.0, 156.0)]);
+        assert_eq!(at(&lost, 427.0, 253.0), [(113.0, 145.0)]);
+        // Taller messages push the button down instead of under the text.
+        let l1 = disconnected_layout(253.0, 1, false);
+        let l6 = disconnected_layout(253.0, 6, false);
+        assert!(l6.buttons >= l6.message + 6.0 * 9.0);
+        assert!(l1.buttons >= l1.message + 9.0);
         // centeredText: `width / 2 - font.width(text) / 2`.
         assert_eq!(centered_x(427.0, 85.0), 171.0);
         assert_eq!(centered_x(320.0, 84.0), 118.0);
@@ -2257,96 +2434,6 @@ mod tests {
     }
 
     #[test]
-    fn the_official_server_is_added_once_at_the_top() {
-        let dir = std::env::temp_dir().join(format!("horizon-mp-official-{}", std::process::id()));
-        let (name, address) = OFFICIAL_SERVER;
-        let file = dir.join("servers.dat");
-        let ips = || -> Vec<String> { servers::load(&file).into_iter().map(|s| s.ip).collect() };
-        let fresh = |list: &[ServerEntry]| {
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            if !list.is_empty() {
-                servers::save(&file, list).unwrap();
-            }
-        };
-        // A fresh list: just the official server, named like it.
-        fresh(&[]);
-        add_official_server(&dir).unwrap();
-        assert_eq!(servers::load(&file), [ServerEntry::new(name, address)]);
-        // An existing list: on top, the player's servers kept in their order.
-        let mine = [
-            ServerEntry::new("Mine", "127.0.0.1:2"),
-            ServerEntry::new("Other", "example.org"),
-        ];
-        fresh(&mine);
-        add_official_server(&dir).unwrap();
-        assert_eq!(ips(), [address, "127.0.0.1:2", "example.org"]);
-        // Once only: a second start adds nothing.
-        add_official_server(&dir).unwrap();
-        assert_eq!(ips(), [address, "127.0.0.1:2", "example.org"]);
-        // Already there under the player's own name and spelling: not duplicated.
-        fresh(&[
-            ServerEntry::new("SMP", "Play.PlayHorizon.dev:25565"),
-            mine[0].clone(),
-        ]);
-        add_official_server(&dir).unwrap();
-        assert_eq!(ips(), ["Play.PlayHorizon.dev:25565", "127.0.0.1:2"]);
-        // Deleted by the player: never back.
-        fresh(&mine);
-        add_official_server(&dir).unwrap();
-        servers::save(&file, &mine).unwrap();
-        add_official_server(&dir).unwrap();
-        assert_eq!(ips(), ["127.0.0.1:2", "example.org"]);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_moved_official_server_moves_the_old_entry_once() {
-        let dir = std::env::temp_dir().join(format!("horizon-mp-moved-{}", std::process::id()));
-        let address = OFFICIAL_SERVER.1;
-        let file = dir.join("servers.dat");
-        let marker = dir.join(OFFICIAL_MARKER);
-        let ips = || -> Vec<String> { servers::load(&file).into_iter().map(|s| s.ip).collect() };
-        let offered_before = |list: &[ServerEntry]| {
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            servers::save(&file, list).unwrap();
-            std::fs::write(&marker, "horizon.bunchy7s.dev\n").unwrap();
-        };
-        // The old address under the player's own name and spelling: moved, name and place kept.
-        let mut old = ServerEntry::new("Our SMP", "Horizon.Bunchy7s.dev:25565");
-        old.icon = Some("AAAA".into());
-        offered_before(&[ServerEntry::new("Mine", "127.0.0.1:2"), old]);
-        add_official_server(&dir).unwrap();
-        let list = servers::load(&file);
-        assert_eq!(ips(), ["127.0.0.1:2", address]);
-        assert_eq!(
-            (list[1].name.as_str(), list[1].icon.as_deref()),
-            ("Our SMP", Some("AAAA"))
-        );
-        assert_eq!(
-            std::fs::read_to_string(&marker).unwrap(),
-            format!("{address}\n")
-        );
-        // Once: the old address added back afterwards is the player's.
-        servers::prepend(&file, &ServerEntry::new("Old", "horizon.bunchy7s.dev")).unwrap();
-        add_official_server(&dir).unwrap();
-        assert_eq!(ips(), ["horizon.bunchy7s.dev", "127.0.0.1:2", address]);
-        // The new address already listed: no second entry.
-        offered_before(&[
-            ServerEntry::new("Old", "horizon.bunchy7s.dev"),
-            ServerEntry::new("New", address),
-        ]);
-        add_official_server(&dir).unwrap();
-        assert_eq!(ips(), [address]);
-        // Deleted by the player before the move: not offered again; another port is left alone.
-        offered_before(&[ServerEntry::new("Test", "horizon.bunchy7s.dev:25570")]);
-        add_official_server(&dir).unwrap();
-        assert_eq!(ips(), ["horizon.bunchy7s.dev:25570"]);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn arrow_keys_select_servers_and_shift_moves_them() {
         let dir = std::env::temp_dir().join(format!("horizon-mp-keys-{}", std::process::id()));
         let saves = dir.join("saves");
@@ -2431,6 +2518,70 @@ mod tests {
     }
 
     #[test]
+    fn a_server_dragged_by_its_row_moves_and_is_saved_on_release() {
+        let dir = std::env::temp_dir().join(format!("horizon-mp-drag-{}", std::process::id()));
+        let saves = dir.join("saves");
+        std::fs::create_dir_all(&saves).unwrap();
+        let file = servers_file(&saves);
+        let list: Vec<ServerEntry> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|n| ServerEntry::new(n, &format!("{n}.example:25565")))
+            .collect();
+        servers::save(&file, &list).unwrap();
+        let mut screen = Screen::list(&saves);
+        let size = (427.0, 240.0);
+        let order = |screen: &Screen| match screen {
+            Screen::List {
+                servers, selected, ..
+            } => (
+                servers.iter().map(|s| s.name.clone()).collect::<String>(),
+                *selected,
+            ),
+            _ => unreachable!(),
+        };
+        let saved = || {
+            servers::load(&file)
+                .into_iter()
+                .map(|s| s.name)
+                .collect::<String>()
+        };
+        // 427x240: rows start at x 61, the first at y 35; the name, right of the icon.
+        let (x, row) = (130.0, |i: f32| 37.0 + 10.0 + i * ROW_HEIGHT);
+        // A press on "a"'s name selects it and holds it; dragging over "c"'s
+        // row puts it there, "b" and "c" close up, and nothing is saved yet.
+        assert!(matches!(
+            screen.click(None, x, row(0.0), size, &saves),
+            Outcome::None
+        ));
+        screen.drag(row(1.0), size);
+        screen.drag(row(2.0), size);
+        assert_eq!(order(&screen), ("bcad".into(), Some(2)));
+        assert_eq!(saved(), "abcd");
+        // Past the last server it stays the last.
+        screen.drag(row(3.0), size);
+        screen.drag(row(6.0), size);
+        assert_eq!(order(&screen), ("bcda".into(), Some(3)));
+        screen.release(&saves);
+        assert_eq!(saved(), "bcda");
+        // The held server is dropped: moving the pointer moves nothing now.
+        screen.drag(row(0.0), size);
+        assert_eq!(order(&screen).0, "bcda");
+        // A press on the selected server joins, as vanilla's does, and holds nothing.
+        match screen.click(None, x, row(3.0), size, &saves) {
+            Outcome::Connect { address, .. } => assert_eq!(address, "a.example:25565"),
+            _ => panic!("the selected server joins"),
+        }
+        screen.drag(row(0.0), size);
+        assert_eq!(order(&screen).0, "bcda");
+        // A press and release with no move saves nothing new.
+        std::fs::remove_file(&file).unwrap();
+        screen.click(None, x, row(1.0), size, &saves);
+        screen.release(&saves);
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn icon_arrows_join_and_move_servers() {
         let dir = std::env::temp_dir().join(format!("horizon-mp-arrows-{}", std::process::id()));
         let saves = dir.join("saves");
@@ -2457,7 +2608,7 @@ mod tests {
         let (ix, iy) = (63.0, 37.0);
         // The first server has no up arrow: its top-left quarter selects it.
         assert!(matches!(
-            screen.click(None, ix + 4.0, iy + 4.0, size, &saves),
+            click(&mut screen, None, ix + 4.0, iy + 4.0, size, &saves),
             Outcome::None
         ));
         assert_eq!(
@@ -2465,7 +2616,7 @@ mod tests {
             (vec!["a".into(), "b".into(), "c".into()], Some(0))
         );
         // Bottom-left quarter: down, saved, and still selected.
-        screen.click(None, ix + 4.0, iy + 20.0, size, &saves);
+        click(&mut screen, None, ix + 4.0, iy + 20.0, size, &saves);
         assert_eq!(
             order(&screen),
             (vec!["b".into(), "a".into(), "c".into()], Some(1))
@@ -2473,13 +2624,27 @@ mod tests {
         let saved: Vec<String> = servers::load(&file).into_iter().map(|s| s.name).collect();
         assert_eq!(saved, ["b", "a", "c"]);
         // Top-left quarter of the second row: back up.
-        screen.click(None, ix + 4.0, iy + ROW_HEIGHT + 4.0, size, &saves);
+        click(
+            &mut screen,
+            None,
+            ix + 4.0,
+            iy + ROW_HEIGHT + 4.0,
+            size,
+            &saves,
+        );
         assert_eq!(
             order(&screen),
             (vec!["a".into(), "b".into(), "c".into()], Some(0))
         );
         // The right half joins at once.
-        match screen.click(None, ix + 20.0, iy + 2.0 * ROW_HEIGHT + 10.0, size, &saves) {
+        match click(
+            &mut screen,
+            None,
+            ix + 20.0,
+            iy + 2.0 * ROW_HEIGHT + 10.0,
+            size,
+            &saves,
+        ) {
             Outcome::Connect { address, lan } => {
                 assert_eq!(address, list[2].ip);
                 assert!(!lan);
@@ -2511,7 +2676,7 @@ mod tests {
         };
         select(&mut screen);
         // Delete opens the ConfirmScreen: nothing is removed yet.
-        screen.click(Some(44), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(44), 0.0, 0.0, size, &saves);
         assert!(matches!(&screen, Screen::ConfirmDelete { name, .. } if name == "Gone"));
         let labels: Vec<(f32, f32, String, u8)> = screen
             .buttons(size.0, size.1)
@@ -2527,7 +2692,7 @@ mod tests {
         );
         assert_eq!(names(), ["Keep", "Gone"]);
         // Cancel and Escape return to the list with the selection kept.
-        screen.click(Some(59), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(59), 0.0, 0.0, size, &saves);
         assert!(matches!(
             &screen,
             Screen::List {
@@ -2535,8 +2700,11 @@ mod tests {
                 ..
             }
         ));
-        screen.click(Some(44), 0.0, 0.0, size, &saves);
-        assert!(!screen.escape(&saves));
+        click(&mut screen, Some(44), 0.0, 0.0, size, &saves);
+        let Outcome::Open(back) = screen.escape(&saves) else {
+            panic!("escape left the multiplayer screens")
+        };
+        screen = *back;
         assert!(matches!(
             &screen,
             Screen::List {
@@ -2546,8 +2714,8 @@ mod tests {
         ));
         assert_eq!(names(), ["Keep", "Gone"]);
         // Delete removes it, saves, and clears the selection.
-        screen.click(Some(44), 0.0, 0.0, size, &saves);
-        screen.click(Some(58), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(44), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(58), 0.0, 0.0, size, &saves);
         assert!(
             matches!(&screen, Screen::List { selected: None, servers, .. } if servers.len() == 1)
         );
@@ -2569,7 +2737,7 @@ mod tests {
         if let Screen::List { selected, .. } = &mut screen {
             *selected = Some(0);
         }
-        screen.click(Some(43), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(43), 0.0, 0.0, size, &saves);
         let cycle = |screen: &Screen| {
             screen
                 .buttons(size.0, size.1)
@@ -2589,22 +2757,22 @@ mod tests {
             ))
         );
         // Disabled, Prompt, Enabled: Cancel keeps what was saved.
-        screen.click(Some(60), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(60), 0.0, 0.0, size, &saves);
         assert_eq!(cycle(&screen).unwrap().3, "Server Resource Packs: Prompt");
-        screen.click(Some(51), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(51), 0.0, 0.0, size, &saves);
         assert_eq!(servers::load(&file)[0].accept_textures, Some(false));
         // Done saves it.
         if let Screen::List { selected, .. } = &mut screen {
             *selected = Some(0);
         }
-        screen.click(Some(43), 0.0, 0.0, size, &saves);
-        screen.click(Some(60), 0.0, 0.0, size, &saves);
-        screen.click(Some(60), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(43), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(60), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(60), 0.0, 0.0, size, &saves);
         assert_eq!(cycle(&screen).unwrap().3, "Server Resource Packs: Enabled");
-        screen.click(Some(50), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(50), 0.0, 0.0, size, &saves);
         assert_eq!(servers::load(&file)[0].accept_textures, Some(true));
         // A new server asks.
-        screen.click(Some(42), 0.0, 0.0, size, &saves);
+        click(&mut screen, Some(42), 0.0, 0.0, size, &saves);
         assert_eq!(cycle(&screen).unwrap().3, "Server Resource Packs: Prompt");
         let _ = std::fs::remove_dir_all(&dir);
     }

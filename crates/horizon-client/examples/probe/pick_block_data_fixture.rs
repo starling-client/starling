@@ -6,7 +6,7 @@
 use horizon_client::block_entity_item::{pick, place};
 use horizon_client::block_entity_nbt::canonical;
 use horizon_client::java_text::{double_to_string, float_to_string};
-use horizon_world::nbt::{Tag, parse_snbt};
+use horizon_core::nbt::{Tag, parse_snbt};
 use serde_json::Value;
 use std::fs;
 

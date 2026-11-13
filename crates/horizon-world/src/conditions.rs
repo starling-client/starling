@@ -1,13 +1,55 @@
 //! NeoForge's load conditions (`neoforge:conditions`): a data file that has
 //! the key loads only when every condition in it holds, and is silently
-//! absent otherwise, as NeoForge's `ICondition` does. Mods' packs lean on it
+//! absent otherwise (NeoForge's `ICondition`). Mods' packs lean on it
 //! for cross-mod recipes — a recipe for another mod's material only makes
 //! sense to load when that mod's data is in the root.
 use serde_json::Value;
 
-/// What a condition asks: whether a mod's data is loaded. Callers answer from
-/// the content root's namespaces (`content_namespaces::namespaces`), where a
-/// mod that is off leaves no namespace behind, plus `minecraft`, always.
+/// Enabled package IDs captured by the engine for one owning data load.
+/// Readers share this immutable view; they never recover IDs from namespaces.
+/// Resource selection happens before evaluating ordinary JSON files. Stacked
+/// tags and data maps instead evaluate each layer before merge or replace.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LoadConditions {
+    mods: Vec<String>,
+}
+
+impl LoadConditions {
+    /// A vanilla data load has the built-in package only.
+    pub const fn vanilla() -> Self {
+        Self { mods: Vec::new() }
+    }
+
+    /// Capture IDs visible to the owning load's side. The engine supplies its
+    /// enabled-mod inventory's server view for logical-server data.
+    pub fn new<'a>(ids: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut mods: Vec<_> = ids
+            .into_iter()
+            .filter(|id| *id != "minecraft")
+            .map(str::to_owned)
+            .collect();
+        mods.sort();
+        mods.dedup();
+        Self { mods }
+    }
+
+    pub fn mod_loaded(&self, id: &str) -> bool {
+        id == "minecraft"
+            || self
+                .mods
+                .binary_search_by(|loaded| loaded.as_str().cmp(id))
+                .is_ok()
+    }
+
+    /// Unknown condition kinds fail closed through the shared evaluator.
+    pub fn allows(&self, file: &Value) -> bool {
+        conditions_hold(file, &|id| self.mod_loaded(id))
+    }
+}
+
+/// What a condition asks: whether a mod is enabled for this data-load side.
+/// Callers use the owning resource generation's enabled-mod inventory, plus
+/// `minecraft`, always. Resource namespaces do not identify loaded mods.
 pub type ModLoaded<'a> = dyn Fn(&str) -> bool + 'a;
 
 /// Whether `v`'s `neoforge:conditions` all hold; a file without the key
@@ -70,6 +112,45 @@ fn known(c: &Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn load_conditions_capture_package_ids_and_keep_their_generation() {
+        let mut enabled = vec!["code_only".to_owned()];
+        let old = LoadConditions::new(enabled.iter().map(String::as_str));
+        enabled.clear();
+        let next = LoadConditions::new(enabled.iter().map(String::as_str));
+        let requires_code = json!({"neoforge:conditions":[{
+            "type":"neoforge:mod_loaded", "modid":"code_only"
+        }]});
+        assert!(old.allows(&requires_code));
+        assert!(!next.allows(&requires_code));
+        assert!(old.mod_loaded("minecraft") && next.mod_loaded("minecraft"));
+        assert!(!old.mod_loaded("resource_namespace"));
+        assert!(old.allows(&json!({"values":[]})));
+        assert!(!old.allows(&json!({"neoforge:conditions":[{"type":"future:condition"}]})));
+    }
+
+    #[test]
+    fn load_condition_cache_identity_uses_membership_not_input_order() {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let key = |conditions: &LoadConditions| {
+            let mut hasher = DefaultHasher::new();
+            conditions.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(
+            key(&LoadConditions::new(["b", "a", "a"])),
+            key(&LoadConditions::new(["a", "b"]))
+        );
+        assert_ne!(
+            key(&LoadConditions::new(["a"])),
+            key(&LoadConditions::vanilla())
+        );
+        assert_eq!(
+            LoadConditions::new(["minecraft"]),
+            LoadConditions::vanilla()
+        );
+    }
 
     fn loaded(id: &str) -> bool {
         matches!(id, "minecraft" | "create")

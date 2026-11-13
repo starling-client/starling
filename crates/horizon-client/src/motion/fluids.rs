@@ -9,7 +9,7 @@ use horizon_world::{
     },
     entity_fluid_tick::{self, EntityFluidTickWorld},
     fluid::{FluidHeightWorld, FluidKind, FluidState, FluidStateTable},
-    fluid_flow::{FluidFlowWorld, flow_at},
+    fluid_flow::FluidFlowWorld,
     fluid_shape::FluidShapeCache,
     water_splash::{self, SplashParticle, WaterSplashWorld},
 };
@@ -34,13 +34,21 @@ pub struct FluidResources {
 }
 impl FluidResources {
     pub fn new(assets: &Assets, facts: &crate::blocks::BlockFacts) -> Result<Self> {
+        Self::from_registry(assets.registry, facts, &assets.blocks_fluid_flow)
+    }
+    /// Build fluid queries from the same registry, block facts and flow tag as the scene.
+    pub fn from_registry(
+        registry: &horizon_world::registry::BlockRegistry,
+        facts: &crate::blocks::BlockFacts,
+        blocks_fluid_flow: &BTreeSet<String>,
+    ) -> Result<Self> {
         Ok(Self {
-            states: FluidStateTable::new(assets.registry)?,
+            states: FluidStateTable::new(registry)?,
             sturdy: facts.states.iter().map(|s| s.sturdy_full).collect(),
             blocks_flow: facts
                 .states
                 .iter()
-                .map(|s| assets.blocks_fluid_flow.contains(&*s.name))
+                .map(|s| blocks_fluid_flow.contains(&*s.name))
                 .collect(),
             ice: facts
                 .states
@@ -406,7 +414,7 @@ impl FluidInteractionWorld for MotionWorld<'_, '_, '_> {
         f.camera_height_at(self, [p.x, p.y, p.z])
     }
     fn flow(&mut self, f: FluidState, p: BlockPos) -> Result<Vec3> {
-        flow_at(self, f, p)
+        super::pushing_flow(self.loop_context, self, f, p)
     }
 }
 impl EntityFluidTickWorld for MotionWorld<'_, '_, '_> {

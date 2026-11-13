@@ -1712,6 +1712,8 @@ pub struct TouchPointer {
     /// The finger landed on a list's button: moving it scrolls whichever way it goes, never
     /// presses ([`TouchPointer::prefer_scroll`]).
     scroll_only: bool,
+    /// The finger landed on a slider in a list ([`TouchPointer::prefer_slider`]).
+    slider: bool,
     /// A finger held still presses ([`TouchPointer::set_hold_presses`]).
     hold_presses: bool,
 }
@@ -1742,6 +1744,15 @@ impl TouchPointer {
     /// a drag starting sideways would press); a tap still clicks. Lifting it ends that.
     pub fn prefer_scroll(&mut self) {
         self.scroll_only = true;
+    }
+
+    /// The finger that just landed is on a slider in a list: it takes the slider only moving
+    /// clearly sideways (more than twice as far as up or down), and scrolls the list otherwise; a
+    /// tap leaves the slider where it was. A list of sliders scrolls under a thumb that starts a
+    /// little askew, which the plain rule (sideways if more sideways than not) handed to the
+    /// slider. Lifting the finger ends that.
+    pub fn prefer_slider(&mut self) {
+        self.slider = true;
     }
 
     /// Whether a finger held still presses, which a carried item's drag needs. Elsewhere it would
@@ -1782,7 +1793,12 @@ impl TouchPointer {
                 let mut out = Vec::new();
                 if self.gesture == Gesture::Undecided && dist(p, self.start) > slop {
                     let (dx, dy) = (p[0] - self.start[0], p[1] - self.start[1]);
-                    if self.scroll_only || (dy.abs() > dx.abs() && !self.drag) {
+                    let sideways = if self.slider {
+                        dx.abs() > 2.0 * dy.abs()
+                    } else {
+                        dy.abs() <= dx.abs()
+                    };
+                    if self.scroll_only || (!sideways && !self.drag) {
                         self.gesture = Gesture::Scroll;
                         // Scrolling picks up from where the finger landed.
                         self.last = self.start;
@@ -1806,8 +1822,10 @@ impl TouchPointer {
                 self.finger = None;
                 self.drag = false;
                 self.scroll_only = false;
+                let slider = std::mem::take(&mut self.slider);
                 match self.gesture {
-                    Gesture::Undecided if phase == TouchPhase::Ended => {
+                    // A tap on a slider leaves it be: it was likely meant for the list.
+                    Gesture::Undecided if phase == TouchPhase::Ended && !slider => {
                         vec![Pointer::Press, Pointer::Release]
                     }
                     Gesture::Drag => vec![Pointer::Move(p), Pointer::Release],
@@ -1859,6 +1877,7 @@ impl TouchPointer {
         self.finger = None;
         self.drag = false;
         self.scroll_only = false;
+        self.slider = false;
         match (held, self.device) {
             (true, Some(device)) => vec![window_event(Pointer::Release, device)],
             _ => Vec::new(),
@@ -2177,6 +2196,47 @@ mod tests {
         assert!(p.frame(now + HOLD).is_empty());
         assert_eq!(
             p.step(2, TouchPhase::Ended, [100.0, 500.0], 20.0, now + HOLD),
+            vec![Pointer::Press, Pointer::Release]
+        );
+    }
+
+    #[test]
+    fn a_finger_on_a_slider_takes_it_only_moving_clearly_sideways() {
+        let now = Instant::now();
+        let mut p = TouchPointer::default();
+        // Askew (30 across, 20 down): the plain rule would take the slider; this scrolls.
+        p.prefer_slider();
+        p.step(1, TouchPhase::Started, [100.0, 500.0], 20.0, now);
+        assert_eq!(
+            p.step(1, TouchPhase::Moved, [130.0, 520.0], 20.0, now),
+            vec![Pointer::Scroll(10.0)]
+        );
+        assert!(
+            p.step(1, TouchPhase::Ended, [130.0, 520.0], 20.0, now)
+                .is_empty()
+        );
+        // Clearly sideways (more than twice across): it takes the slider.
+        p.prefer_slider();
+        p.step(2, TouchPhase::Started, [100.0, 500.0], 20.0, now);
+        assert_eq!(
+            p.step(2, TouchPhase::Moved, [150.0, 510.0], 20.0, now),
+            vec![Pointer::Press, Pointer::Move([150.0, 510.0])]
+        );
+        assert_eq!(
+            p.step(2, TouchPhase::Ended, [150.0, 510.0], 20.0, now),
+            vec![Pointer::Move([150.0, 510.0]), Pointer::Release]
+        );
+        // A tap leaves the slider be.
+        p.prefer_slider();
+        p.step(3, TouchPhase::Started, [100.0, 500.0], 20.0, now);
+        assert!(
+            p.step(3, TouchPhase::Ended, [100.0, 500.0], 20.0, now)
+                .is_empty()
+        );
+        // The next finger, off the sliders, taps as before.
+        p.step(4, TouchPhase::Started, [100.0, 500.0], 20.0, now);
+        assert_eq!(
+            p.step(4, TouchPhase::Ended, [100.0, 500.0], 20.0, now),
             vec![Pointer::Press, Pointer::Release]
         );
     }

@@ -249,6 +249,17 @@ impl TouchControls {
         for (i, half) in half.into_iter().enumerate() {
             p.center[i] = p.center[i].clamp(half, 1.0 - half);
         }
+        self.keep_clear(p)
+    }
+    /// `p` moved out of the camera cutout's strip (#166) while the player keeps the controls
+    /// clear of it. Only what reaches into the strip moves, and nothing on a screen without one;
+    /// the saved layout stays as it is.
+    pub(super) fn keep_clear(&self, mut p: Placement) -> Placement {
+        if self.settings.avoid_cutout && self.safe != [0.0; 4] {
+            let [dx, dy] = layout::safe_shift(p.rect(self.aspect()), self.safe);
+            p.center[0] += dx;
+            p.center[1] += dy;
+        }
         p
     }
     pub fn custom_placement(&self, index: usize) -> Placement {

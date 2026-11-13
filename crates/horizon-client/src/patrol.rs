@@ -122,7 +122,14 @@ fn spawn_member<L: PatrolLevel, R: RandomSource>(
     if !spawn_rules::is_valid_empty_spawn(Species::Pillager, level, x, y, z) {
         return false;
     }
-    if !spawn_rules::check_spawn_rules(Species::Pillager, level, Reason::Patrol, random, x, y, z) {
+    if !spawn_rules::check_spawn_rules(
+        "minecraft:pillager",
+        Species::Pillager,
+        level,
+        Reason::Patrol,
+        random,
+        pos,
+    ) {
         return false;
     }
     spawn(level, Member { pos, leader }, random)

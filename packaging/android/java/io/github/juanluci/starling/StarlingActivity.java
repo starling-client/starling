@@ -34,6 +34,7 @@ import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
+import android.view.DisplayCutout;
 import android.view.InputDevice;
 import android.view.View;
 import android.view.WindowInsets;
@@ -65,8 +66,9 @@ import javax.crypto.spec.GCMParameterSpec;
  * The game runs in libhorizon_android (NativeActivity); this only does what the NDK cannot:
  * tells the game where its folder is (Starling in shared storage once the player allows it), hides the
  * system bars, keeps the screen on while the game is in front, tells the game how tall the
- * on-screen keyboard is (it no longer shrinks the window since edge-to-edge), and ends the
- * process with the activity, since the game's event loop cannot start twice in one process.
+ * on-screen keyboard is (it no longer shrinks the window since edge-to-edge) and where the
+ * camera cutout reaches into the window, and ends the process with the activity, since the
+ * game's event loop cannot start twice in one process.
  * The game calls the public methods from its own thread (android_lib.rs): the file manager, the
  * file picker, the clipboard, the keyboard's editor (TextMirror), the browser, the keystore, the
  * mouse's capture and the controllers' makers and motors.
@@ -93,6 +95,17 @@ public class StarlingActivity extends NativeActivity {
      * build named by GAME_LIBRARY, the very library loaded here.
      */
     private void loadGame() {
+        // The game's thread (android_main, which android-activity starts with std's default 2 MiB
+        // stack) builds the game and the world renderer in frames of about a megabyte each since
+        // Horizon of 2026-11, past that stack's end. Rust's threads take this size unless they ask
+        // for one, and std reads it once, at the first thread: before the library is loaded. As
+        // Linux gives a desktop game's main thread; the player's own setting is kept.
+        try {
+            Os.setenv("RUST_MIN_STACK",
+                    android.os.Process.is64Bit() ? "16777216" : "8388608", false);
+        } catch (ErrnoException e) {
+            // std's default then.
+        }
         String stamp = NativeMods.stamp(this);
         if (stamp != null) {
             try {
@@ -123,6 +136,10 @@ public class StarlingActivity extends NativeActivity {
 
     /** The keyboard's height in window pixels, 0 when it is hidden (android_lib.rs). */
     private static native void onImeHeight(int pixels);
+
+    /** How far the camera cutout reaches into the window from each edge, in window pixels;
+     *  all 0 without one, and before Android 9 (android_lib.rs). */
+    private static native void onSafeInsets(int left, int top, int right, int bottom);
 
     /** The game folder in shared storage, or null to keep it in the app's own files. */
     private static native void onStorage(String folder);
@@ -213,28 +230,52 @@ public class StarlingActivity extends NativeActivity {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             getWindow().setAttributes(attributes);
         }
-        if (Build.VERSION.SDK_INT >= 30) {
+        if (Build.VERSION.SDK_INT >= 28) {
             getWindow().getDecorView().setOnApplyWindowInsetsListener(
                     new View.OnApplyWindowInsetsListener() {
                         @Override
                         public WindowInsets onApplyWindowInsets(View view, WindowInsets insets) {
-                            onImeHeight(insets.getInsets(WindowInsets.Type.ime()).bottom);
-                            // The keyboard brings the navigation bar back, and it stayed after
-                            // the keyboard went: home sat beside the chat's keys.
-                            if (insets.isVisible(WindowInsets.Type.navigationBars())
-                                    || insets.isVisible(WindowInsets.Type.statusBars())) {
-                                view.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        hideSystemBars();
-                                    }
-                                });
+                            sendSafeInsets(insets);
+                            if (Build.VERSION.SDK_INT >= 30) {
+                                onImeHeight(insets.getInsets(WindowInsets.Type.ime()).bottom);
+                                // The keyboard brings the navigation bar back, and it stayed
+                                // after the keyboard went: home sat beside the chat's keys.
+                                if (insets.isVisible(WindowInsets.Type.navigationBars())
+                                        || insets.isVisible(WindowInsets.Type.statusBars())) {
+                                    view.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            hideSystemBars();
+                                        }
+                                    });
+                                }
                             }
                             return view.onApplyWindowInsets(insets);
                         }
                     });
         }
         hideSystemBars();
+    }
+
+    /**
+     * Tells the game where the camera cutout reaches into the window (in landscape, along the
+     * short edge it sits on), so the touch controls and the chat keep clear of it (#166).
+     */
+    private static void sendSafeInsets(WindowInsets insets) {
+        if (Build.VERSION.SDK_INT < 28) {
+            return;
+        }
+        DisplayCutout cutout = insets.getDisplayCutout();
+        try {
+            if (cutout == null) {
+                onSafeInsets(0, 0, 0, 0);
+            } else {
+                onSafeInsets(cutout.getSafeInsetLeft(), cutout.getSafeInsetTop(),
+                        cutout.getSafeInsetRight(), cutout.getSafeInsetBottom());
+            }
+        } catch (UnsatisfiedLinkError e) {
+            // A build of the game from before the insets: it draws as it always did.
+        }
     }
 
     @Override
@@ -390,13 +431,11 @@ public class StarlingActivity extends NativeActivity {
 
     /**
      * Buzz the phone itself for `millis` ms at its default strength: the touch controls'
-     * feedback (a block broken, a stack split), as Bedrock's. A phone without a motor stays still.
+     * feedback (a block broken, a stack split), as Bedrock's. A phone without a motor stays still;
+     * 0 stops a buzz under way (vibration just turned off).
      */
     @SuppressWarnings("deprecation")
     public void vibrate(int millis) {
-        if (millis <= 0) {
-            return;
-        }
         Vibrator motor;
         if (Build.VERSION.SDK_INT >= 31) {
             VibratorManager motors =
@@ -405,7 +444,12 @@ public class StarlingActivity extends NativeActivity {
         } else {
             motor = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         }
-        if (motor != null && motor.hasVibrator()) {
+        if (motor == null || !motor.hasVibrator()) {
+            return;
+        }
+        if (millis <= 0) {
+            motor.cancel();
+        } else {
             motor.vibrate(VibrationEffect.createOneShot(millis, VibrationEffect.DEFAULT_AMPLITUDE));
         }
     }

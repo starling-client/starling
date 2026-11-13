@@ -102,6 +102,7 @@ pub struct PlayerCheck {
 #[derive(Clone, Copy, Debug)]
 pub struct LevelLoadTracker {
     state: Option<ClientState>,
+    transition_screen: Option<usize>,
     close_delay_ms: u64,
     /// `LevelLoadingScreen.reason`.
     pub reason: Reason,
@@ -110,6 +111,7 @@ impl LevelLoadTracker {
     pub fn new(close_delay_ms: u64) -> Self {
         Self {
             state: None,
+            transition_screen: None,
             close_delay_ms,
             reason: Reason::Other,
         }
@@ -120,11 +122,23 @@ impl LevelLoadTracker {
             timeout_after: now + CLIENT_WAIT_TIMEOUT_MS,
         });
         self.reason = reason;
+        self.transition_screen = None;
     }
     /// The tracker's work is over and the screen has closed
     /// (`ClientPacketListener.tick` drops it once the level is ready).
     pub fn finish(&mut self) {
         self.state = None;
+        self.transition_screen = None;
+    }
+    /// Retain the presentation selected once at dimension entry, until this load finishes.
+    pub fn set_transition_screen(&mut self, screen: Option<usize>) {
+        if self.is_active() {
+            self.transition_screen = screen;
+        }
+    }
+    /// The selected presentation, absent for vanilla or after completion.
+    pub fn transition_screen(&self) -> Option<usize> {
+        self.transition_screen
     }
     /// A load is under way, so its screen is up.
     pub fn is_active(&self) -> bool {

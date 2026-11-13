@@ -32,7 +32,9 @@ EXEMPT = {
     "test_friends_integration_parity.py": "builds binaries; test_friends.Game isolates every game through integration_env",
     "test_management_protocol_parity.py": "starts both servers through server_bench.Server, which uses lab.game_env",
     "test_item_use_order_parity.py": "starts servers through test_server_knockback_parity.run_side; its Server uses game_environment",
+    "test_bed_explosion_parity.py": "starts servers through test_server_knockback_parity.run_side; its Server uses game_environment",
     "port_harness.py": "ports Java code, starts no game",
+    "native_dylib_probe.py": "builds the game's executable to read its imports; runs only probe fixtures, never the game",
 }
 
 

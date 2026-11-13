@@ -24,6 +24,16 @@ pub const DIFFICULTIES: [&str; 4] = ["peaceful", "easy", "normal", "hard"];
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct WorldOptions {
+    /// Selected data-pack preset; none selects `world_type`.
+    pub custom_preset: Option<String>,
+    /// Committed editor output, saved as the world's dimension stems (not kept across a restart).
+    #[serde(skip)]
+    pub preset_dimensions: Option<horizon_core::nbt::Tag>,
+    /// Available enabled data-pack presets, refreshed when the pack selection changes.
+    #[serde(skip)]
+    pub presets: std::collections::BTreeMap<String, horizon_core::nbt::Tag>,
+    /// The enabled `minecraft:normal` world-preset tag's selection order.
+    pub preset_order: Vec<String>,
     /// The open tab: Game, World or More.
     pub tab: usize,
     /// Survival locked to Hard, one life (`SelectedGameMode.HARDCORE`).
@@ -52,13 +62,17 @@ pub struct WorldOptions {
     /// Starling: the content mods adding blocks or items the world plays with; none chosen, the
     /// ones running now (world_content.rs).
     pub mods: Option<std::collections::BTreeSet<String>>,
+    /// Additional repository sources retained for this creation configuration (not kept in the
+    /// JSON a restart reads back).
+    #[serde(skip)]
+    pub additional_data_packs: std::sync::Arc<[std::sync::Arc<crate::datapack::DataPack>]>,
 }
 
 /// The rules by name as their text, set back through [`GameRules::set_string`].
 ///
 /// [`GameRules::set_string`]: crate::gamerules::GameRules::set_string
 mod rules_text {
-    use crate::gamerules::{GameRules, rule};
+    use crate::gamerules::GameRules;
     use std::collections::BTreeMap;
 
     pub fn serialize<S: serde::Serializer>(rules: &GameRules, s: S) -> Result<S::Ok, S::Error> {
@@ -75,7 +89,8 @@ mod rules_text {
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<GameRules, D::Error> {
         let text: BTreeMap<String, String> = serde::Deserialize::deserialize(d)?;
         let mut rules = GameRules::default();
-        for (name, value) in text.iter().filter(|(name, _)| rule(name).is_some()) {
+        // A name this game doesn't know is left out (set_string says so).
+        for (name, value) in &text {
             rules.set_string(name, value);
         }
         Ok(rules)
@@ -84,6 +99,13 @@ mod rules_text {
 impl Default for WorldOptions {
     fn default() -> Self {
         Self {
+            custom_preset: None,
+            preset_dimensions: None,
+            presets: Default::default(),
+            preset_order: crate::save::WorldPreset::ALL
+                .iter()
+                .map(|p| p.id().into())
+                .collect(),
             tab: 0,
             hardcore: false,
             difficulty: 2,
@@ -97,15 +119,54 @@ impl Default for WorldOptions {
             data_packs: vec!["vanilla".into()],
             pack_dir: None,
             mods: None,
+            additional_data_packs: std::sync::Arc::from([]),
         }
     }
 }
 impl WorldOptions {
+    /// Refresh additional sources and insert required packs while preserving
+    /// the chosen ids, including folder packs already copied to the new world.
+    pub fn set_additional_data_packs(
+        &mut self,
+        packs: std::sync::Arc<[std::sync::Arc<crate::datapack::DataPack>]>,
+    ) {
+        let mut available: Vec<_> = packs
+            .iter()
+            .filter_map(|pack| pack.selection.as_ref())
+            .map(crate::pack_screen::PackInfo::selectable)
+            .collect();
+        for id in &self.data_packs {
+            if !available.iter().any(|pack| pack.id == *id) {
+                available.push(crate::packs::Selectable::optional(id, true));
+            }
+        }
+        self.data_packs = crate::packs::SelectionModel::new(available, &self.data_packs)
+            .selected
+            .into_iter()
+            .rev()
+            .map(|pack| pack.id)
+            .collect();
+        self.additional_data_packs = packs;
+    }
+    /// A fresh Create New World in the game folder (the working directory): the defaults, with
+    /// the packs this game folder gives every new world.
+    pub(super) fn for_new_world() -> Self {
+        let seeded = std::env::current_dir()
+            .ok()
+            .and_then(|dir| crate::datapack::seed_create_world(&dir));
+        let mut options = Self::default();
+        if let Some((dir, ids)) = seeded {
+            options.pack_dir = Some(dir);
+            options.data_packs.extend(ids);
+        }
+        options
+    }
     /// Re-Create: the saved world's choices.
     pub(super) fn of_world(
         level: &crate::save::Level,
         commands: bool,
         dir: &std::path::Path,
+        registry: std::sync::Arc<crate::gamerules::RuleRegistry>,
     ) -> Self {
         let generation = crate::save::WorldGen::read(dir).unwrap_or_default();
         let (pack_dir, data_packs) = crate::datapack::for_recreate(dir);
@@ -123,7 +184,11 @@ impl WorldOptions {
                 .flatten(),
             structures: generation.structures,
             bonus_chest: generation.bonus_chest,
-            rules: crate::gamerules::GameRules::load_with_features(dir, &level.enabled_features),
+            rules: crate::gamerules::GameRules::load_with_registry(
+                dir,
+                &level.enabled_features,
+                registry,
+            ),
             data_packs,
             pack_dir,
             ..Self::default()
@@ -171,8 +236,16 @@ impl WorldOptions {
             }
         }
     }
-    fn available_packs(&self, resources: &std::path::Path) -> Vec<crate::datapack::DataPack> {
+    pub(super) fn available_packs(
+        &self,
+        resources: &std::path::Path,
+    ) -> Vec<crate::datapack::DataPack> {
         let mut packs = crate::datapack::feature_packs(resources);
+        packs.extend(
+            self.additional_data_packs
+                .iter()
+                .map(|pack| (**pack).clone()),
+        );
         if let Some(dir) = &self.pack_dir {
             packs.extend(crate::datapack::discover_folder(dir));
         }
@@ -218,7 +291,7 @@ impl WorldOptions {
             .then_some(self.single_biome.as_str())
     }
     /// The custom layers, as `write_world_gen_settings_with` takes them.
-    pub fn flat_settings(&self) -> Option<horizon_world::nbt::Tag> {
+    pub fn flat_settings(&self) -> Option<horizon_core::nbt::Tag> {
         self.flat_settings
             .as_ref()
             .map(super::flat::FlatSettings::to_tag)
@@ -244,11 +317,7 @@ impl WorldOptions {
             }
             24 => self.commands = Some(!self.commands(*creative)),
             25 => {
-                self.world_type = if step >= 0 {
-                    self.world_type.next()
-                } else {
-                    self.world_type.prev()
-                };
+                self.cycle_preset(step);
                 if self.world_type == crate::save::WorldPreset::Flat {
                     // setWorldType starts the generator from the flat preset.
                     self.flat_settings = Some(super::flat::FlatSettings::default());
@@ -392,7 +461,13 @@ fn game_mode(creative: bool, hardcore: bool) -> &'static str {
 }
 
 /// The open tab's buttons and the footer's.
-pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<Button> {
+pub(super) fn buttons(
+    w: f32,
+    h: f32,
+    creative: bool,
+    o: &WorldOptions,
+    editors_ready: bool,
+) -> Vec<Button> {
     let b = |x: f32, y: f32, w: f32, label: String, enabled: bool, id: u8| Button {
         x,
         y,
@@ -402,6 +477,7 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
         id,
         icon: None,
         trailing: None,
+        action: None,
     };
     let (gx, gy) = grid(w, h, o.tab);
     let mut buttons = match o.tab {
@@ -442,7 +518,7 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
                 gx,
                 gy,
                 150.0,
-                labelled("selectWorld.mapType", tr(o.world_type.label())),
+                labelled("selectWorld.mapType", o.preset_label()),
                 true,
                 25,
             ),
@@ -454,10 +530,13 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
                 gy,
                 150.0,
                 tr("selectWorld.customizeType"),
-                matches!(
-                    o.world_type,
-                    crate::save::WorldPreset::Flat | crate::save::WorldPreset::SingleBiomeSurface
-                ),
+                (editors_ready && super::preset_editors::editor(o.preset_id()).is_some())
+                    || (o.custom_preset.is_none()
+                        && matches!(
+                            o.world_type,
+                            crate::save::WorldPreset::Flat
+                                | crate::save::WorldPreset::SingleBiomeSurface
+                        )),
                 26,
             ),
             // SwitchGrid: 44-wide value-only buttons at the grid's right.
@@ -493,14 +572,17 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
         true,
         21,
     ));
-    buttons.push(b(
-        x + 158.0,
-        h - 27.0,
-        150.0,
-        crate::lang::get_or("gui.cancel", "Cancel"),
-        true,
-        22,
-    ));
+    buttons.push(
+        b(
+            x + 158.0,
+            h - 27.0,
+            150.0,
+            crate::lang::get_or("gui.cancel", "Cancel"),
+            true,
+            22,
+        )
+        .does(crate::widgets::Action::Cancel),
+    );
     buttons
 }
 
@@ -562,8 +644,8 @@ pub(super) fn button_narration(
         ))),
         24 => cycle(on_off(!o.commands(creative))).hint(tr("selectWorld.allowCommands.info")),
         25 => {
-            let n = cycle(tr(o.world_type.next().label()));
-            if o.world_type == crate::save::WorldPreset::Amplified {
+            let n = cycle(super::preset_editors::preset_label(o.cycled_preset(1)));
+            if o.custom_preset.is_none() && o.world_type == crate::save::WorldPreset::Amplified {
                 n.hint(tr("generator.minecraft.amplified.info"))
             } else {
                 n
@@ -653,6 +735,7 @@ impl Title {
             let selected = o.tab == i;
             let label = Text::translate(key, &[]);
             crate::widgets::record(&label.plain(), [x, 0.0, tw, TAB_BAR], true);
+            crate::widgets::target_as([x, 0.0, tw, TAB_BAR], crate::widgets::Kind::Tab(selected));
             let sprite = match (selected, ui::hovered(cursor, x, 0.0, tw, TAB_BAR)) {
                 (true, true) => "gui/sprites/widget/tab_selected_highlighted",
                 (true, false) => "gui/sprites/widget/tab_selected",
@@ -806,7 +889,10 @@ impl Title {
                 Some(Text::translate("selectWorld.allowCommands.info", &[]))
             }
             // WorldTab: the Amplified preset's help text on the type button.
-            1 if o.world_type == crate::save::WorldPreset::Amplified && over(gx, gy, 150.0) => {
+            1 if o.custom_preset.is_none()
+                && o.world_type == crate::save::WorldPreset::Amplified
+                && over(gx, gy, 150.0) =>
+            {
                 Some(Text::translate("generator.minecraft.amplified.info", &[]))
             }
             1 if over(gx + 266.0, gy + 73.0, 44.0) => {

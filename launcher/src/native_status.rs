@@ -1,12 +1,10 @@
-//! Whether an instance plays its native mods (docs/native-mods.md): the mods turned on in its
+//! Whether an instance plays its native mods (docs/modding/src/how-to/native-mods.md): the mods turned on in its
 //! folder against the ones its version was built with (`native-mods.json`, written by
 //! `native_mods::build`). The Mods page shows the answer beside its Build button.
 use crate::{backend, browser::java, native_mods};
 use std::fs;
 use std::path::Path;
-
-/// Shown once, before the first native mod is installed.
-pub const NOTICE: &str = "Native mods aren't sandboxed: they run with full access to your computer, like any program. Install only mods whose authors you trust. To play with one, build the game on the Mods page; the first build downloads Rust and takes 20 to 30 minutes.";
+use std::sync::Arc;
 
 /// A native mod: its id, its version and a digest of its files (None for a build from before
 /// `native-mods.json` kept them).
@@ -15,7 +13,7 @@ pub type Mod = (String, String, Option<String>);
 /// Whether an installed file (`installed::Entry::file`) is a native mod.
 pub fn is_native_file(file: &str) -> bool {
     file.strip_prefix(native_mods::INSTALLED)
-        .is_some_and(|rest| rest.starts_with('/') && rest.ends_with(".hnmod"))
+        .is_some_and(|rest| rest.starts_with('/') && rest.ends_with(".hmod"))
 }
 
 /// Where an instance's native mods stand.
@@ -33,7 +31,7 @@ pub enum State {
 
 /// The state for the mods turned on, `enabled`, and those of the version played, `built` (None
 /// when it is no native build). Order doesn't matter; a mod at another version, or with other
-/// files at the same version (a reinstalled local `.hnmod`), needs a build.
+/// files at the same version (a reinstalled local `.hmod`), needs a build.
 pub fn state(enabled: &[Mod], built: Option<&[Mod]>) -> State {
     if enabled.is_empty() {
         return State::NoMods;
@@ -65,14 +63,34 @@ pub fn state(enabled: &[Mod], built: Option<&[Mod]>) -> State {
 pub struct Build {
     /// The release or Nightly it was built on (`native_mods::About::base`).
     pub base: String,
+    /// The Horizon commit it compiled.
+    pub horizon: String,
+    /// The mods whose pin made it compile `horizon` rather than `base`'s own commit.
+    pub pinned_by: Vec<String>,
+    /// It compiled another commit than its Nightly's, with no record of why: built before the
+    /// launcher kept which mods pinned it ([`pinning`] reads them from the instance's mods).
+    pub pinned_unknown: bool,
+    /// The mods turned on that it was built without, and why.
+    pub left_out: Vec<native_mods::LeftOut>,
 }
 
 impl Build {
     /// Installed native build `version`'s, from its `native-mods.json`; None for another version.
     pub fn read(version: &str) -> Option<Build> {
-        Some(Build {
-            base: native_mods::about(version)?.base,
-        })
+        Some(Build::of(native_mods::about(version)?))
+    }
+
+    /// What build record `about` says.
+    fn of(about: native_mods::About) -> Build {
+        // The fork's manifest pins the exact Horizon commit, so a build is never on a commit
+        // its mods did not name: nothing is unknown and no pin list is recorded.
+        Build {
+            pinned_unknown: false,
+            base: about.base,
+            horizon: about.horizon,
+            pinned_by: Vec::new(),
+            left_out: about.left_out,
+        }
     }
 
     /// The Horizon it was built on, as a player reads it (`horizon_label`).
@@ -84,7 +102,7 @@ impl Build {
     pub fn horizon_short(&self) -> String {
         match crate::nightly::date_of(&self.base) {
             Some(date) => format!("Nightly {}", &date[5..]),
-            None => self.base.clone(),
+            None => crate::nightly::short_commit(&self.base),
         }
     }
 }
@@ -94,17 +112,17 @@ impl Build {
 pub fn horizon_label(version: &str) -> String {
     match crate::nightly::date_of(version) {
         Some(date) => format!("Nightly {date}"),
-        None => version.to_owned(),
+        None => crate::nightly::short_commit(version),
     }
 }
 
-/// The native mods turned on in game folder `home`, read from their `.hnmod`s. One that can't be
+/// The native mods turned on in game folder `home`, read from their `.hmod`s. One that can't be
 /// read always counts, with its file name and no version, so it needs a build (which says why):
 /// the on/off list is keyed by the manifest id, which an unreadable file can't give.
 pub fn enabled(home: &Path) -> Vec<Mod> {
     let mut out = Vec::new();
-    for path in hnmods(home) {
-        match horizon_mods::index::native::Bundle::read(&path) {
+    for path in hmods(home) {
+        match horizon_mod_package::index::native::Bundle::read(&path) {
             Ok(b) => {
                 if java::is_enabled(home, &b.manifest.id) {
                     let digest = native_mods::digest(
@@ -119,36 +137,74 @@ pub fn enabled(home: &Path) -> Vec<Mod> {
     out
 }
 
+/// The native mods turned on in game folder `home` that pin Horizon commit `revision`.
+pub fn pinning(home: &Path, revision: &str) -> Vec<String> {
+    bundles_on(home)
+        .into_iter()
+        .filter(|b| b.manifest.native.as_ref().expect("native bundle").horizon == revision)
+        .map(|b| b.manifest.id)
+        .collect()
+}
+
+/// The readable native mods turned on in game folder `home`.
+pub fn bundles_on(home: &Path) -> Vec<horizon_mod_package::index::native::Bundle> {
+    hmods(home)
+        .into_iter()
+        .filter_map(|path| horizon_mod_package::index::native::Bundle::read(&path).ok())
+        .filter(|b| java::is_enabled(home, &b.manifest.id))
+        .collect()
+}
+
+/// Paths declared by a code package, in manifest order.
+pub fn declared_internals(manifest: &horizon_mod_package::Manifest) -> Vec<String> {
+    manifest
+        .internals
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
 /// A native file not tracked by the registry/browser, including GitHub installs.
 #[derive(Clone)]
 pub struct Installed {
     pub file: String,
     pub id: String,
     pub version: String,
+    pub internals: Vec<String>,
     pub origin: Option<crate::github_mods::Origin>,
+    /// The validated package icon, or the package error (the file remains removable).
+    pub icon: Result<Option<Arc<horizon_mod_package::icon::Icon>>, String>,
 }
 
 /// Discover the actual files, not just GitHub sidecars. Registry files already have a row.
 pub fn untracked(home: &Path) -> Vec<Installed> {
     let tracked = crate::browser::installed::Installed::load(home);
-    hnmods(home)
+    hmods(home)
         .into_iter()
         .filter_map(|path| {
             let file = format!("{}/{}", native_mods::INSTALLED, path.file_name()?.to_str()?);
             if !path.is_file() || tracked.entries.iter().any(|e| e.file == file) {
                 return None;
             }
-            let (id, version) = horizon_mods::index::native::Bundle::read(&path)
-                .map(|b| (b.manifest.id, b.manifest.version))
+            let package = horizon_mod_package::manifest::Package::read(&path);
+            let (id, version) = package
+                .as_ref()
+                .map(|p| (p.manifest.id.clone(), p.manifest.version.clone()))
                 .unwrap_or_else(|_| (stem(&path), String::new()));
             let origin = (path.file_stem()?.to_str()? == id)
                 .then(|| crate::github_mods::origin(home, &id))
                 .flatten();
+            let internals = package
+                .as_ref()
+                .map(|p| declared_internals(&p.manifest))
+                .unwrap_or_default();
             Some(Installed {
                 file,
                 id,
                 version,
+                internals,
                 origin,
+                icon: package.map(|p| p.icon.map(Arc::new)),
             })
         })
         .collect()
@@ -157,17 +213,46 @@ pub fn untracked(home: &Path) -> Vec<Installed> {
 /// The mods installed version `version` was built with, or None when it isn't a native build
 /// (or its `native-mods.json` can't be read: the Mods page then offers Build).
 pub fn built(version: &str) -> Option<Vec<Mod>> {
+    Some(parse_built(&record(version)?))
+}
+
+/// Native build `version`'s `native-mods.json`.
+fn record(version: &str) -> Option<serde_json::Value> {
     if !native_mods::is_native(version) {
         return None;
     }
     let path = backend::version_dir(version).join("native-mods.json");
-    let about: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    Some(parse_built(&about))
+    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
+/// The profile native build `version` was built with (`native-mods.json`'s `profile`).
+pub fn built_profile(version: &str) -> Option<native_mods::Profile> {
+    serde_json::from_value(record(version)?.get("profile")?.clone()).ok()
+}
+
+/// `state`, once the mode counts: a build made in another mode than `chosen` is not this mode's
+/// build, so it needs its own.
+pub fn in_mode(
+    state: State,
+    built: Option<native_mods::Profile>,
+    chosen: native_mods::Profile,
+) -> State {
+    if state == State::UpToDate && built != Some(chosen) {
+        State::Outdated
+    } else {
+        state
+    }
+}
+
+/// The mods a build tried: both those it holds and those it left out.
 fn parse_built(about: &serde_json::Value) -> Vec<Mod> {
     let mods = about["mods"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let left_out = about["left_out"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     mods.iter()
+        .chain(left_out)
         .filter_map(|m| {
             Some((
                 m["id"].as_str()?.into(),
@@ -179,12 +264,12 @@ fn parse_built(about: &serde_json::Value) -> Vec<Mod> {
 }
 
 /// What [`state`] depends on, cheap to read on every frame: the folder, the version, the on/off
-/// list and each `.hnmod`'s size and time. The Mods page reads the mods again when it changes.
+/// list and each `.hmod`'s size and time. The Mods page reads the mods again when it changes.
 pub fn fingerprint(home: &Path, version: Option<&str>) -> String {
     let mut out = format!("{}\n{version:?}\n", home.display());
     // The on/off list (`browser::java::is_enabled`).
     out += &fs::read_to_string(home.join("horizon-mods.txt")).unwrap_or_default();
-    for path in hnmods(home)
+    for path in hmods(home)
         .into_iter()
         .flat_map(|p| [p.clone(), p.with_extension("origin.json")])
         .chain([home.join("mod-browser.json")])
@@ -196,11 +281,11 @@ pub fn fingerprint(home: &Path, version: Option<&str>) -> String {
     out
 }
 
-fn hnmods(home: &Path) -> Vec<std::path::PathBuf> {
+fn hmods(home: &Path) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<_> = fs::read_dir(home.join(native_mods::INSTALLED))
         .map(|dir| dir.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
-    paths.retain(|p| p.extension().is_some_and(|e| e == "hnmod"));
+    paths.retain(|p| p.extension().is_some_and(|e| e == "hmod"));
     paths.sort();
     paths
 }
@@ -224,6 +309,52 @@ mod tests {
     }
 
     #[test]
+    fn declared_paths_use_the_common_owner_for_both_code_targets() {
+        let header = "id='owner'\nname='Owner'\nversion='1.0.0'\napi='0.2'\ncapabilities=['registries']\ninternals=[{path='Game',hash='game'},{path='Game::world',kind='field',hash='world'}]\n";
+        for target in [
+            format!(
+                "[native]\ngame='26.3'\nhorizon='{}'\nmixins='{}'\n",
+                "a".repeat(40),
+                "b".repeat(40)
+            ),
+            format!("[wasm]\nsha512='{}'\ntoolchain='1.99.1'\n", "0".repeat(128)),
+        ] {
+            let manifest =
+                horizon_mod_package::Manifest::parse(&format!("{header}{target}")).unwrap();
+            assert_eq!(declared_internals(&manifest), ["Game", "Game::world"]);
+        }
+    }
+
+    #[test]
+    fn regular_wasm_package_changes_leave_the_build_view_cache_alone() {
+        let home = std::env::temp_dir().join(format!("wasm-build-view-{}", std::process::id()));
+        fs::create_dir_all(home.join(horizon_mod_package::mod_list::DIR)).unwrap();
+        let package = home
+            .join(horizon_mod_package::mod_list::DIR)
+            .join("example.hmod");
+        fs::write(&package, b"a").unwrap();
+        let before = fingerprint(&home, None);
+        fs::write(&package, b"ab").unwrap();
+        // Declared internals of a wasm package do not select native build inputs: the staged
+        // game carries the whole generated catalog, and the loader resolves each wasm mod's
+        // declarations against it at load time. Only native packages are build inputs.
+        assert_eq!(
+            before,
+            fingerprint(&home, None),
+            "a wasm package is not a build input: the native build never reads it"
+        );
+        let native = home.join(native_mods::INSTALLED);
+        fs::create_dir_all(&native).unwrap();
+        fs::write(native.join("example.hmod"), b"a").unwrap();
+        assert_ne!(
+            before,
+            fingerprint(&home, None),
+            "a native package is a build input"
+        );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn github_and_local_files_are_listed_once_and_drive_build_state() {
         use crate::browser::{installed, Kind, SourceId};
         use std::io::Write;
@@ -238,13 +369,18 @@ mod tests {
         ] {
             let path = home
                 .join(native_mods::INSTALLED)
-                .join(format!("{file}.hnmod"));
+                .join(format!("{file}.hmod"));
             let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
-            let manifest = serde_json::json!({"schema":1,"id":id,"version":"1.2","game":"26.3","horizon":pin,"mixins":pin});
-            let source = format!("[mod]\nid = \"{id}\"\nversion = \"1.2\"\n[compatibility]\nhorizon_revision = \"{pin}\"\n");
+            let manifest = format!(
+                "id = '{id}'\nname = '{id}'\nversion = '1.2'\napi = '0.2'\ncapabilities = ['registries']\n[native]\ngame = '26.3'\nhorizon = '{pin}'\nmixins = '{pin}'\n"
+            );
             for (name, bytes) in [
-                ("horizon-native.json".into(), manifest.to_string()),
-                (format!("mixins/{id}/horizon-mixin.toml"), source),
+                ("horizon-mod.toml", manifest.as_str()),
+                (
+                    "Cargo.toml",
+                    "[package]\nname = 'unrelated'\nversion = '9'\n",
+                ),
+                ("src/lib.rs", "pub fn hooks() {}\n"),
             ] {
                 zip.start_file(name, zip::write::SimpleFileOptions::default())
                     .unwrap();
@@ -276,7 +412,7 @@ mod tests {
                 kind: Kind::Mod,
                 version: "1.2".into(),
                 number: "1.2".into(),
-                file: format!("{}/registry.hnmod", native_mods::INSTALLED),
+                file: format!("{}/registry.hmod", native_mods::INSTALLED),
                 checksum: String::new(),
                 page: String::new(),
                 dependency: false,
@@ -293,14 +429,27 @@ mod tests {
             .map(|m| (m.id.as_str(), m.version.as_str(), m.origin.is_some()))
             .collect();
         assert_eq!(seen, [("github", "1.2", true), ("local", "1.2", false)]);
+        assert!(files.iter().all(|m| matches!(&m.icon, Ok(None))));
         for id in ["registry", "github", "local"] {
             java::set_enabled(&home, id, true).unwrap();
         }
         assert_eq!(state(&enabled(&home), None), State::NotBuilt);
+        let mut pins = pinning(&home, &"a".repeat(40));
+        pins.sort();
+        assert_eq!(
+            pins,
+            ["github", "local", "registry"],
+            "fit reads the enabled flat packages, including a renamed local file"
+        );
+        assert!(pinning(&home, &"b".repeat(40)).is_empty());
         for id in ["registry", "github", "local"] {
             java::set_enabled(&home, id, false).unwrap();
         }
         assert_eq!(state(&enabled(&home), None), State::NoMods);
+        assert!(
+            bundles_on(&home).is_empty(),
+            "disabled packages pin nothing"
+        );
         assert_eq!(
             untracked(&home).len(),
             2,
@@ -315,16 +464,32 @@ mod tests {
             "a stale origin is not an installed mod"
         );
         fs::write(
-            home.join(native_mods::INSTALLED).join("broken.hnmod"),
+            home.join(native_mods::INSTALLED).join("broken.hmod"),
             b"broken",
         )
         .unwrap();
+        let files = untracked(&home);
         assert_eq!(
-            untracked(&home)[0].id,
-            "broken",
+            files[0].id, "broken",
             "unreadable files can still be removed"
         );
+        assert!(files[0].icon.is_err(), "a refusal is not an absent icon");
         fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_build_made_in_another_mode_needs_a_build() {
+        use native_mods::Profile::{Developer, Optimized};
+        assert_eq!(
+            in_mode(State::UpToDate, Some(Developer), Optimized),
+            State::Outdated
+        );
+        assert_eq!(in_mode(State::UpToDate, None, Optimized), State::Outdated);
+        assert_eq!(
+            in_mode(State::UpToDate, Some(Optimized), Optimized),
+            State::UpToDate
+        );
+        assert_eq!(in_mode(State::NoMods, None, Optimized), State::NoMods);
     }
 
     #[test]
@@ -380,6 +545,17 @@ mod tests {
         });
         assert_eq!(parse_built(&about), [m("zoom", "2.1"), d("y", "1", "ab")]);
         assert!(parse_built(&serde_json::json!({})).is_empty());
+        let about = serde_json::json!({
+            "mods": [{"id": "zoom", "version": "2.1"}],
+            "left_out": [{"id": "hitbox_plus", "version": "1.3.0", "sha256": "aa", "why": "other-version"}],
+        });
+        let build = parse_built(&about);
+        let on = [m("zoom", "2.1"), d("hitbox_plus", "1.3.0", "aa")];
+        assert_eq!(state(&on, Some(build.as_slice())), State::UpToDate);
+        let on = [m("zoom", "2.1"), m("hitbox_plus", "1.3.1")];
+        assert_eq!(state(&on, Some(build.as_slice())), State::Outdated);
+        let on = [m("zoom", "2.1"), d("hitbox_plus", "1.3.0", "bb")];
+        assert_eq!(state(&on, Some(build.as_slice())), State::Outdated);
         assert_eq!(built("v0.1.0"), None, "not a native build");
     }
 
@@ -393,33 +569,35 @@ mod tests {
         assert_eq!(horizon_label("nightly-2026-10-29"), "Nightly 2026-10-29");
         let build = Build {
             base: "nightly-2026-10-28-0c02067".into(),
+            ..Build::default()
         };
         assert_eq!(build.horizon(), "Nightly 2026-10-28");
         assert_eq!(build.horizon_short(), "Nightly 10-28");
         let release = Build {
             base: "v0.2.93".into(),
+            ..Build::default()
         };
         assert_eq!(release.horizon_short(), "v0.2.93");
         assert_eq!(Build::read("v0.1.0"), None, "not a native build");
     }
 
+    /// A build from before pins were recorded that compiled another commit than its Nightly's
     #[test]
-    fn only_hnmods_in_the_native_folder_are_native() {
-        assert!(is_native_file("horizon-native-mods/veinminer.hnmod"));
-        assert!(!is_native_file("horizon-native-mods-old/x.hnmod"));
+    fn only_hmods_in_the_native_folder_are_native() {
+        assert!(is_native_file("horizon-native-mods/veinminer.hmod"));
+        assert!(!is_native_file("horizon-native-mods-old/x.hmod"));
         assert!(!is_native_file("horizon-mods/zoom.hmod"));
         assert!(!is_native_file("resourcepacks/x.zip"));
     }
 
-    /// Settings files from before native mods were on by default still read; their
-    /// `native_mods` key is ignored, and the notice stays read.
+    /// Old switches and notices never count as native-code consent.
     #[test]
     fn old_settings_with_the_native_mods_switch_still_read() {
         let s: backend::Settings =
             serde_json::from_str(r#"{"native_mods": true, "native_mods_noticed": true}"#).unwrap();
-        assert!(s.native_mods_noticed);
+        assert!(s.native_mods_allowed_at.is_none());
         let s: backend::Settings = serde_json::from_str(r#"{"native_mods": false}"#).unwrap();
-        assert!(!s.native_mods_noticed);
+        assert!(s.native_mods_allowed_at.is_none());
         let saved = serde_json::to_string(&s).unwrap();
         assert!(!saved.contains("native_mods"), "{saved}");
     }

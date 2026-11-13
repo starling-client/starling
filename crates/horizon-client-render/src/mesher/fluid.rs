@@ -19,6 +19,11 @@ use std::{convert::Infallible, sync::OnceLock};
 /// `FluidRenderer.MAX_FLUID_HEIGHT`.
 const MAX_HEIGHT: f32 = 0.888_888_9;
 const EPSILON: f32 = 0.001;
+/// `super::step_index` of the unit steps of the padded index: one block east
+/// (+x), one south (+z), one up (+y).
+const X_STEP: isize = 1;
+const P_STEP: isize = super::P as isize;
+const UP: isize = super::step_index([0, 1, 0]);
 
 /// For the occlusion face toward `direction`: the height from the bottom over
 /// which its slice flush with the `direction` side covers the whole width
@@ -188,12 +193,28 @@ impl FluidFlowWorld for FlowView<'_> {
         Ok(self.info[state as usize].sturdy & 1 << d as u8 != 0)
     }
 }
+/// Whether a `shaders/` pack's fluid top with these corner heights is split into triangles along
+/// its north-east to south-west diagonal, as Iris 1.11.7 draws it, rather than along vanilla's
+/// north-west to south-east one (`FluidRenderer.tesselate` puts its vertices NW, SW, SE, NE, and
+/// `RenderSystem`'s quad indices join vertex 0 to 2).
+///
+/// Our probe packs' readings of Iris (#8464) fit this: a top is split along the diagonal whose
+/// corners differ more in height, and a top whose north-west and south-east corners are level
+/// (a still, flat top among them) along north-east to south-west. It is a fit, not Iris's code:
+/// it covers every lava top we read and every still top but one, and misses 26 of the 343 water
+/// tops we read (undiagnosed).
+pub(super) fn splits_north_east(nw: f32, ne: f32, sw: f32, se: f32) -> bool {
+    let (along_nw, along_ne) = ((nw - se).abs(), (ne - sw).abs());
+    along_nw < along_ne || along_nw == 0.0
+}
 /// Emits one fluid cell at section-relative `[x, y, z]`.
-/// `(nether, shader_pack_lighting, separate_ao)`: the Nether's face shading, none when a shader pack
-/// lights the faces (`Mesher::shader_pack_lighting`), and whether to keep pure alpha for separate AO.
+/// `(nether, shader_pack_lighting, separate_ao, shader_pack)`: the Nether's face shading, only the
+/// up-face value when a shader pack lights the faces (`Mesher::shader_pack_lighting`), whether to
+/// keep pure alpha for separate AO, and whether a `shaders/` pack draws the terrain
+/// (`Mesher::shader_pack`: tops split as Iris splits them, [`splits_north_east`]).
 pub(super) fn tesselate(
     tables: &MeshTables,
-    (nether, shader_pack_lighting, separate_ao): (bool, bool, bool),
+    (nether, shader_pack_lighting, separate_ao, shader_pack): (bool, bool, bool, bool),
     pad: &Padded,
     water_color: u32,
     out: &mut SectionMesh,
@@ -202,40 +223,46 @@ pub(super) fn tesselate(
     use horizon_assets::model::Direction as D;
     let cardinal = |d: D| {
         if shader_pack_lighting {
-            1.0
+            lighting::pack_flat(nether)
         } else {
             lighting::cardinal(nether, d)
         }
     };
     let info = &tables.info;
-    let at = |p: [i32; 3]| &info[pad.blocks[pi(p[0], p[1], p[2])] as usize];
-    let me = at([x, y, z]);
+    // The cell's own padded index: every other cell sampled here is a constant
+    // step from it (`super::step_index`), so no `pi` per sample.
+    let cell = pi(x, y, z) as isize;
+    let at = |step: isize| &info[pad.blocks[(cell + step) as usize] as usize];
+    let me = at(0);
     let kind = me.fluid.kind();
     let same = |s: &Info| s.fluid.kind().same_family(kind);
-    let neighbor = |d: Direction| {
-        let [dx, dy, dz] = d.normal();
-        at([x + dx, y + dy, z + dz])
-    };
+    let neighbor = |d: Direction| at(super::OFFSETS[d as usize]);
     let (down, up) = (neighbor(Direction::Down), neighbor(Direction::Up));
     let should_render = |d: Direction| !same(neighbor(d)) && !occluded_by_self(me, d);
     let render_up = !same(up);
     let render_down =
         should_render(Direction::Down) && !occluded_by(Direction::Down, MAX_HEIGHT, down);
     let sides = [
-        Direction::North,
-        Direction::South,
-        Direction::West,
-        Direction::East,
-    ]
-    .map(should_render);
+        should_render(Direction::North),
+        should_render(Direction::South),
+        should_render(Direction::West),
+        should_render(Direction::East),
+    ];
     if !render_up && !render_down && !sides.iter().any(|&s| s) {
         return;
     }
-    let water = matches!(kind, FluidKind::Water | FluidKind::FlowingWater);
-    let tint = if water {
-        water_color & 0xFF_FFFF
-    } else {
-        0xFF_FFFF
+    // A mod's fluid draws as water does, with the sprites and tint of its own model.
+    let model = kind
+        .mod_fluid()
+        .and_then(|fluid| tables.mod_fluids.get(fluid.index()).copied().flatten());
+    let water = matches!(
+        kind,
+        FluidKind::Water | FluidKind::FlowingWater | FluidKind::Mod(_) | FluidKind::ModFlowing(_)
+    );
+    let tint = match model.and_then(|model| model.tint) {
+        Some(tint) => tint,
+        None if water => water_color & 0xFF_FFFF,
+        None => 0xFF_FFFF,
     };
     let emission = if water {
         0
@@ -250,10 +277,10 @@ pub(super) fn tesselate(
             crate::mesher::emitting(pack_rgb(rgb), emission)
         }
     };
-    let height = |p: [i32; 3]| -> f32 {
-        let s = at(p);
+    let height = |step: isize| -> f32 {
+        let s = at(step);
         if same(s) {
-            if same(at([p[0], p[1] + 1, p[2]])) {
+            if same(at(step + UP)) {
                 1.0
             } else {
                 s.fluid.own_height()
@@ -264,15 +291,15 @@ pub(super) fn tesselate(
             -1.0
         }
     };
-    let own = height([x, y, z]);
+    let own = height(0);
     let (mut ne, mut nw, mut se, mut sw) = (1.0f32, 1.0f32, 1.0f32, 1.0f32);
     if own < 1.0 {
-        let n = height([x, y, z - 1]);
-        let s = height([x, y, z + 1]);
-        let e = height([x + 1, y, z]);
-        let w = height([x - 1, y, z]);
+        let n = height(-P_STEP);
+        let s = height(P_STEP);
+        let e = height(X_STEP);
+        let w = height(-X_STEP);
         // calculateAverageHeight(self, height2, height1, corner)
-        let average = |h2: f32, h1: f32, corner: [i32; 3]| -> f32 {
+        let average = |h2: f32, h1: f32, corner: isize| -> f32 {
             if h1 >= 1.0 || h2 >= 1.0 {
                 return 1.0;
             }
@@ -298,19 +325,22 @@ pub(super) fn tesselate(
             add(h2);
             sum[0] / sum[1]
         };
-        ne = average(n, e, [x + 1, y, z - 1]);
-        nw = average(n, w, [x - 1, y, z - 1]);
-        se = average(s, e, [x + 1, y, z + 1]);
-        sw = average(s, w, [x - 1, y, z + 1]);
+        ne = average(n, e, X_STEP - P_STEP);
+        nw = average(n, w, -X_STEP - P_STEP);
+        se = average(s, e, X_STEP + P_STEP);
+        sw = average(s, w, -X_STEP + P_STEP);
     }
-    let light = |p: [i32; 3]| {
-        let above = [p[0], p[1] + 1, p[2]];
+    let light = |step: isize| {
+        let i = (cell + step) as usize;
+        let above = (cell + step + UP) as usize;
         pack_coords(lighting::max_coords(
-            lighting::coords(pad, at(p), p),
-            lighting::coords(pad, at(above), above),
+            lighting::coords_at(pad, lighting::state_at(pad, info, i), i),
+            lighting::coords_at(pad, lighting::state_at(pad, info, above), above),
         ))
     };
-    let (still, flow, overlay) = if water {
+    let (still, flow, overlay) = if let Some(model) = model {
+        (model.still, model.flow, model.overlay)
+    } else if water {
         (
             tables.water_still,
             tables.water_flow,
@@ -319,12 +349,11 @@ pub(super) fn tesselate(
     } else {
         (tables.lava_still, tables.lava_flow, None)
     };
-    let target = if water {
-        &mut out.translucent
+    let (target, sprite_layers) = if water {
+        (&mut out.translucent, &mut out.sprite_layers)
     } else {
-        &mut out.solid
+        (&mut out.solid, &mut out.sprite_layers)
     };
-    let mut sprite_layers = Vec::new();
     let mut quad = |v: [([f32; 3], [f32; 2]); 4],
                     layer: u16,
                     color: u32,
@@ -340,9 +369,9 @@ pub(super) fn tesselate(
             fluid_face(color, face)
         };
         let vertex = |(pos, uv)| TerrainVertex::new(pos, uv, layer, color, light);
-        target.extend(v.map(vertex));
+        target.extend([vertex(v[0]), vertex(v[1]), vertex(v[2]), vertex(v[3])]);
         if back {
-            target.extend([v[0], v[3], v[2], v[1]].map(vertex));
+            target.extend([vertex(v[0]), vertex(v[3]), vertex(v[2]), vertex(v[1])]);
         }
     };
     let (fx, fy, fz) = (x as f32, y as f32, z as f32);
@@ -378,20 +407,26 @@ pub(super) fn tesselate(
         // FluidState.shouldRenderBackwardUpFace over the 3x3 cells above.
         let backward = (-1..=1).any(|ox| {
             (-1..=1).any(|oz| {
-                let s = at([x + ox, y + 1, z + oz]);
+                let s = at(UP + ox as isize * X_STEP + oz as isize * P_STEP);
                 !same(s) && !s.solid
             })
         });
+        let mut corners = [
+            ([fx, fy + nw, fz], uv[0]),
+            ([fx, fy + sw, fz + 1.0], uv[1]),
+            ([fx + 1.0, fy + se, fz + 1.0], uv[2]),
+            ([fx + 1.0, fy + ne, fz], uv[3]),
+        ];
+        // Starting from the south-west corner joins it to the north-east one (0 to 2), with the
+        // same winding.
+        if shader_pack && splits_north_east(nw, ne, sw, se) {
+            corners.rotate_left(1);
+        }
         quad(
-            [
-                ([fx, fy + nw, fz], uv[0]),
-                ([fx, fy + sw, fz + 1.0], uv[1]),
-                ([fx + 1.0, fy + se, fz + 1.0], uv[2]),
-                ([fx + 1.0, fy + ne, fz], uv[3]),
-            ],
+            corners,
             layer,
             color(cardinal(D::Up)),
-            light([x, y, z]),
+            light(0),
             backward,
             Direction::Up as usize,
         );
@@ -407,12 +442,12 @@ pub(super) fn tesselate(
             ],
             still,
             color(cardinal(D::Down)),
-            light([x, y - 1, z]),
+            light(-UP),
             false,
             Direction::Down as usize,
         );
     }
-    let side_light = light([x, y, z]);
+    let side_light = light(0);
     let up_shade = cardinal(D::Up);
     for (i, d) in [
         Direction::North,
@@ -447,7 +482,10 @@ pub(super) fn tesselate(
             Some(layer) if face_state.overlay => (layer, true),
             _ => (flow, false),
         };
-        let side = if matches!(d, Direction::North | Direction::South) {
+        // Vanilla's side is the up value times the side's; a shader pack's has no side factor.
+        let side = if shader_pack_lighting {
+            1.0
+        } else if matches!(d, Direction::North | Direction::South) {
             cardinal(D::North)
         } else {
             cardinal(D::West)
@@ -467,12 +505,142 @@ pub(super) fn tesselate(
             d as usize,
         );
     }
-    out.sprite_layers.extend(sprite_layers);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fluid_models_emit_distinct_layers_and_stale_tables_fall_back() {
+        use super::super::{ModFluidLayers, Tint, mod_tint::ModTints};
+        use horizon_world::fluid::{ModFluidRules, ModFluidType, register_mod_fluid};
+        let fluid = register_mod_fluid(ModFluidType {
+            id: "mesh_fixture:oil".into(),
+            flowing_id: "mesh_fixture:flowing_oil".into(),
+            bucket: None,
+            rules: ModFluidRules {
+                tick_delay: 5,
+                drop_off: 1,
+                slope_find_distance: 4,
+                converts_to_source: false,
+            },
+        })
+        .unwrap();
+        let air = Info {
+            solid: false,
+            full: false,
+            permeable: true,
+            shade: 1.0,
+            emission: 0,
+            tier: 0,
+            emissive: false,
+            fluid: FluidState::EMPTY,
+            model: false,
+            block_entity: false,
+            tints: [Tint::None; 2],
+            tint_count: 0,
+            colormap: None,
+            offset: None,
+            legacy_solid: false,
+            overlay: false,
+            leaves: false,
+            pane: false,
+            opaque_cube: false,
+            blocks_flow: false,
+            ice: false,
+            opaque_ice: false,
+            sturdy: 0,
+            face: [0; 6],
+            cover: [0.0; 6],
+        };
+        let mut tables = MeshTables {
+            info: vec![
+                air,
+                air,
+                Info {
+                    overlay: true,
+                    ..air
+                },
+            ],
+            solid: vec![],
+            full_faces: vec![],
+            visibility: horizon_world::block_render::FaceVisibility::empty(),
+            water_still: 11,
+            water_flow: 12,
+            water_overlay: 13,
+            lava_still: 21,
+            lava_flow: 22,
+            mod_fluids: vec![None; fluid.index() + 1],
+            animated_layers: vec![],
+            mod_tints: ModTints::default(),
+            section_geometry: std::sync::Arc::new([]),
+            colormaps: Vec::new(),
+            water_colormap: None,
+        };
+        let mut pad = Padded {
+            blocks: vec![0; super::super::P.pow(3)],
+            light: vec![0xF0; super::super::P.pow(3)],
+        };
+        pad.blocks[pi(0, 0, 0)] = 1;
+        pad.blocks[pi(1, 0, 0)] = 2; // glass-like neighbour selects overlay
+        let model = ModFluidLayers {
+            still: 31,
+            flow: 32,
+            overlay: Some(33),
+            tint: Some(0xFF0000),
+        };
+        for kind in [FluidKind::Mod(fluid), FluidKind::Water, FluidKind::Lava] {
+            tables.info[1].fluid = FluidState::new(kind, 8, false);
+            tables.mod_fluids[fluid.index()] = Some(model);
+            let mut mesh = SectionMesh::default();
+            tesselate(
+                &tables,
+                (false, false, true, false),
+                &pad,
+                0x00FF00,
+                &mut mesh,
+                [0, 0, 0],
+            );
+            let (vertices, expected) = if kind == FluidKind::Lava {
+                assert!(mesh.translucent.is_empty());
+                (&mesh.solid, vec![21, 22])
+            } else {
+                assert!(mesh.solid.is_empty());
+                (
+                    &mesh.translucent,
+                    if kind == FluidKind::Water {
+                        vec![11, 12, 13]
+                    } else {
+                        vec![31, 32, 33]
+                    },
+                )
+            };
+            let mut layers: Vec<_> = vertices.iter().map(|v| v.layer).collect();
+            layers.sort_unstable();
+            layers.dedup();
+            assert_eq!(layers, expected);
+            assert!(!vertices.is_empty());
+            if kind == FluidKind::Mod(fluid) {
+                assert_eq!(vertices[0].color & 0xFFFFFF, 0x0000FF); // packed red
+            }
+        }
+        tables.info[1].fluid = FluidState::new(FluidKind::Mod(fluid), 8, false);
+        tables.mod_fluids.clear();
+        let mut mesh = SectionMesh::default();
+        tesselate(
+            &tables,
+            (false, false, true, false),
+            &pad,
+            0x00FF00,
+            &mut mesh,
+            [0, 0, 0],
+        );
+        let mut layers: Vec<_> = mesh.translucent.iter().map(|v| v.layer).collect();
+        layers.sort_unstable();
+        layers.dedup();
+        assert_eq!(layers, vec![11, 12, 13]);
+    }
+
     #[test]
     fn atan2_follows_the_table_approximation() {
         for (y, x) in [
@@ -487,6 +655,49 @@ mod tests {
             assert!((atan2(y, x) - exact).abs() < 1e-6, "{y} {x}");
         }
         assert!(atan2(f64::NAN, 1.0).is_nan());
+    }
+    /// Corner heights read back from Iris 1.11.7 with a probe pack of ours (#8464), from water
+    /// and lava spreading over a floor and from a still lake, and whether Iris split each top
+    /// along north-east to south-west. Each height is the vanilla average it reads as (for
+    /// example 13/27 for 0.48047 + 0.001), less `FluidRenderer`'s 0.001.
+    #[test]
+    fn fluid_tops_split_where_iris_splits_them() {
+        let h = |num: f32, den: f32| num / den - 0.001;
+        // (north-west, north-east, south-west, south-east)
+        let cases = [
+            // Still and flat: a lake's water, a lava pool.
+            ([h(8.0, 9.0); 4], true),
+            ([h(96.0, 117.0); 4], true),
+            // Level along one axis: both diagonals equally steep.
+            (
+                [h(5.0, 9.0), h(13.0, 27.0), h(5.0, 9.0), h(13.0, 27.0)],
+                false,
+            ),
+            (
+                [h(100.0, 117.0), h(100.0, 117.0), h(2.0, 3.0), h(2.0, 3.0)],
+                false,
+            ),
+            // North-west to south-east steeper.
+            ([h(5.0, 9.0), h(4.0, 9.0), h(4.0, 9.0), h(7.0, 18.0)], false),
+            ([h(7.0, 18.0), h(4.0, 9.0), h(4.0, 9.0), h(5.0, 9.0)], false),
+            ([h(5.0, 6.0), h(4.0, 9.0), h(2.0, 9.0), h(2.0, 9.0)], false),
+            // North-east to south-west steeper.
+            ([h(1.0, 2.0), h(5.0, 9.0), h(7.0, 18.0), h(4.0, 9.0)], true),
+            (
+                [h(4.0, 9.0), h(2.0, 9.0), h(96.0, 117.0), h(4.0, 9.0)],
+                true,
+            ),
+            // North-west and south-east level: a saddle.
+            ([h(4.0, 9.0), h(7.0, 18.0), h(7.0, 18.0), h(4.0, 9.0)], true),
+        ];
+        for ([nw, ne, sw, se], iris) in cases {
+            assert_eq!(
+                splits_north_east(nw, ne, sw, se),
+                iris,
+                "{:?}",
+                [nw, ne, sw, se]
+            );
+        }
     }
     #[test]
     fn coverage_of_full_and_partial_faces() {

@@ -19,7 +19,7 @@ set -euo pipefail
 
 MIXINS_GIT=https://github.com/horizon-rust/horizon-mixins
 # Horizon's launcher's (launcher/src/native_mods.rs, MIXINS_REV).
-MIXINS_REV=ddd9700b21997c95d95ac6ee5ecafe3830cf622a
+MIXINS_REV=5a64af938ec86b00d53d16a408aabc0038fb3e57
 
 fail() { echo "native_build: $*" >&2; exit 1; }
 [ $# -ge 3 ] || fail "usage: native_build.sh SOURCE OUT BUNDLE..."
@@ -74,6 +74,15 @@ grep -qxF "$lib_attr" "$work/source/crates/horizon-client/src/lib.rs" \
 grep -vxF "$lib_attr" "$work/source/crates/horizon-client/src/lib.rs" > "$work/lib.rs"
 cp "$work/lib.rs" "$work/source/crates/horizon-client/src/lib.rs"
 
+# Horizon declares the game's modules in files its build script writes (`include!` of OUT_DIR),
+# which horizon-mixins cannot follow: they are written out as plain module lines in this copy
+# first, as Horizon's launcher does (horizon-materialize, crates/horizon-mod-api-gen). Before the
+# mods are adapted: native_mod_adapt.py finds where things went in the module tree it leaves.
+cargo fetch --locked --manifest-path "$work/source/Cargo.toml" > /dev/null
+CARGO_TARGET_DIR=$cache/materialize-target cargo run --quiet --locked --offline \
+  --manifest-path "$work/source/Cargo.toml" -p horizon-mod-api-gen --bin horizon-materialize \
+  -- "$work/source"
+
 # The bundles, each pinned to the commit built here when it pins one (Starling's commits are not
 # Horizon's; a mod that calls what Starling changed fails in the compiler).
 mkdir "$work/mods"
@@ -96,7 +105,6 @@ key=$(
 )
 echo "native_build: build $key of $commit with $(ls "$work/mods" | tr '\n' ' ')"
 
-cargo fetch --locked --manifest-path "$work/source/Cargo.toml" > /dev/null
 "$tools/bin/horizon-mixins" apply --workspace "$work/source" --mods "$work/mods" \
   --out "$work/stage"
 
@@ -106,7 +114,7 @@ cargo fetch --locked --manifest-path "$work/source/Cargo.toml" > /dev/null
 build=$cache/build-$abi
 mkdir -p "$build"
 rsync -r --checksum --delete --exclude /target/ --exclude "/$manifest" \
-  --exclude /crates/horizon-android/plan-stub.rs "$work/stage/" "$build/"
+  --exclude /crates/horizon-android/plan-stub.rs --exclude /native-hooks.json "$work/stage/" "$build/"
 git -C "$source" show "HEAD:$manifest" > "$work/manifest"
 cmp -s "$work/manifest" "$build/$manifest" || cp "$work/manifest" "$build/$manifest"
 

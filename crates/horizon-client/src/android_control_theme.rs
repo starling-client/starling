@@ -2695,7 +2695,10 @@ mod tests {
 
     #[test]
     fn atlas_reload_regenerates_text_and_corners_at_the_same_address() {
-        let atlas = HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap();
+        let atlas = HudAtlas::build(&crate::resource_source::ResourceSource::directory(
+            Path::new("/nonexistent/horizon-test-assets").to_path_buf(),
+        ))
+        .unwrap();
         reset_atlas();
         let draw = |cache: &mut Cache| {
             let glyph = cache.fonts.face(Face::Regular).glyph_id('A');
@@ -2739,7 +2742,13 @@ mod tests {
     fn the_boot_screen_centres_the_wordmark_and_left_aligns_the_console() {
         reset_atlas();
         let atlas = HudAtlas::boot();
-        let mut batch = HudBatch::new([1280, 720]);
+        let mut batch = HudBatch::new(
+            [1280, 720],
+            crate::hud::GuiScale {
+                requested: 0,
+                unicode: false,
+            },
+        );
         draw_boot(&atlas, &mut batch, &[]);
         // The first quad is the pure black backdrop over the frame's panorama.
         let (w, h) = (batch.width, batch.height);
@@ -2752,7 +2761,13 @@ mod tests {
             "the glyphs are queued for the atlas"
         );
 
-        let mut batch = HudBatch::new([1280, 720]);
+        let mut batch = HudBatch::new(
+            [1280, 720],
+            crate::hud::GuiScale {
+                requested: 0,
+                unicode: false,
+            },
+        );
         wordmark(&atlas, &mut batch);
         let (min, max) = batch
             .vertices
@@ -2766,7 +2781,13 @@ mod tests {
         assert!(((min + max) / 2.0 - batch.width / 2.0).abs() < 1.0);
 
         let long = "[12:34:56] [Render thread/INFO]: Horizon: resources loaded in 1.0s; 1240 block states, 1500 items, 62 biomes; 8 worker threads".to_owned();
-        let mut batch = HudBatch::new([1280, 720]);
+        let mut batch = HudBatch::new(
+            [1280, 720],
+            crate::hud::GuiScale {
+                requested: 0,
+                unicode: false,
+            },
+        );
         draw_boot_log(&atlas, &mut batch, &[long]);
         let (min, max) = batch
             .vertices
@@ -2779,7 +2800,13 @@ mod tests {
             "a too wide line is cut to half the screen"
         );
 
-        let mut batch = HudBatch::new([1280, 720]);
+        let mut batch = HudBatch::new(
+            [1280, 720],
+            crate::hud::GuiScale {
+                requested: 0,
+                unicode: false,
+            },
+        );
         let ui = Ui::new(&atlas, &mut batch, (0.0, 0.0));
         let lines = wrapping_lines(
             &ui,
@@ -2804,7 +2831,13 @@ mod tests {
             "the wrap keeps every word"
         );
 
-        let mut batch = HudBatch::new([1280, 720]);
+        let mut batch = HudBatch::new(
+            [1280, 720],
+            crate::hud::GuiScale {
+                requested: 0,
+                unicode: false,
+            },
+        );
         draw_boot_log(&atlas, &mut batch, &[]);
         assert!(batch.vertices.is_empty() && batch.patches.is_empty());
         reset_atlas();

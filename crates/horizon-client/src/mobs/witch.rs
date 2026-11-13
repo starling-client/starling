@@ -11,6 +11,7 @@ use super::{
 use crate::projectiles::{Projectile, ProjectileKind};
 use horizon_core::geometry::trig::Mth;
 use horizon_core::{geometry::Vec3, random::RandomSource};
+use horizon_world::native_load_context::LoopContext;
 
 pub fn register(m: &mut Mob) {
     let g = &mut m.ai.goals;
@@ -174,7 +175,7 @@ fn witch_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
         return;
     };
     let motion = match who {
-        Who::Player => cx.w.player.as_ref().map_or(Vec3::ZERO, |p| p.velocity),
+        Who::Player => cx.w.selected_player().map_or(Vec3::ZERO, |p| p.velocity),
         Who::Mob(id) => cx.w.seen(id).map_or(Vec3::ZERO, |s| s.velocity),
     };
     let xd = t.position.x + motion.x - m.position.x;
@@ -201,13 +202,13 @@ fn witch_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     };
     // `target.hasEffect`: a target that already has the effect gets the next one.
     let has = |effect: &str| match who {
-        Who::Player => cx.w.player.as_ref().is_some_and(|p| p.has_effect(effect)),
+        Who::Player => cx.w.selected_player().is_some_and(|p| p.has_effect(effect)),
         Who::Mob(id) => cx.w.seen(id).is_some_and(|s| s.has_effect(effect)),
     };
     // The potion it throws: `PotionContents.createItemStack(Items.SPLASH_POTION,
     // potion)` for the one `Witch.performRangedAttack` picks.
     let potion = if heals {
-        m.ai.target = None;
+        m.set_ai_target(cx.w, None);
         if health <= 4.0 {
             "minecraft:healing"
         } else {
@@ -232,19 +233,15 @@ fn witch_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     );
     // Splash potions throw with gravity 0.05.
     p.shoot(
-        &mut crate::projectiles::own_random(m),
+        &mut crate::random_source::entity(),
         [xd, yd + dist * 0.2, zd],
         if dist <= 2.0 { 0.45 } else { 0.75 },
         8.0,
     );
     cx.events.push(MobEvent::Projectile(p));
-    let pitch = 0.8 + m.random.next_float() * 0.4;
-    cx.events.push(MobEvent::Sound(
-        "entity.witch.throw",
-        m.center(),
-        1.0,
-        pitch,
-    ));
+    // Witch.performRangedAttack: the throw sound, and its pitch draw, only
+    // when the witch is not silent.
+    witch_sound(m, cx.events, "entity.witch.throw");
 }
 /// The movement speed of a witch with `SPEED_MODIFIER_DRINKING` (-0.25,
 /// `ADD_VALUE`) while it drinks: it stands still for the 32 ticks.
@@ -257,13 +254,18 @@ pub fn speed(m: &Mob, base: f64) -> f64 {
 }
 /// Witch.aiStep before `super.aiStep()`: the healing cooldown, then drink
 /// water breathing, fire resistance, healing or swiftness.
-pub fn ai_step(m: &mut Mob, cx_events: &mut Vec<MobEvent>, target_far: bool) {
+pub fn ai_step(
+    m: &mut Mob,
+    context: &LoopContext,
+    cx_events: &mut Vec<MobEvent>,
+    target_far: bool,
+) {
     if !m.alive() {
         return;
     }
     // healRaidersGoal.decrementCooldown (the attack goal's canAttack reads it).
     m.extra.counter2 -= 1;
-    drink(m, cx_events, target_far);
+    drink(m, context, cx_events, target_far);
     // `broadcastEntityEvent(this, 15)`: the magic puffs over its hat on every client.
     if m.random.next_float() < 7.5E-4 {
         cx_events.push(MobEvent::EntityEvent {
@@ -273,13 +275,13 @@ pub fn ai_step(m: &mut Mob, cx_events: &mut Vec<MobEvent>, target_far: bool) {
         });
     }
 }
-fn drink(m: &mut Mob, cx_events: &mut Vec<MobEvent>, target_far: bool) {
+fn drink(m: &mut Mob, context: &LoopContext, cx_events: &mut Vec<MobEvent>, target_far: bool) {
     if m.extra.flag {
         // `usingTime-- <= 0`
         m.extra.using_item -= 1;
         if m.extra.using_item < 0 {
             m.extra.using_item = 0;
-            if let Some(potion) = m.extra.take_main_hand() {
+            if let Some(potion) = m.extra.take_slot_id(horizon_items::equipment::MAINHAND) {
                 match potion.as_ref() {
                     "minecraft:water_breathing" => {
                         m.add_effect("minecraft:water_breathing", 3600, 0)
@@ -287,7 +289,7 @@ fn drink(m: &mut Mob, cx_events: &mut Vec<MobEvent>, target_far: bool) {
                     "minecraft:fire_resistance" => {
                         m.add_effect("minecraft:fire_resistance", 3600, 0)
                     }
-                    "minecraft:healing" => m.heal(4.0),
+                    "minecraft:healing" => m.heal(context, 4.0),
                     "minecraft:swiftness" => m.add_effect("minecraft:speed", 3600, 0),
                     _ => {}
                 }
@@ -322,14 +324,19 @@ fn drink(m: &mut Mob, cx_events: &mut Vec<MobEvent>, target_far: bool) {
         // PotionItem use duration 32 ticks.
         m.extra.using_item = 32;
         m.extra.flag = true;
-        let pitch = 0.8 + m.random.next_float() * 0.4;
-        cx_events.push(MobEvent::Sound(
-            "entity.witch.drink",
-            m.center(),
-            1.0,
-            pitch,
-        ));
+        // Witch.aiStep: the drink sound, and its pitch draw, only when the
+        // witch is not silent.
+        witch_sound(m, cx_events, "entity.witch.drink");
     }
+}
+/// `Witch` drink and throw sounds: volume 1, pitch `0.8 + nextFloat * 0.4`,
+/// skipped entirely (including the pitch draw) when `isSilent()`.
+fn witch_sound(m: &mut Mob, events: &mut Vec<MobEvent>, name: &'static str) {
+    if m.silent {
+        return;
+    }
+    let pitch = 0.8 + m.random.next_float() * 0.4;
+    events.push(MobEvent::Sound(name, m.center(), 1.0, pitch));
 }
 /// `WitchRenderer.extractRenderState`'s `isHoldingPotion`: the main hand holds
 /// a potion, either a drunk one (kept by the potion's name, `drink`) or a
@@ -357,7 +364,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
     let deg = horizon_core::geometry::trig::DEG_TO_RAD;
     p.xrot("nose", (s.age * speed).msin() * 4.5 * deg);
     p.zrot("nose", (s.age * speed).mcos() * 2.5 * deg);
-    if m.extra.main_hand.is_some() {
+    if m.extra.main_hand_id().is_some() {
         let n = p.get("nose");
         n[0] = 0.0;
         n[1] = 1.0;
@@ -390,6 +397,77 @@ mod tests {
         );
         assert!(!goal.ignore.contains(&Species::Vex));
         assert!(!goal.ignore.contains(&Species::Zombie));
+    }
+
+    fn witch() -> Mob {
+        use std::sync::Arc;
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:witch".into();
+        kind.species = Species::Witch;
+        kind.max_health = 26.0;
+        Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+
+    /// How many drink sounds forty attempts produce. Vanilla plays
+    /// `entity.witch.drink` at volume 1, and skips it when the witch is silent.
+    fn drink_sounds(silent: bool) -> usize {
+        use horizon_core::random::LegacyRandom;
+        let mut m = witch();
+        m.silent = silent;
+        m.random = LegacyRandom::new(1);
+        m.fluids.eye_in_water = true;
+        m.fire_ticks = 20;
+        m.health = 1.0;
+        m.ai.target = Some(Who::Player);
+        let mut events = Vec::new();
+        for _ in 0..40 {
+            m.extra.flag = false;
+            drink(
+                &mut m,
+                crate::test_resources::server_loop_context(),
+                &mut events,
+                true,
+            );
+        }
+        events
+            .iter()
+            .filter(|e| {
+                matches!(e, MobEvent::Sound(s, _, volume, _) if *s == "entity.witch.drink" && *volume == 1.0)
+            })
+            .count()
+    }
+
+    /// `Witch.aiStep` and `performRangedAttack` play at volume 1 only when
+    /// the witch is not silent. The pitch draw stays inside that check.
+    #[test]
+    fn a_silent_witch_does_not_play_its_drink_or_throw_sound() {
+        use horizon_core::random::LegacyRandom;
+        assert!(drink_sounds(false) > 0);
+        assert_eq!(drink_sounds(true), 0);
+
+        let mut loud = witch();
+        loud.random = LegacyRandom::new(11);
+        let mut quiet = witch();
+        quiet.silent = true;
+        quiet.random = LegacyRandom::new(11);
+        let mut oracle = LegacyRandom::new(11);
+        // Vanilla: 0.8F + nextFloat() * 0.4F, volume 1.
+        let pitch = 0.8 + oracle.next_float() * 0.4;
+        let mut events = Vec::new();
+        witch_sound(&mut loud, &mut events, "entity.witch.throw");
+        match &events[0] {
+            MobEvent::Sound(name, _, volume, got) => {
+                assert_eq!(*name, "entity.witch.throw");
+                assert_eq!(*volume, 1.0);
+                assert!((got - pitch).abs() < 1.0e-5);
+            }
+            other => panic!("throw sound, got {other:?}"),
+        }
+        events.clear();
+        witch_sound(&mut quiet, &mut events, "entity.witch.throw");
+        assert!(events.is_empty());
+        let mut untouched = LegacyRandom::new(11);
+        assert_eq!(quiet.random.next_float(), untouched.next_float());
     }
 
     /// The hoisted list is exactly the set `is_raider` answers yes for.

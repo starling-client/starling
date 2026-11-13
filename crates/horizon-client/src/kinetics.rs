@@ -17,7 +17,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 
-pub use horizon_mods::content::{Kinetic, KineticPart, Machine};
+pub use horizon_mod_package::content::{Kinetic, KineticPart, Machine};
 
 /// The fastest a part turns (Create's default speed limit).
 pub const MAX_RPM: f32 = 256.0;
@@ -204,7 +204,7 @@ impl Part {
     }
 }
 
-pub use horizon_mods::content::{direction, turns_from, turns_to};
+pub use horizon_mod_package::content::{direction, turns_from, turns_to};
 
 fn axis_of(v: [i32; 3]) -> usize {
     v.iter().position(|c| *c != 0).unwrap_or(1)

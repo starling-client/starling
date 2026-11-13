@@ -407,6 +407,17 @@ pub fn view_vector(x_rot: f32, y_rot: f32) -> [f64; 3] {
 /// near plane in view space (z = -0.05), as (start, end, colour, width).
 pub fn camera_relative(lines: &[Line], camera: [f64; 3], view: glam::Mat4) -> Vec<[f32; 8]> {
     let mut out = Vec::with_capacity(lines.len());
+    camera_relative_to(lines, camera, view, |line| out.push(line));
+    out
+}
+
+/// Append clipped, camera-relative lines without allocating a temporary batch.
+pub(crate) fn camera_relative_to(
+    lines: &[Line],
+    camera: [f64; 3],
+    view: glam::Mat4,
+    mut append: impl FnMut([f32; 8]),
+) {
     for l in lines {
         let rel = |p: [f64; 3]| {
             glam::Vec3::new(
@@ -433,7 +444,7 @@ pub fn camera_relative(lines: &[Line], camera: [f64; 3], view: glam::Mat4) -> Ve
                 }
             }
         }
-        out.push([
+        append([
             start.x,
             start.y,
             start.z,
@@ -444,7 +455,6 @@ pub fn camera_relative(lines: &[Line], camera: [f64; 3], view: glam::Mat4) -> Ve
             l.width,
         ]);
     }
-    out
 }
 
 #[cfg(test)]

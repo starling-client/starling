@@ -1,0 +1,262 @@
+import contextlib
+import io
+import json
+import os
+import shutil
+import sys
+import struct
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+from tools import prebuilt_game
+
+
+class AllocatorSelectionTests(unittest.TestCase):
+    def test_staging_api_version_comes_from_the_package_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "crates/horizon-mod-package/src/manifest.rs"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('pub const API: &str = "7.3";\n')
+            self.assertEqual(prebuilt_game.api_version(root), "7.3")
+            manifest.write_text('pub const OTHER: &str = "7.3";\n')
+            with self.assertRaisesRegex(ValueError, "manifest API"):
+                prebuilt_game.api_version(root)
+
+    def test_windows_archives_use_the_system_allocator(self):
+        self.assertEqual(prebuilt_game.cargo_features(False, "win32"), ["--features", "system-allocator"])
+        self.assertEqual(prebuilt_game.cargo_features(True, "win32"),
+                         ["--no-default-features", "--features", "system-allocator"])
+
+    def test_other_systems_keep_mimalloc(self):
+        for platform in ("linux", "darwin"):
+            self.assertEqual(prebuilt_game.cargo_features(False, platform), [])
+            self.assertEqual(prebuilt_game.cargo_features(True, platform), ["--no-default-features"])
+
+
+class ExecutableLinkPolicyTests(unittest.TestCase):
+    def test_windows_sdk_identity_keeps_the_source_executable_stack_policy(self):
+        compiler = shutil.which("rustc")
+        if compiler is None:
+            self.skipTest("requires Rust to build and run the engine's build script")
+        target = prebuilt_game.ROOT / "target"
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target) as directory:
+            root = Path(directory)
+            # Isolate unrelated code generation/resource compilation, but execute the actual
+            # engine build script and its real shared link policy, as the SDK build does.
+            stubs = {
+                "horizon_game_discovery": 'pub fn declarations(_: &std::path::Path, _: &[&str]) '
+                    '-> std::io::Result<String> { Ok(String::new()) }',
+                "horizon_mod_api_gen": 'pub enum Target { Client } '
+                    'pub fn generate(_: &std::path::Path, _: &std::path::Path, _: Target) '
+                    '-> std::io::Result<()> { Ok(()) }',
+                "winresource": 'pub struct WindowsResource; impl WindowsResource { '
+                    'pub fn new() -> Self { Self } pub fn set_icon(&mut self, _: &str) {} '
+                    'pub fn set_manifest_file(&mut self, _: &str) {} '
+                    'pub fn compile(&self) -> Result<(), String> { Ok(()) } }',
+            }
+            externs = []
+            for name, code in stubs.items():
+                source = root / f"{name}.rs"
+                source.write_text(code)
+                library = root / f"lib{name}.rlib"
+                subprocess.run([compiler, "--edition=2024", "--crate-type=rlib", str(source),
+                                "-o", str(library)], check=True)
+                externs.extend(["--extern", f"{name}={library}"])
+            binary = root / ("producer.exe" if sys.platform == "win32" else "producer")
+            subprocess.run([compiler, "--edition=2024",
+                            str(prebuilt_game.ROOT / "crates/horizon-client/build.rs"),
+                            *externs, "-o", str(binary)], check=True)
+            for target_os, env, expected in [("windows", "msvc", ["/STACK:8388608"]),
+                                      ("windows", "gnu", ["-Wl,--stack,8388608"]),
+                                      ("linux", "gnu", []), ("macos", "", [])]:
+                with self.subTest(os=target_os, env=env):
+                    output = root / "output"
+                    output.write_text(subprocess.check_output([str(binary)], text=True, env={
+                        **os.environ,
+                        "CARGO_MANIFEST_DIR": str(prebuilt_game.ROOT / "crates/horizon-client"),
+                        "OUT_DIR": str(root), "CARGO_PKG_NAME": "horizon-client",
+                        "CARGO_CFG_TARGET_OS": target_os, "CARGO_CFG_TARGET_ENV": env,
+                    }))
+                    identity = {"link_args": prebuilt_game.executable_link_args(output)}
+                    self.assertEqual(identity["link_args"], expected)
+
+
+class PrebuiltContentsTests(unittest.TestCase):
+    def folder(self, *names: str) -> Path:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for name in names:
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_bytes(b"")
+        return root
+
+    def test_only_current_cargo_artifacts_enter_the_archive(self):
+        root = self.folder(
+            "cache/libpoint_shape-old.rmeta", "cache/libpoint_shape-host.rmeta",
+            "cache/libpoint_shape-target.rmeta", "cache/libpoint_shape-target.rlib",
+            "cache/libderive.so", "cache/libhorizon_client.so",
+        )
+        output = root / "sdk"
+        output.mkdir()
+        current = ["libpoint_shape-host.rmeta", "libpoint_shape-target.rmeta",
+                   "libpoint_shape-target.rlib", "libderive.so", "libhorizon_client.so"]
+        prebuilt_game.copy_artifacts([
+            {"reason": "compiler-artifact", "filenames": [str(root / "cache" / name) for name in current]},
+            {"reason": "build-finished", "success": True},
+        ], output)
+        self.assertEqual({path.name for path in output.iterdir()}, {
+            "libpoint_shape-host.rmeta", "libpoint_shape-target.rmeta", "libderive.so", "libhorizon_client.so",
+        })
+
+    def test_facades_exclude_build_only_and_ambiguous_runtime_crates(self):
+        def package(name, kind="lib"):
+            return {"id": name, "name": name, "targets": [{"name": name.replace('-', '_'), "kind": [kind]}]}
+
+        def node(name, *dependencies):
+            return {"id": name, "deps": [
+                {"pkg": target, "dep_kinds": [{"kind": kind}]} for target, kind in dependencies
+            ]}
+
+        metadata = {
+            "packages": [package("horizon-mod-host", "dylib"), package("horizon-client"),
+                         package("horizon-mod-wasm", "rlib"), package("point_shape"), package("horizon_core"),
+                         package("build_tool"), package("derive", "proc-macro"), package("macro_helper")],
+            "resolve": {"nodes": [
+                node("horizon-mod-host", ("horizon-client", None), ("horizon-mod-wasm", None),
+                     ("build_tool", "build")), node("horizon-mod-wasm"),
+                node("horizon-client", ("point_shape", None), ("horizon_core", None), ("derive", None)),
+                node("point_shape"), node("horizon_core"), node("build_tool"),
+                node("derive", ("macro_helper", None)), node("macro_helper"),
+            ]},
+        }
+        runtime = prebuilt_game.runtime_crates(metadata, "horizon-mod-host")
+        self.assertEqual(runtime, {"horizon_mod_host", "horizon_mod_wasm", "horizon_client", "point_shape", "horizon_core"})
+        deps = self.folder("libpoint_shape-host.rmeta", "libpoint_shape-target.rmeta",
+                           "libhorizon_core-one.rmeta", "libbuild_tool-one.rmeta", "libmacro_helper-one.rmeta",
+                           "libhorizon_mod_host.so", "libhorizon_mod_wasm-one.rmeta", "libhorizon_client-one.rmeta")
+        eligible = prebuilt_game.facade_crates(deps, runtime)
+        self.assertEqual(eligible, ["horizon_client", "horizon_core", "horizon_mod_host", "horizon_mod_wasm"])
+
+    def test_native_link_inventory_uses_package_identity_not_a_same_named_host_variant(self):
+        def package(package_id, version, library=None):
+            return {"id": package_id, "name": "native-sys" if library else "horizon-mod-host",
+                    "version": version, "links": library,
+                    "targets": [{"name": "native_sys" if library else "horizon_client", "kind": ["lib"]}]}
+        metadata = {
+            "packages": [package("game", "1.0.0"), package("target", "1.0.0", "native"),
+                         package("host", "2.0.0", "native")],
+            "resolve": {"nodes": [
+                {"id": "game", "deps": [{"pkg": "target", "dep_kinds": [{"kind": None}]},
+                                          {"pkg": "host", "dep_kinds": [{"kind": "build"}]}]},
+                {"id": "target", "deps": []}, {"id": "host", "deps": []},
+            ]},
+        }
+        self.assertEqual(prebuilt_game.native_links(metadata, "horizon-mod-host"), [
+            {"name": "native-sys", "version": "1.0.0", "library": "native"},
+        ])
+
+    def test_sdk_assertion_refuses_a_duplicate_eligible_facade_on_every_os(self):
+        root = self.folder("deps/libhorizon_core-one.rmeta", "deps/libmod_api-one.rmeta",
+                           "deps/libhorizon_mod_package-one.rmeta")
+        prebuilt_game.assert_externs(root, ["horizon_core"])
+        (root / "deps/libhorizon_core-two.rmeta").write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "expected exactly one SDK metadata for horizon_core"):
+            prebuilt_game.assert_externs(root, ["horizon_core"])
+
+    def test_native_extern_lookup_refuses_a_second_package_variant(self):
+        root = self.folder("libhorizon_mod_package-runtime.rmeta")
+        self.assertEqual(prebuilt_game.extern_args(root, "horizon_mod_package"), [
+            "--extern", f"horizon_mod_package={root / 'libhorizon_mod_package-runtime.rmeta'}",
+        ])
+        (root / "libhorizon_mod_package-build.rmeta").write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "expected exactly one SDK metadata for horizon_mod_package"):
+            prebuilt_game.extern_args(root, "horizon_mod_package")
+
+    def test_compiler_outputs_pass(self):
+        root = self.folder(
+            "horizon-prebuilt.json", "Cargo.lock", "native_main.rs.template", "deps/libhorizon_client.so", "deps/libmod_api-1.rmeta",
+            "native/libwindows.0.52.0.a", "points.json", "internals.json", "mod-catalog.json",
+            "deps/libserde_derive-2.so", "deps/libhorizon_client.dll.a", "deps/libhorizon_mod_wasm.so",
+            "deps/horizon_mod_wasm.dll", "deps/libhorizon_mod_wasm.dylib", "deps/libhorizon_mod_host.so",
+        )
+        (root / prebuilt_game.IDENTITY).write_text(json.dumps({"files": {
+            prebuilt_game.CATALOG: prebuilt_game.sha256(root / prebuilt_game.CATALOG)}}))
+        prebuilt_game.check(root)
+        (root / prebuilt_game.CATALOG).write_text("changed")
+        with self.assertRaisesRegex(SystemExit, "catalog"):
+            prebuilt_game.check(root)
+        (root / prebuilt_game.CATALOG).unlink()
+        with self.assertRaisesRegex(SystemExit, "catalog"):
+            prebuilt_game.check(root)
+
+    def test_anything_else_is_refused(self):
+        for stray in ("assets/minecraft/lang/en_us.json", "deps/Cargo.lock", "deps/client.jar", "deps/libmod_api-3.rlib", "native/libfoo.so", "deps/internals.json", "notes.txt"):
+            with self.subTest(stray), self.assertRaises(SystemExit):
+                prebuilt_game.check(self.folder("deps/libhorizon_client.so", "deps/libhorizon_mod_wasm.so", stray))
+
+    def test_a_folder_without_either_runtime_is_refused(self):
+        for present, missing in (("horizon_mod_host", "horizon-mod-wasm"), ("horizon_mod_wasm", "horizon-mod-host")):
+            with self.subTest(present), self.assertRaisesRegex(SystemExit, missing):
+                prebuilt_game.check(self.folder(f"deps/lib{present}.so"))
+
+    def test_host_carries_engine_code_with_engine_metadata_for_mods(self):
+        root = self.folder("deps/libhorizon_mod_host.so", "deps/libhorizon_mod_wasm.so", "deps/libhorizon_client-123.rmeta", "mod-catalog.json")
+        (root / prebuilt_game.IDENTITY).write_text(json.dumps({"files": {
+            prebuilt_game.CATALOG: prebuilt_game.sha256(root / prebuilt_game.CATALOG)}}))
+        prebuilt_game.check(root)
+
+    def test_engine_and_wasm_without_host_are_refused(self):
+        with self.assertRaisesRegex(SystemExit, "horizon-mod-host"):
+            prebuilt_game.check(self.folder("deps/libhorizon_client.so", "deps/libhorizon_mod_wasm.so"))
+
+    def dll(self, root: Path, name: str, count: int, pe64: bool = True) -> None:
+        # One PE section: RVA 0x1000 maps to raw offset 0x200, holding the export directory.
+        data = bytearray(0x400)
+        data[:2] = b"MZ"
+        struct.pack_into("<I", data, 0x3C, 0x80)
+        data[0x80:0x84] = b"PE\0\0"
+        struct.pack_into("<H", data, 0x86, 1)  # NumberOfSections
+        optional_size = 240 if pe64 else 224
+        struct.pack_into("<H", data, 0x94, optional_size)
+        struct.pack_into("<H", data, 0x98, 0x20B if pe64 else 0x10B)
+        struct.pack_into("<II", data, 0x98 + (112 if pe64 else 96), 0x1000, 40)
+        struct.pack_into("<III", data, 0x98 + optional_size + 12, 0x1000, 0x200, 0x200)
+        struct.pack_into("<I", data, 0x200 + 24, count)  # NumberOfNames
+        (root / "deps" / name).write_bytes(data)
+
+    def test_exports_reports_every_dll(self):
+        root = self.folder("deps/libhorizon_client.so")
+        self.dll(root, "horizon_client.dll", 45000)
+        self.dll(root, "horizon_mod_wasm.dll", 12000)
+        self.dll(root, "serde_derive.dll", 1, pe64=False)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            prebuilt_game.exports(root)
+        for name, count in (("horizon_client", 45000), ("horizon_mod_wasm", 12000), ("serde_derive", 1)):
+            self.assertIn(f"{name}.dll: {count} exported names", output.getvalue())
+
+    def test_exports_warns_about_any_dll_near_the_limit_without_failing(self):
+        for large in ("horizon_client", "horizon_mod_wasm"):
+            root = self.folder("deps/libhorizon_client.so")
+            for name in ("horizon_client", "horizon_mod_wasm"):
+                self.dll(root, f"{name}.dll", 49000 if name == large else 48999)
+            output = io.StringIO()
+            with self.subTest(large), contextlib.redirect_stdout(output):
+                prebuilt_game.exports(root)
+            warnings = [line for line in output.getvalue().splitlines() if line.startswith("::warning::")]
+            self.assertEqual(len(warnings), 1)
+            self.assertIn(f"{large}.dll exports 49,000 names", warnings[0])
+            self.assertEqual(output.getvalue().count("exported names (Windows' limit"), 2)
+
+    def test_exports_is_silent_without_dlls(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            prebuilt_game.exports(self.folder("deps/libhorizon_client.so", "deps/libhorizon_mod_wasm.so"))
+        self.assertEqual(output.getvalue(), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

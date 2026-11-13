@@ -498,7 +498,8 @@ impl MultiLineEdit {
             self.x + self.width - 1.0,
             self.y + self.height - 1.0,
         );
-        ui::scrollbar(
+        // Its text scrolls with its caret: not a list for the focus to step through.
+        ui::scrollbar_sprites(
             batch,
             atlas,
             self.x + self.width,
@@ -617,12 +618,12 @@ impl MultiLineEdit {
 mod tests {
     use super::*;
     use crate::hud::Rect;
-    use std::{collections::HashMap, path::Path};
+    use std::collections::HashMap;
 
     fn font() -> Font {
         // The missing-glyph metrics let these tests run without game assets.
         Font::load(
-            Path::new("/nonexistent-horizon-multiline-test-resources"),
+            &horizon_assets::resource_source::ResourceSource::default(),
             &HashMap::new(),
             &[],
             (1, 1),

@@ -14,9 +14,6 @@ impl BiomePredicateBindings {
         names: &BTreeMap<String, BiomeId>,
         tags: &BTreeMap<String, Vec<String>>,
     ) -> Result<Self, DecodeError> {
-        if names.len() > 8192 || tags.len() > 8192 {
-            return Err(DecodeError::Field("predicate biome registry size"));
-        }
         let mut canonical = BTreeMap::new();
         let mut ids = BTreeSet::new();
         for (name, id) in names {
@@ -26,9 +23,6 @@ impl BiomePredicateBindings {
         }
         let mut bound_tags = BTreeMap::new();
         for (name, entries) in tags {
-            if entries.len() > 8192 {
-                return Err(DecodeError::Field("predicate biome tag size"));
-            }
             let values = entries
                 .iter()
                 .map(|entry| {
@@ -62,9 +56,6 @@ impl BiomePredicateBindings {
             return Ok(Arc::new(BTreeSet::from([self.biome(&name)?])));
         }
         let names: Vec<String> = serde_json::from_str(json)?;
-        if names.len() > 8192 {
-            return Err(DecodeError::Field("predicate biome holder list"));
-        }
         Ok(Arc::new(
             names
                 .iter()
@@ -77,5 +68,36 @@ impl BiomePredicateBindings {
             .get(&identifier(name)?)
             .copied()
             .ok_or_else(|| DecodeError::Registry(format!("unknown biome {name}")))
+    }
+}
+
+#[cfg(test)]
+mod ceiling_tests {
+    use super::*;
+    #[test]
+    fn biome_registry_ceiling() {
+        let names = (0..8193)
+            .map(|i| (format!("test:b{i}"), BiomeId(i)))
+            .collect();
+        let tags = (0..8193)
+            .map(|i| (format!("test:t{i}"), vec!["test:b0".into()]))
+            .collect();
+        let bindings = BiomePredicateBindings::new(&names, &tags).unwrap();
+        assert_eq!(bindings.resolve(r##""#test:t8192""##).unwrap().len(), 1);
+        assert_eq!(bindings.resolve(r#""test:b8192""#).unwrap().len(), 1);
+    }
+    #[test]
+    fn biome_tag_ceiling() {
+        let names = BTreeMap::from([("test:b".into(), BiomeId(0))]);
+        let tags = BTreeMap::from([("test:t".into(), vec!["test:b".into(); 8193])]);
+        let bindings = BiomePredicateBindings::new(&names, &tags).unwrap();
+        assert_eq!(bindings.resolve(r##""#test:t""##).unwrap().len(), 1);
+    }
+    #[test]
+    fn biome_holder_ceiling() {
+        let names = BTreeMap::from([("test:b".into(), BiomeId(0))]);
+        let bindings = BiomePredicateBindings::new(&names, &BTreeMap::new()).unwrap();
+        let json = serde_json::to_string(&vec!["test:b"; 8193]).unwrap();
+        assert_eq!(bindings.resolve(&json).unwrap().len(), 1);
     }
 }

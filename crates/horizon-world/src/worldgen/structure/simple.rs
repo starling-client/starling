@@ -1,15 +1,18 @@
 //! Small piece-based structures: buried treasure, igloo, swamp hut, shipwreck.
-use super::{
-    BoundingBox, Mirror, Rotation, StructureResources, StructureTemplate,
-    legacy::{
-        LegacyPiece, PieceContext, PieceFrame, Result, TemplateHandler, TemplatePiece,
-        create_chest, make_bounding_box, offset, random_horizontal,
-    },
-    processor::ProcessorList,
-};
 use crate::heightmap::HeightmapType;
 use horizon_core::{geometry::Direction, random::RandomSource};
 use std::sync::{Arc, Mutex};
+use {
+    super::{
+        Mirror, Rotation, StructureResources, StructureTemplate,
+        legacy::{
+            LegacyPiece, PieceContext, PieceFrame, Result, TemplateHandler, TemplatePiece,
+            create_chest, make_bounding_box, offset, random_horizontal,
+        },
+        processor::ProcessorList,
+    },
+    horizon_core::bounding_box::BoundingBox,
+};
 
 fn empty_processors() -> Arc<ProcessorList> {
     Arc::new(ProcessorList::default())
@@ -25,7 +28,7 @@ impl LegacyPiece for BuriedTreasurePiece {
     fn bounding_box(&self) -> BoundingBox {
         BoundingBox::new(self.position, self.position)
     }
-    fn save(&self) -> Option<crate::nbt::Compound> {
+    fn save(&self) -> Option<horizon_core::nbt::Compound> {
         let at = self.found.lock().unwrap().unwrap_or(self.position);
         Some(super::legacy::piece_tag(
             "minecraft:btp",
@@ -82,7 +85,7 @@ impl LegacyPiece for BuriedTreasurePiece {
 pub const IGLOO_TOP: &str = "minecraft:igloo/top";
 const IGLOO_MIDDLE: &str = "minecraft:igloo/middle";
 const IGLOO_BOTTOM: &str = "minecraft:igloo/bottom";
-fn igloo_pivot(name: &str) -> [i32; 3] {
+pub(super) fn igloo_pivot(name: &str) -> [i32; 3] {
     match name {
         IGLOO_TOP => [3, 5, 5],
         IGLOO_MIDDLE => [1, 3, 1],
@@ -208,8 +211,8 @@ pub fn shipwreck_too_big(template: &StructureTemplate) -> bool {
 impl TemplatePiece {
     /// `TemplateStructurePiece.addAdditionalSaveData` and its subclasses',
     /// with the height a shipwreck settled on once placed.
-    pub fn saved(&self) -> crate::nbt::Compound {
-        use crate::nbt::Tag;
+    pub fn saved(&self) -> horizon_core::nbt::Compound {
+        use horizon_core::nbt::Tag;
         let flag = |b: bool| Tag::Byte(i8::from(b));
         let adjusted = match self.handler {
             TemplateHandler::Shipwreck { .. }
@@ -227,7 +230,7 @@ impl TemplatePiece {
             self.type_name,
             self.bounding_box.moved([0, dy, 0]),
             Some(Direction::North),
-            0,
+            self.gen_depth,
         );
         // Mansion and End City pieces keep the name inside their folder.
         let name = self
@@ -283,7 +286,7 @@ impl LegacyPiece for TemplatePiece {
     fn bounding_box(&self) -> BoundingBox {
         self.bounding_box
     }
-    fn save(&self) -> Option<crate::nbt::Compound> {
+    fn save(&self) -> Option<horizon_core::nbt::Compound> {
         Some(self.saved())
     }
     fn after_place(&self, c: &mut PieceContext<'_>, pieces: &[BoundingBox]) -> Result<()> {
@@ -454,8 +457,8 @@ impl Scattered {
         *self.frame.lock().unwrap()
     }
     /// `ScatteredFeaturePiece`'s tag: the box and the height it settled on.
-    pub fn saved(&self, id: &str) -> crate::nbt::Compound {
-        use crate::nbt::Tag;
+    pub fn saved(&self, id: &str) -> horizon_core::nbt::Compound {
+        use horizon_core::nbt::Tag;
         let f = self.frame();
         let mut tag = super::legacy::piece_tag(id, f.bounding_box, f.orientation, 0);
         for (key, value) in [
@@ -541,9 +544,9 @@ impl LegacyPiece for SwampHutPiece {
     fn bounding_box(&self) -> BoundingBox {
         self.base.frame().bounding_box
     }
-    fn save(&self) -> Option<crate::nbt::Compound> {
+    fn save(&self) -> Option<horizon_core::nbt::Compound> {
         let mut tag = self.base.saved("minecraft:tesh");
-        let spawned = crate::nbt::Tag::Byte(i8::from(*self.spawned.lock().unwrap()));
+        let spawned = horizon_core::nbt::Tag::Byte(i8::from(*self.spawned.lock().unwrap()));
         tag.insert("Witch".into(), spawned.clone());
         tag.insert("Cat".into(), spawned);
         Some(tag)

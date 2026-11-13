@@ -4,6 +4,7 @@
 //! and its on/off `Toggle` at the row's end. Dark appearance only.
 use super::*;
 use crate::glass_ui::{self as ui, white};
+use build_mode::ModKind;
 use glass_home_lists::Listener;
 use horizon_theme::glass::radius;
 use instance_mods::ModRow;
@@ -144,7 +145,9 @@ impl Launcher {
         } else {
             glass_home_lists::picture(None, "puzzle")
         };
-        let source = if let Some(origin) = row.native.as_ref().and_then(|n| n.origin.as_ref()) {
+        let source = if let Some(error) = &row.error {
+            error.clone()
+        } else if let Some(origin) = row.native.as_ref().and_then(|n| n.origin.as_ref()) {
             trf("from GitHub: {source}", &[("source", &origin.label())])
         } else {
             match &row.entry {
@@ -181,6 +184,12 @@ impl Launcher {
                 })),
             })
         });
+        let chip = row
+            .kind
+            .as_ref()
+            .filter(|(kind, _)| *kind == ModKind::Native)
+            .and_then(|(_, id)| self.route_chip(id, cx))
+            .map(|chip| div().relative().child(chip));
         let controls = match &row.native {
             Some(native) => self.native_mod_actions(native, busy, cx),
             None => {
@@ -205,6 +214,13 @@ impl Launcher {
         ui::list_row(key, hovered, hover, &t)
             .child(icon)
             .child(ui::list_text(row.name.clone(), note))
+            .children(
+                row.kind
+                    .as_ref()
+                    .map(|(kind, _)| self.kind_badge(*kind).relative()),
+            )
+            .children(chip)
+            .children(self.internals_chip(&row.file, &row.internals))
             .children(update.map(|u| u.relative()))
             .child(
                 controls

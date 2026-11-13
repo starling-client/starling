@@ -1,3 +1,12 @@
+> [!IMPORTANT]
+> **This is arismoko/horizon, a fork of [horizon-rust/horizon](https://github.com/horizon-rust/horizon) for modding work. It is not the official Horizon repository.**
+>
+> - **What's different:** this fork builds Horizon's mod API: native hooks, the `Host`, handles, Parts, attachments, mod loading and WebAssembly mods. The mod API here is under active development and changes in ways upstream's doesn't. Start at the pinned issue, [#771](https://github.com/arismoko/horizon/issues/771), which links the [project board](https://github.com/users/arismoko/projects/1) and says where the mod API is going. The modder docs are in [`docs/modding/`](docs/modding/).
+> - **Kept in step with upstream:** upstream's main is merged in regularly. Changes that differ from upstream are marked "Diverges from upstream" in their pull requests.
+> - **Where to report things:** modding proposals, API gaps and mod-loading bugs go in this fork's [issues](https://github.com/arismoko/horizon/issues). Game bugs that have nothing to do with modding belong upstream, at [horizon-rust/horizon](https://github.com/horizon-rust/horizon/issues).
+> - **Downloads:** this fork's [signed Nightlies](https://github.com/arismoko/horizon/releases) serve developers and server hosts: dedicated servers, exact source pins for native mods, and CI-tested builds—not a ready-to-play client installer. A launcher built from this fork's `launcher/` source can install them (`horizon-launcher install nightly`), but installation is not authenticated Play. No prebuilt fork launcher is published; Microsoft sign-in is part of the configured fork launcher work, using upstream's application with permission. An unconfigured source build cannot obtain a new sign-in. For launcher-managed client development without sign-in, [build an unsigned developer base from source](docs/modding/src/how-to/native-mods/042-local-developer-builds.md) and opt into single-player-only Play with `HORIZON_LAUNCHER_DEVELOPER_OFFLINE=1`; this does not enable signed Nightly Play. Existing compatible cached sessions and standalone game entry remain separate code paths. The official launcher, website and stable releases below are upstream's, not this fork's.
+> - **How it's maintained:** day-to-day work on this fork is done by Aria's agent swarm, Dyna, with reviews on every pull request.
+
 <p align="center">
   <img src="https://img.shields.io/badge/Minecraft-Java%2026.3-5D9C3F" alt="Minecraft Java 26.3">
   <img src="https://img.shields.io/badge/Rust-stable-B7410E?logo=rust&logoColor=white" alt="Rust">

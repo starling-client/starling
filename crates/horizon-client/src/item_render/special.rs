@@ -4,7 +4,7 @@
 //! as vanilla's `submit` does (no block-entity placement transform) and
 //! reports `getExtents` over the same posed parts.
 use super::{Foil, ItemQuad, ItemRenderer, ItemSink, SpecialHost, argb};
-use crate::{block_entity_render::ModelPart, hud::Rect};
+use crate::{block_entity_render::ModelPart, hud::Rect, mobs::EntityModelDocument};
 use glam::{Mat4, Quat, Vec3};
 use horizon_assets::item_model::{SpecialKind, SpecialModel};
 use serde_json::Value;
@@ -55,6 +55,16 @@ pub(super) fn load_parts(root: &Path) -> HashMap<String, ModelPart> {
     else {
         return HashMap::new();
     };
+    load_parts_from_value(&all)
+}
+
+pub(super) fn load_parts_from_document(
+    document: &EntityModelDocument,
+) -> HashMap<String, ModelPart> {
+    load_parts_from_value(document.value())
+}
+
+fn load_parts_from_value(all: &Value) -> HashMap<String, ModelPart> {
     LAYERS
         .iter()
         .chain(COPPER_GOLEM_LAYERS.iter())
@@ -136,6 +146,7 @@ fn draw(
                 ]
             }),
             foil_uv: poly.map(|v| [v[3], v[4]]),
+            gui_glint_uv: None,
             normal,
             color,
             foil,
@@ -753,7 +764,17 @@ mod tests {
         )
         .unwrap();
         let library = crate::model_library::ParsedModels::default().into_item_library();
-        let renderer = ItemRenderer::load_with_library(&root, library).unwrap();
+        let data = crate::test_resources::item_data(
+            &root,
+            horizon_world::native_load_context::DataLoadOrigin::ClientPreload,
+        )
+        .unwrap();
+        let renderer = ItemRenderer::load_with_library(
+            &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+            library,
+            &data,
+        )
+        .unwrap();
         let _ = std::fs::remove_dir_all(&root);
         let textures = [
             "entity/shield/shield_base",
@@ -843,7 +864,16 @@ mod tests {
         if !root.join("entity-models.json").exists() {
             return;
         }
-        let renderer = ItemRenderer::load(&root).unwrap();
+        let data = crate::test_resources::item_data(
+            &root,
+            horizon_world::native_load_context::DataLoadOrigin::ClientPreload,
+        )
+        .unwrap();
+        let renderer = ItemRenderer::load(
+            &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+            &data,
+        )
+        .unwrap();
         let sprite = Rect {
             u0: 0.25,
             v0: 0.125,

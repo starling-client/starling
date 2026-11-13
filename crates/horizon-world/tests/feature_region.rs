@@ -1,15 +1,17 @@
 use horizon_core::position::ChunkPos;
-use horizon_world::{
-    DATA_VERSION,
-    heightmap::{HeightmapState, HeightmapType},
-    nbt::Tag,
-    registry::{BlockRegistry, BlockStateId},
-    worldgen::{
-        anchor::WorldGenerationContext,
-        feature::FeatureWorld,
-        feature_region::{RegionError, TerrainFeatureAccess, TerrainRegion},
-        placement::PlacementContext,
-        terrain::{PreLightChunkStage, TerrainBlockStates, TerrainChunk},
+use {
+    horizon_core::nbt::Tag,
+    horizon_world::{
+        DATA_VERSION,
+        heightmap::{HeightmapState, HeightmapType},
+        registry::{BlockRegistry, BlockStateId},
+        worldgen::{
+            anchor::WorldGenerationContext,
+            feature::FeatureWorld,
+            feature_region::{RegionError, TerrainFeatureAccess, TerrainRegion},
+            placement::PlacementContext,
+            terrain::{PreLightChunkStage, TerrainBlockStates, TerrainChunk},
+        },
     },
 };
 #[derive(Clone, Copy)]
@@ -58,13 +60,13 @@ fn registry() -> BlockRegistry {
                     .iter()
                     .map(|name| {
                         let mut tag = Tag::compound([("id", Tag::String((*name).into()))]);
-                        if *name == "minecraft:water" {
-                            if let Tag::Compound(entries) = &mut tag {
-                                entries.insert(
-                                    "properties".into(),
-                                    Tag::compound([("level", Tag::String("0".into()))]),
-                                );
-                            }
+                        if *name == "minecraft:water"
+                            && let Tag::Compound(entries) = &mut tag
+                        {
+                            entries.insert(
+                                "properties".into(),
+                                Tag::compound([("level", Tag::String("0".into()))]),
+                            );
                         }
                         tag
                     })

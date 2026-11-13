@@ -7,11 +7,11 @@
 //! wave); a raid reads them and the world through [`RaidLevel`] and asks the
 //! game for its side effects with [`Action`]s, so the game and the
 //! differential test (`tools/test_raid_parity.py`) run the same rules.
+use horizon_core::nbt::{JavaString, Tag};
 use horizon_core::{
     geometry::trig,
     random::{LegacyRandom, RandomSource},
 };
-use horizon_world::nbt::{JavaString, Tag};
 use std::collections::BTreeMap;
 
 pub const MAX_OMEN_LEVEL: i32 = 5;
@@ -158,6 +158,23 @@ pub struct RaiderInfo {
     /// `level.getEntity(uuid)` finds it.
     pub in_level: bool,
     pub patrol_leader: bool,
+}
+
+/// `Raid.playSound` for one player. The horn is 13 blocks from them toward
+/// the wave centre, heard when they are within 64 blocks or in the raid.
+/// Standing on the centre leaves the horn there (`13 / 0` is not a point).
+pub fn horn_at(player: [f64; 3], center_x: f64, center_z: f64, in_raid: bool) -> Option<[f64; 3]> {
+    let dx = center_x - player[0];
+    let dz = center_z - player[2];
+    let distance = (dx * dx + dz * dz).sqrt();
+    if distance > 64.0 && !in_raid {
+        return None;
+    }
+    if distance == 0.0 {
+        return Some(player);
+    }
+    let k = 13.0 / distance;
+    Some([player[0] + k * dx, player[1], player[2] + k * dz])
 }
 
 /// The single player a raid sees (`level.players()`).
@@ -346,7 +363,11 @@ impl Raid {
     /// True when this omen triggers the raid (no wave spawned yet: the
     /// `raid_trigger` stat and the `voluntary_exile` advancement).
     pub fn absorb_omen(&mut self, amplifier: i32) -> bool {
-        self.omen_level = (self.omen_level + amplifier + 1).clamp(0, MAX_OMEN_LEVEL);
+        self.omen_level = self
+            .omen_level
+            .wrapping_add(amplifier)
+            .wrapping_add(1)
+            .clamp(0, MAX_OMEN_LEVEL);
         !self.has_first_wave_spawned()
     }
     /// `Raid.getEnchantOdds`.
@@ -651,7 +672,7 @@ impl Raid {
                     self.status = Status::Victory;
                     actions.push(Action::Victory {
                         heroes: self.heroes(),
-                        amplifier: self.omen_level - 1,
+                        amplifier: self.omen_level.wrapping_sub(1),
                     });
                 }
             }
@@ -787,6 +808,20 @@ impl Raids {
     }
     pub fn get_mut(&mut self, id: i32) -> Option<&mut Raid> {
         self.map.get_mut(&id)
+    }
+    /// `Raid.stop`, marking its owning level's saved raids dirty.
+    pub fn stop(&mut self, id: i32) -> Option<[i32; 3]> {
+        let raid = self.get_mut(id)?;
+        raid.stop();
+        let center = raid.center;
+        self.dirty = true;
+        Some(center)
+    }
+    /// `Raid.setRaidOmenLevel`: assign without clamping and persist the change.
+    pub fn set_omen_level(&mut self, id: i32, level: i32) -> Option<i32> {
+        let before = std::mem::replace(&mut self.get_mut(id)?.omen_level, level);
+        self.dirty = true;
+        Some(before)
     }
     /// The raid ids in iteration order.
     pub fn ids(&self) -> Vec<i32> {
@@ -937,8 +972,15 @@ impl Raids {
     /// nothing decodes. Raids that fail to decode are dropped; a raid whose
     /// heroes partly fail keeps the others.
     pub fn from_nbt(tag: &Tag, seed: i64) -> Self {
+        let (mut raids, order) = Self::from_nbt_unseeded(tag);
+        raids.seed_loaded(seed, &order);
+        raids
+    }
+    /// `from_nbt` without seeding the raids' randoms, with each raid's id and
+    /// position in the file for `seed_loaded`.
+    pub fn from_nbt_unseeded(tag: &Tag) -> (Self, Vec<(i32, usize)>) {
         let Some(decoded) = decode_raids(tag) else {
-            return Self::default();
+            return (Self::default(), Vec::new());
         };
         let mut out = Self {
             dirty: false,
@@ -946,14 +988,24 @@ impl Raids {
             tick: decoded.tick,
             ..Self::default()
         };
+        let mut order = Vec::with_capacity(decoded.raids.len());
         for (i, (id, raid)) in decoded.raids.into_iter().enumerate() {
-            let mut raid = raid;
-            raid.random = LegacyRandom::new(seed.wrapping_add(i as i64));
             // Int2ObjectOpenHashMap.put: a repeated id replaces the raid.
             out.map.insert(id, raid);
             out.order.put(id);
+            order.push((id, i));
         }
-        out
+        (out, order)
+    }
+    /// Seeds the raids `from_nbt_unseeded` read as `from_nbt` does: the raid
+    /// at position `i` in the file gets `seed + i` (a repeated id, the last).
+    /// Raids gone since are skipped.
+    pub fn seed_loaded(&mut self, seed: i64, order: &[(i32, usize)]) {
+        for &(id, i) in order {
+            if let Some(raid) = self.map.get_mut(&id) {
+                raid.random = LegacyRandom::new(seed.wrapping_add(i as i64));
+            }
+        }
     }
 }
 /// The id of the closest active raid within 96 blocks (`getNearbyRaid`).
@@ -1509,6 +1561,31 @@ impl IntOpenHashOrder {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn omen_arithmetic_wraps_as_java_ints() {
+        let mut raid = Raid::new([0, 64, 0], 2, 1);
+        raid.omen_level = i32::MAX;
+        raid.absorb_omen(0);
+        // Java: MAX + 0 + 1 wraps to MIN, then clamps to 0.
+        assert_eq!(raid.omen_level, 0);
+    }
+
+    #[test]
+    fn raids_read_then_seeded_match_raids_loaded_seeded() {
+        let mut raids = Raids::default();
+        raids.insert(3, Raid::new([0, 64, 0], 2, 1));
+        raids.insert(8, Raid::new([200, 64, 0], 2, 2));
+        let tag = raids.to_nbt();
+        let mut seeded = Raids::from_nbt(&tag, 99);
+        let (mut read, order) = Raids::from_nbt_unseeded(&tag);
+        read.seed_loaded(99, &order);
+        for id in [3, 8] {
+            let a = seeded.map.get_mut(&id).unwrap().random.next_long();
+            let b = read.map.get_mut(&id).unwrap().random.next_long();
+            assert_eq!(a, b);
+        }
+    }
+
     use super::*;
 
     struct Level {
@@ -1641,6 +1718,25 @@ mod tests {
         let mut raid = Raid::new([0, 64, 0], 2, 3);
         raid.tick(&level(0), &[], &nobody);
         assert!(raid.is_stopped());
+    }
+    /// 13/32 of the way from the origin to a centre 32 blocks east is 13.
+    /// A player 32 blocks east of the centre hears it 13 blocks back, at 19.
+    /// 80 blocks away is outside the 64 block reach.
+    #[test]
+    fn the_raid_horn_sits_thirteen_blocks_toward_the_wave() {
+        assert_eq!(
+            horn_at([0.0, 70.0, 0.0], 32.0, 0.0, false),
+            Some([13.0, 70.0, 0.0])
+        );
+        assert_eq!(
+            horn_at([32.0, 70.0, 0.0], 0.0, 0.0, false),
+            Some([19.0, 70.0, 0.0])
+        );
+        assert_eq!(horn_at([80.0, 70.0, 0.0], 0.0, 0.0, false), None);
+        assert_eq!(
+            horn_at([80.0, 70.0, 0.0], 0.0, 0.0, true),
+            Some([67.0, 70.0, 0.0])
+        );
     }
     #[test]
     fn bar_progress_follows_java_clamp() {

@@ -1,3 +1,6 @@
+//! Starling: kept from Horizon before its mod API rework, for the native mods that read their data
+//! files this way (game/starling/native_compat.rs has the old hooks and helpers).
+//!
 //! Data files of native mods (docs/native-mods.md, "Data files"). A bundle's `data/` folder is
 //! staged as `native-data/<mod id>/` at the root of the workspace the launcher builds, and
 //! [`native_data!`](crate::native_data) compiles one of its files into the game. What a mod's

@@ -1,4 +1,7 @@
 import datetime as dt
+import os
+import subprocess
+import textwrap
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,6 +19,55 @@ def pr(number, title="Fix a thing", labels=(), paths=("crates/horizon-client/src
 
 
 class ReleaseTrainTests(unittest.TestCase):
+    def test_repository_merge_identity_before_metadata(self):
+        for repository in ("arismoko/horizon", "horizon-rust/horizon"):
+            with self.subTest(repository=repository), mock.patch.object(train, "REPO", repository), \
+                    mock.patch.object(train, "run", return_value="root"), \
+                    mock.patch.object(train, "merged_pull_requests", return_value=[
+                        (27, "imported"), (28, "collision"), (28, "own")]), \
+                    mock.patch.object(train, "gh_json", return_value=[[], [
+                        {"number": 28, "merge_commit_sha": "own", "merged_at": "date"},
+                        {"number": 27, "merge_commit_sha": "imported", "merged_at": None}]]) as api, \
+                    mock.patch.object(train, "pull_request", return_value=pr(28)) as metadata, \
+                    mock.patch.object(train, "changed_paths", return_value=["launcher/src/main.rs"]):
+                last, prs = train.gather("launcher", "head", releases=[])
+                self.assertIsNone(last)
+                self.assertEqual([p["number"] for p in prs], [28])
+                metadata.assert_called_once_with(28)
+                api.assert_called_once_with("api", f"repos/{repository}/pulls?state=closed&per_page=100",
+                                            "--paginate", "--slurp")
+                release, _ = train.decision("launcher", prs, NOW)
+                self.assertTrue(release)
+                _, body = train.notes("launcher", "launcher@0.2.0", prs, [])
+                self.assertIn("#28", body)
+                self.assertNotIn("#27", body)
+
+    def test_first_fork_release_with_only_imported_history(self):
+        with mock.patch.object(train, "run", return_value="root"), \
+                mock.patch.object(train, "merged_pull_requests", return_value=[(27, "imported")]), \
+                mock.patch.object(train, "gh_json", return_value=[[]]), \
+                mock.patch.object(train, "pull_request") as metadata:
+            last, prs = train.gather("launcher", "head", releases=[])
+            self.assertIsNone(last)
+            self.assertEqual(prs, [])
+            metadata.assert_not_called()
+            self.assertEqual(train.next_launcher_tag([], False, (0, 2)), "launcher@0.2.0")
+            self.assertTrue(train.decision("launcher", prs, NOW, new_line="0.2")[0])
+            self.assertFalse(train.decision("launcher", prs, NOW)[0])
+            _, body = train.notes("launcher", "launcher@0.2.0", prs, [])
+            self.assertNotIn("#27", body)
+
+    def test_release_metadata_errors_are_not_imports(self):
+        for failing in ("gh_json", "pull_request"):
+            with self.subTest(failing=failing), \
+                    mock.patch.object(train, "merged_pull_requests", return_value=[(28, "own")]), \
+                    mock.patch.object(train, "gh_json", return_value=[[{
+                        "number": 28, "merge_commit_sha": "own", "merged_at": "date"}]]) as api, \
+                    mock.patch.object(train, "pull_request") as metadata:
+                (api if failing == "gh_json" else metadata).side_effect = RuntimeError("API unavailable")
+                with self.assertRaisesRegex(RuntimeError, "API unavailable"):
+                    train.merged_between("launcher", "base", "head")
+
     def test_player_facing_paths(self):
         exporters = {"mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMobDataExporter.java"}
         self.assertTrue(train.player_facing("crates/horizon-client/src/game.rs", "game"))
@@ -148,6 +200,7 @@ class ReleaseTrainTests(unittest.TestCase):
         self.assertFalse(train.decision("game", [], NOW, new_line="0.3", blockers=[7])[0])
         self.assertTrue(train.decision("game", [pr(1)], NOW, blockers=[])[0])
 
+    @mock.patch.object(train, "REPO", "horizon-rust/horizon")
     def test_game_releases_ship_only_what_parity_main_passed(self):
         def runs(parity, checks):
             def gh_json(*arguments):
@@ -155,6 +208,9 @@ class ReleaseTrainTests(unittest.TestCase):
                 if "--commit" in arguments:
                     sha = arguments[arguments.index("--commit") + 1]
                     return [{"status": s, "conclusion": c} for h, s, c in table if h == sha]
+                if "--status" in arguments:
+                    wanted = arguments[arguments.index("--status") + 1]
+                    table = [(h, s, c) for h, s, c in table if c == wanted]
                 return [{"headSha": h, "status": s, "conclusion": c} for h, s, c in table]
             return mock.patch.object(train, "gh_json", gh_json)
         checks = [("c", "in_progress", ""), ("b", "completed", "success"), ("a", "completed", "success")]
@@ -164,9 +220,43 @@ class ReleaseTrainTests(unittest.TestCase):
             self.assertTrue(train.passed_on("parity-main", "a"))
             self.assertFalse(train.passed_on("parity-main", "b"))
         with runs([("b", "completed", "failure"), ("a", "completed", "success")], checks):
-            self.assertIsNone(train.green_main_head(parity=True), "a failed batch holds releases until fixed")
+            self.assertEqual(train.green_main_head(parity=True), "a",
+                             "a later failed batch holds only its own merges, not the commit before it")
         with runs([("c", "completed", "success")], checks):
             self.assertIsNone(train.green_main_head(parity=True), "its checks must pass too")
+        with runs([("c", "completed", "success"), ("a", "completed", "success")], checks):
+            self.assertEqual(train.green_main_head(parity=True), "a", "the newest green commit whose checks passed")
+        with runs([("c", "completed", "failure"), ("b", "completed", "cancelled")], checks):
+            self.assertIsNone(train.green_main_head(parity=True), "nothing parity-main passed")
+        with runs([("c", "completed", "success")], [("c", "completed", "success")]):
+            self.assertEqual(train.green_main_head(), "c")
+        with runs([], [("c", "completed", "failure"), ("b", "completed", "success")]):
+            self.assertIsNone(train.green_main_head(), "checks alone: main's newest finished checks must pass")
+
+    @mock.patch.object(train, "REPO", "arismoko/horizon")
+    def test_fork_base_uses_its_green_main_pushes_without_disabled_workflows(self):
+        records = [
+            ("pr-head", "main", "pull_request", "completed", "success"),
+            ("topic-head", "topic", "push", "completed", "success"),
+            ("broken-main", "main", "push", "completed", "failure"),
+            ("good-main", "main", "push", "completed", "success"),
+            ("older-main", "main", "push", "completed", "success"),
+        ]
+        def runs(*arguments):
+            workflow = arguments[arguments.index("--workflow") + 1]
+            self.assertEqual(workflow, "dyna-checks", "the fork has no checks/parity-main runs")
+            table = records
+            for option, column in [("--branch", 1), ("--event", 2), ("--status", 4)]:
+                if option in arguments:
+                    wanted = arguments[arguments.index(option) + 1]
+                    table = [entry for entry in table if entry[column] == wanted]
+            return [{"headSha": sha, "status": status, "conclusion": conclusion}
+                    for sha, _, _, status, conclusion in table]
+        with mock.patch.object(train, "gh_json", side_effect=runs):
+            self.assertEqual(train.green_main_head(parity=True), "good-main")
+            self.assertEqual(train.green_main_head(), "good-main")
+            records[:] = [entry for entry in records if entry[0] not in ("good-main", "older-main")]
+            self.assertIsNone(train.green_main_head(parity=True), "no unchecked fallback to main")
 
     def test_a_release_is_published_only_after_its_smoke_test_and_with_no_blocker(self):
         drew = {"error": None, "frames": 12710, "chunks": 81, "meshed_sections": 550, "player": [160.5, 71.0, 156.5]}

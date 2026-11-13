@@ -34,9 +34,29 @@ without native mods" stops using one. Nothing is installed: the APK stays the re
    refuses a module destination reached under two names, `E_TARGET_AMBIGUOUS`), and `lib.rs` loses the conditional
    attribute that keeps it from looking at the modules under that file. The bundles' targets stay Horizon's
    (`horizon_client::game::Game<'_>::use_item`), so Horizon's own native mods apply unchanged.
-4. `horizon-mixins apply` into a stage, then into a build folder kept between builds: files whose bytes changed get
+4. **The source as horizon-mixins reads it** (`horizon-materialize`, in horizon-mod-api-gen): the game's module lists,
+   which its build script generates (`include!` of `OUT_DIR`), are written out as plain `#[path] mod` lines, as
+   Horizon's launcher does, and the hook catalog Horizon declares in Rust becomes the `native-hooks.json` named hooks
+   (`hook = "frame"`) are resolved through. The build leaves that file out: Horizon's generator refuses it.
+5. **Mods made for older hooks** (`native_mod_adapt.py`). Horizon split its native hooks by area
+   (`game/native_hooks/`), renamed many and dropped the `Native` prefix of their types; the registry is full of mods
+   made for the old ones, which Starling 0.8.0 had. Both kinds apply side by side:
+   - a target that moved is found by its type and name in the module tree (or a free function by its name) and the
+     mod is pointed there; a `[[module]]` goes to the file its module is in now; `include!("shared.rs")` files are
+     written into the file that includes them (horizon-mixins does not look into an `include!`);
+   - a named hook the new catalog lacks comes from Starling 0.8.0's (`native-hooks-0.8.json`), pointed at where its
+     function is now;
+   - a binding to `batch` becomes `draw`, Horizon's name in its drawing hooks, and one to parameters a hook no longer
+     has goes to the old hook Starling keeps as `<name>_old`;
+   - the old hooks (`native_frame`, `native_hud`, `native_key`, `native_wheel`, `native_tick`, `native_commands`,
+     `native_mods`, `native_settings`, `native_destroy_block`, ...) are kept in `game/starling/native_compat.rs` and
+     called where their successors are, with the old helpers (`native_on`, `native_setting`, `native_playing`, ...) on
+     the new ones; an old mod's buttons show as settings on Horizon's Options > Mods page;
+   - the client's old `mod_api` module, with the old `Native*` types (most are the new ones under their old names), is
+     `horizon_client::starling_mod_api`, which a mod's `horizon_client::mod_api` and `crate::mod_api` are pointed to.
+6. `horizon-mixins apply` into a stage, then into a build folder kept between builds: files whose bytes changed get
    the time of now, the others keep theirs, so Cargo recompiles only what the mods touched.
-5. `build_apk.py --profile fast`, as a release: the stripped library, an APK unless `NATIVE_LIBRARY_ONLY` is set, and
+7. `build_apk.py --profile fast`, as a release: the stripped library, an APK unless `NATIVE_LIBRARY_ONLY` is set, and
    `build.json`.
 
 ## Permissions

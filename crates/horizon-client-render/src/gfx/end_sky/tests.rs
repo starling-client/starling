@@ -6,7 +6,7 @@ use glam::Mat4;
 #[test]
 fn geometry_matches_pre_residency_vertex_snapshots() {
     use sha2::{Digest, Sha256};
-    // Captured from game/end.rs at 34c3c1cf for full, tiled and non-binary UVs.
+    // Captured from game/world/end.rs at 34c3c1cf for full, tiled and non-binary UVs.
     // Quantize positions only, avoiding platform sin/cos rounding differences;
     // quad order, UVs, tint, material and light retain their exact byte values.
     for (uv, expected) in [

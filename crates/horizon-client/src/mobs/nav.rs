@@ -58,6 +58,16 @@ pub struct Navigation {
     /// WallClimberNavigation.pathToPosition
     climb_to: Option<[i32; 3]>,
 }
+/// A controlling passenger uses the vehicle's actual navigation, but the
+/// passenger's private navigation still ticks in Mob.serverAiStep.
+#[derive(Clone, Debug)]
+pub(super) struct Redirect {
+    pub own: Navigation,
+    pub body: PathMob,
+    pub follow_range: f32,
+    pub passenger: bool,
+    pub in_liquid: bool,
+}
 impl Default for Navigation {
     fn default() -> Self {
         Self {
@@ -129,6 +139,9 @@ fn comfortable_fall_distance(f: f32) -> i32 {
 }
 impl Mob {
     pub fn path_mob(&self) -> PathMob {
+        if let Some(redirect) = &self.ai.navigation_redirect {
+            return redirect.body.clone();
+        }
         PathMob {
             position: self.position,
             width: self.width(),
@@ -165,8 +178,31 @@ impl Mob {
     pub fn set_malus(&mut self, t: PathType, v: f32) {
         self.ai.malus[t as usize] = Some(v);
     }
+    fn navigation_position(&self) -> Vec3 {
+        self.ai
+            .navigation_redirect
+            .as_ref()
+            .map_or(self.position, |r| r.body.position)
+    }
+    fn navigation_height(&self) -> f32 {
+        self.ai
+            .navigation_redirect
+            .as_ref()
+            .map_or_else(|| self.height(), |r| r.body.height)
+    }
+    fn navigation_in_water(&self) -> bool {
+        self.ai
+            .navigation_redirect
+            .as_ref()
+            .map_or(self.fluids.in_water, |r| r.body.in_water)
+    }
+    /// PathNavigation.getMaxPathLength.
     fn max_path_length(&self) -> f32 {
-        (self.attrs.follow_range as f32).max(self.ai.nav.required_path_length)
+        self.ai
+            .navigation_redirect
+            .as_ref()
+            .map_or(self.attrs.follow_range as f32, |r| r.follow_range)
+            .max(self.ai.nav.required_path_length)
     }
     /// `PathNavigation.updatePathfinderMaxVisitedNodes`: after a follow range
     /// change and a new required path length.
@@ -180,33 +216,49 @@ impl Mob {
     }
     fn can_update_path(&self) -> bool {
         match self.ai.nav.kind {
-            NavKind::Ground | NavKind::WallClimber => self.on_ground || self.is_in_liquid(),
-            NavKind::Water { breach } => breach || self.is_in_liquid(),
+            // GroundPathNavigation.canUpdatePath: onGround() || isInLiquid() ||
+            // isPassenger(). A mob riding a vehicle keeps making and following
+            // paths where it sits (`create_path_raw` and `recompute_path` refuse
+            // without this).
+            NavKind::Ground | NavKind::WallClimber => {
+                self.ai.navigation_redirect.as_ref().map_or_else(
+                    || self.on_ground || self.is_in_liquid() || self.extra.mount.is_some(),
+                    |r| r.body.on_ground || r.in_liquid || r.passenger,
+                )
+            }
+            NavKind::Water { breach } => {
+                breach
+                    || self
+                        .ai
+                        .navigation_redirect
+                        .as_ref()
+                        .map_or_else(|| self.is_in_liquid(), |r| r.in_liquid)
+            }
             NavKind::Flying | NavKind::Amphibious { .. } => true,
         }
     }
     fn temp_mob_pos(&self, w: &MobWorld) -> Vec3 {
         match self.ai.nav.kind {
             NavKind::Ground | NavKind::WallClimber => Vec3::new(
-                self.position.x,
+                self.navigation_position().x,
                 f64::from(self.surface_y(w)),
-                self.position.z,
+                self.navigation_position().z,
             ),
             NavKind::Water { .. } | NavKind::Amphibious { .. } => Vec3::new(
-                self.position.x,
-                self.position.y + f64::from(self.height()) * 0.5,
-                self.position.z,
+                self.navigation_position().x,
+                self.navigation_position().y + f64::from(self.navigation_height()) * 0.5,
+                self.navigation_position().z,
             ),
-            NavKind::Flying => self.position,
+            NavKind::Flying => self.navigation_position(),
         }
     }
     fn surface_y(&self, w: &MobWorld) -> i32 {
         let (x, z) = (
-            self.position.x.floor() as i32,
-            self.position.z.floor() as i32,
+            self.navigation_position().x.floor() as i32,
+            self.navigation_position().z.floor() as i32,
         );
-        if self.fluids.in_water && self.ai.nav.can_float {
-            let mut y = self.position.y.floor() as i32;
+        if self.navigation_in_water() && self.ai.nav.can_float {
+            let mut y = self.navigation_position().y.floor() as i32;
             let start = y;
             let mut steps = 0;
             while w.facts.get(w.world.block(x, y, z)).fluid == crate::blocks::Fluid::Water {
@@ -218,23 +270,28 @@ impl Mob {
             }
             y
         } else {
-            (self.position.y + 0.5).floor() as i32
+            (self.navigation_position().y + 0.5).floor() as i32
         }
     }
     /// GroundPathNavigation.findSurfacePosition.
     fn surface_position(&self, w: &MobWorld, mut p: [i32; 3]) -> [i32; 3] {
-        let air = |p: [i32; 3]| w.facts.is_air(w.world.block(p[0], p[1], p[2]));
-        let solid = |p: [i32; 3]| w.solid(p[0], p[1], p[2]);
+        let shape = w.world.shape;
+        let min_y = shape.min_y;
+        let max_y = shape.max_y() - 1;
+        let air = |p: [i32; 3]| {
+            !shape.contains_y(p[1]) || w.facts.is_air(w.world.block(p[0], p[1], p[2]))
+        };
+        let solid = |p: [i32; 3]| shape.contains_y(p[1]) && w.solid(p[0], p[1], p[2]);
         if air(p) {
-            let mut q = [p[0], p[1] - 1, p[2]];
-            while q[1] >= w.world.bottom_y() && air(q) {
+            let mut q = [p[0], (p[1] - 1).min(max_y), p[2]];
+            while q[1] >= min_y && air(q) {
                 q[1] -= 1;
             }
-            if q[1] >= w.world.bottom_y() {
+            if q[1] >= min_y {
                 return [q[0], q[1] + 1, q[2]];
             }
-            q[1] = p[1] + 1;
-            while q[1] <= 319 && air(q) {
+            q[1] = (p[1] + 1).max(min_y);
+            while q[1] <= max_y && air(q) {
                 q[1] += 1;
             }
             p = q;
@@ -243,7 +300,7 @@ impl Mob {
             return p;
         }
         let mut q = [p[0], p[1] + 1, p[2]];
-        while q[1] <= 319 && solid(q) {
+        while q[1] <= max_y && solid(q) {
             q[1] += 1;
         }
         q
@@ -256,7 +313,7 @@ impl Mob {
         max_len: f32,
     ) -> Option<Path> {
         if targets.is_empty()
-            || self.position.y < f64::from(w.world.bottom_y())
+            || self.navigation_position().y < f64::from(w.world.bottom_y())
             || !self.can_update_path()
         {
             return None;
@@ -344,7 +401,7 @@ impl Mob {
         self.ai.nav.last_stuck_check = self.ai.nav.tick;
         // getTempMobPos needs the world for ground navigation; position is close enough
         // for the first stuck sample and is refreshed 100 ticks later.
-        self.ai.nav.last_stuck_pos = self.position;
+        self.ai.nav.last_stuck_pos = self.navigation_position();
         true
     }
     /// PathNavigation.moveTo(x, y, z, speed): a path to the containing block.
@@ -391,18 +448,24 @@ impl Mob {
             self.ai.nav.delayed_recompute = false;
         }
     }
-    /// `GroundPathNavigation.trimPath` with `avoidSun`: a mob that is out of
-    /// the sun keeps only the nodes before the first one the sky sees.
+    /// `PathNavigation.trimPath` for cauldrons, then
+    /// `GroundPathNavigation.trimPath` with `avoidSun`: a mob that is out of the
+    /// sun keeps only the nodes before the first one the sky sees.
     fn trim_path(&mut self, w: &MobWorld) {
+        if let Some(path) = &mut self.ai.nav.path {
+            path.raise_cauldron_nodes(|x, y, z| {
+                w.has_tag("minecraft:cauldrons", w.block_name(x, y, z))
+            });
+        }
         if !self.ai.nav.avoid_sun
             || !matches!(self.ai.nav.kind, NavKind::Ground | NavKind::WallClimber)
         {
             return;
         }
         let at = [
-            self.position.x.floor() as i32,
-            (self.position.y + 0.5).floor() as i32,
-            self.position.z.floor() as i32,
+            self.navigation_position().x.floor() as i32,
+            (self.navigation_position().y + 0.5).floor() as i32,
+            self.navigation_position().z.floor() as i32,
         ];
         if w.can_see_sky(at[0], at[1], at[2]) {
             return;
@@ -427,9 +490,9 @@ impl Mob {
             return false;
         };
         let middle = Vec3::new(
-            (f64::from(end.x) + self.position.x) / 2.0,
-            (f64::from(end.y) + self.position.y) / 2.0,
-            (f64::from(end.z) + self.position.z) / 2.0,
+            (f64::from(end.x) + self.navigation_position().x) / 2.0,
+            (f64::from(end.y) + self.navigation_position().y) / 2.0,
+            (f64::from(end.z) + self.navigation_position().z) / 2.0,
         );
         super::doors::closer_to_center(pos, middle, (path.nodes.len() - path.next) as f64)
     }
@@ -438,8 +501,20 @@ impl Mob {
     pub fn queue_path_recompute(&mut self) {
         self.ai.nav.pending_recompute = true;
     }
-    /// PathNavigation.tick.
+    /// Tick the private field while goal access is redirected to the vehicle.
     pub fn nav_tick(&mut self, w: &MobWorld) {
+        let mut redirect = self.ai.navigation_redirect.take();
+        if let Some(r) = &mut redirect {
+            std::mem::swap(&mut self.ai.nav, &mut r.own);
+        }
+        self.tick_own_navigation(w);
+        if let Some(r) = &mut redirect {
+            std::mem::swap(&mut self.ai.nav, &mut r.own);
+        }
+        self.ai.navigation_redirect = redirect;
+    }
+    /// PathNavigation.tick.
+    fn tick_own_navigation(&mut self, w: &MobWorld) {
         self.ai.nav.tick += 1;
         if std::mem::take(&mut self.ai.nav.pending_recompute) {
             self.recompute_path(w);
@@ -726,6 +801,70 @@ mod recompute_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "needs prepared resources"]
+    fn surface_search_uses_the_world_build_range() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        assert!(crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |world, _| world.shape =
+                crate::chunk::LevelShape::new(0, 128, 128, true, false).unwrap(),
+            |world, types| {
+                let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+                let mob = Mob::new(1, kind, Vec3::ZERO, 0.0);
+                assert_eq!(
+                    mob.surface_position(world, [0, 2_000_000_000, 0]),
+                    [0, 2_000_000_001, 0]
+                );
+                assert_eq!(
+                    mob.surface_position(world, [0, -2_000_000_000, 0]),
+                    [0, 128, 0]
+                );
+                assert_eq!(mob.surface_position(world, [0, 127, 0]), [0, 128, 0]);
+                assert_eq!(mob.surface_position(world, [0, 0, 0]), [0, 128, 0]);
+            },
+        ));
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources"]
+    fn surface_search_from_above_keeps_the_top_nonsolid_block() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        assert!(crate::mobs::world::with_resource_test_world(
+            &root,
+            &[],
+            true,
+            true,
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                world
+                    .set(
+                        0,
+                        319,
+                        0,
+                        registry.default_state("minecraft:torch").unwrap(),
+                    )
+                    .unwrap();
+            },
+            |world, types| {
+                let mob = Mob::new(
+                    1,
+                    std::sync::Arc::new(types.types["minecraft:zombie"].clone()),
+                    Vec3::ZERO,
+                    0.0,
+                );
+                assert_eq!(mob.surface_position(world, [0, 321, 0]), [0, 320, 0]);
+                assert_eq!(mob.surface_position(world, [0, 319, 0]), [0, 319, 0]);
+            },
+        ));
+    }
+
     /// `Frog.FrogPathNavigation.prefersShallowSwimming` has to reach the path
     /// finder, or the shallow-water malus never applies to a frog.
     #[test]
@@ -772,5 +911,27 @@ mod tests {
             m.health = 4.0;
             assert_eq!(m.max_fall_distance(), 6, "hurt, has a target");
         });
+    }
+
+    /// `GroundPathNavigation.canUpdatePath`: `onGround() || isInLiquid() ||
+    /// isPassenger()`. A pig riding a vehicle - a chicken jockey, a husk on a
+    /// camel, a piglin on a hoglin - can still ask for a path and follow it.
+    #[test]
+    fn a_mob_riding_a_vehicle_keeps_its_ground_navigation() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        std::sync::Arc::make_mut(&mut kind).species = crate::mobs::Species::Pig;
+        let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        m.on_ground = true;
+        assert!(m.can_update_path(), "standing on the ground");
+        m.on_ground = false;
+        assert!(
+            !m.can_update_path(),
+            "in the air with no vehicle: no path is made or followed"
+        );
+        m.extra.mount = Some(7);
+        assert!(m.can_update_path(), "riding a vehicle: isPassenger()");
+        m.extra.mount = None;
+        m.fluids.in_water = true;
+        assert!(m.can_update_path(), "in a liquid");
     }
 }

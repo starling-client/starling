@@ -1,6 +1,6 @@
 //! Mod messages: bytes a native mod's server half and its client half send
 //! each other, on one custom payload channel in the play state
-//! (docs/native-mods.md, "Mod messages").
+//! (docs/modding/src/how-to/native-mods.md, "Mod messages").
 //!
 //! The server announces it carries them with an empty [`CHANNEL`] payload in
 //! the configuration phase (a vanilla client ignores it); a Horizon client

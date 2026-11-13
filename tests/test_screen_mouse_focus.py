@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ScreenMouseFocusTests(unittest.TestCase):
     def test_cancel_precedes_widget_focus(self):
-        game = (ROOT / "crates/horizon-client/src/game.rs").read_text()
+        game = (ROOT / "crates/horizon-client/src/game/runtime/window_handler.rs").read_text()
         pre = game.index("// ScreenEvent.MouseButtonPressed.Pre")
         focus = game.index("self.key_focus_mouse_press(&event)")
         self.assertLess(game.index("self.key_focus_mouse(event_loop, &event)"), pre)
@@ -22,7 +22,7 @@ class ScreenMouseFocusTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_accepted_press_focus(self):
-        source = (ROOT / "crates/horizon-client/src/game/pad_menu.rs").read_text()
+        source = (next(ROOT.glob('crates/horizon-client/src/game/*/pad_menu.rs'))).read_text()
         source = source.replace("pub(super) fn", "fn")
         fixture = r"""
 #[derive(Clone, Copy, PartialEq)]
@@ -37,6 +37,7 @@ struct Pad { menu: Menu }
 struct Game { pad: Pad, cursor: (f32, f32), in_menu: bool }
 impl Game {
     fn pad_in_menu(&self) -> bool { self.in_menu }
+    fn key_focus_screen(&self) -> bool { self.in_menu }
     fn key_targets(&self) -> Vec<Target> { vec![Target { rect: [0., 0., 10., 10.] }] }
     METHOD
 }

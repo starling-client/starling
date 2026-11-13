@@ -7,24 +7,26 @@ use horizon_core::{
     position::{BlockPos, ChunkPos},
     random::{RandomSource, XoroshiroRandom},
 };
-use horizon_world::{
-    DATA_VERSION,
-    heightmap::HeightmapState,
-    nbt::Tag,
-    registry::{BlockRegistry, BlockStateId},
-    worldgen::{
-        anchor::WorldGenerationContext,
-        material_condition::{
-            MaterialCondition, MaterialRule, MaterialRuleError, MaterialSurfaceQueries,
-        },
-        material_extensions::{ExtensionBlocks, ExtensionNoises, MaterialExtensions},
-        material_stage::{SurfaceInputs, TopMaterialInputs, build_surface, top_material},
-        terrain::{TerrainBlockStates, TerrainChunk},
-    },
-};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
+};
+use {
+    horizon_core::nbt::Tag,
+    horizon_world::{
+        DATA_VERSION,
+        heightmap::HeightmapState,
+        registry::{BlockRegistry, BlockStateId},
+        worldgen::{
+            anchor::WorldGenerationContext,
+            material_condition::{
+                MaterialCondition, MaterialRule, MaterialRuleError, MaterialSurfaceQueries,
+            },
+            material_extensions::{ExtensionBlocks, ExtensionNoises, MaterialExtensions},
+            material_stage::{SurfaceInputs, TopMaterialInputs, build_surface, top_material},
+            terrain::{TerrainBlockStates, TerrainChunk},
+        },
+    },
 };
 
 #[derive(Clone, Copy)]
@@ -180,6 +182,7 @@ fn density_context_survives_success_binding_failure_and_partial_chunk_failure() 
                 density: Arc::new(Fails),
                 richness: Arc::new(ConstantSampler(1.)),
                 filler_gap: Arc::new(ConstantSampler(-1.)),
+                positive_y: [i32::MIN, i32::MAX],
             }
         } else {
             MaterialRule::Block(BlockStateId(3))

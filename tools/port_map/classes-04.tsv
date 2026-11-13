@@ -61,7 +61,7 @@ StandingSignBlock.getStateForPlacement	port	crates/horizon-world/src/level/place
 StandingSignBlock.mirror	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::mirror	
 StandingSignBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	
 StandingSignBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	
-StemBlock.getCloneItemStack	port	crates/horizon-client/src/game/block_items.rs::clone_item	a pumpkin or melon stem, attached or not, picks the seed it grew from; any other block picks its own item
+StemBlock.getCloneItemStack	port	crates/horizon-client/src/game/blocks/block_items.rs::clone_item	a pumpkin or melon stem, attached or not, picks the seed it grew from; any other block picks its own item
 StemBlock.isValidBonemealTarget	port	crates/horizon-world/src/level/bonemeal.rs::Sim::bonemeal_valid	
 StemBlock.performBonemeal	port	crates/horizon-world/src/level/bonemeal.rs::Sim::perform_bonemeal	
 StemBlock.randomTick	port	crates/horizon-world/src/level/tick.rs::Sim::stem_random_tick	
@@ -86,7 +86,7 @@ TrapDoorBlock.getShape	port	crates/horizon-world/src/interaction_shapes.rs::Inte
 TrapDoorBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	
 TrapDoorBlock.isPathfindable	skip:data		per-state path type is exported state data (StateData.path)
 TrapDoorBlock.neighborChanged	port	crates/horizon-world/src/level/hooks.rs::Sim::neighbor_changed	redstone update arm for trapdoors
-TrapDoorBlock.onExplosionHit	port	crates/horizon-client/src/game/wind.rs::Game::wind_trigger_block	the same path toggles a non-iron trapdoor
+TrapDoorBlock.onExplosionHit	port	crates/horizon-client/src/game/interface/wind.rs::Game::wind_trigger_block	the same path toggles a non-iron trapdoor
 TrapDoorBlock.playSound	port	crates/horizon-world/src/level/redstone.rs::Sim::trapdoor_sound	
 TrapDoorBlock.toggle	inline	crates/horizon-world/src/level/interact.rs::Sim::use_without_item	the trapdoor arm cycles the open state
 TrapDoorBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	
@@ -128,41 +128,42 @@ WeatheringCopperDoorBlock.randomTick	port	crates/horizon-world/src/level/tick.rs
 WeightedPressurePlateBlock.getSignalStrength	port	crates/horizon-world/src/level/redstone.rs::Sim::plate_signal_strength	
 WetSpongeBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::block_animate_tick	wet sponge drip
 WetSpongeBlock.onPlace	port	crates/horizon-world/src/level/hooks.rs::Sim::on_place	wet sponge drying arm
+WitherRoseBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::block_animate_tick	three smoke puffs about the centre of the pick shape, moved by the flower's per-column model offset
 BannerPatternLayers.removeLast	inline	crates/horizon-client/src/cauldron.rs::interact	banner wash pops the last pattern in its arm
 BannerPatternLayers.Builder	skip:java		builder for banner pattern layers
 BannerPatterns	skip:data		registry bootstrap
 BarrelBlockEntity.loadAdditional	port	crates/horizon-client-core/src/block_entity_nbt.rs::canonical	gap: minor: canonical NBT form only, no load step of its own
-BarrelBlockEntity.recheckOpen	missing		the lid's periodic recheck of whether its viewers are still there; Horizon draws no barrel lid at all (containers.rs holds its 27 slots), so nothing rechecks one, where a golem's openers are rechecked on a timer
+BarrelBlockEntity.recheckOpen	port	crates/horizon-world/src/level/tick.rs::Sim::tick_block	openCount is recounted on the barrel's scheduled tick; zero crossings set the open property
 BarrelBlockEntity.saveAdditional	port	crates/horizon-client-core/src/block_entity_nbt.rs::canonical	gap: minor: canonical NBT form only
-BarrelBlockEntity.startOpen	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::barrel_openers_changed	
-BarrelBlockEntity.stopOpen	port	crates/horizon-client/src/game/block_entity_anims.rs::Game::barrel_openers_changed	
-BarrelBlockEntity.updateBlockState	inline	crates/horizon-client/src/game/block_entity_anims.rs::Game::barrel_openers_changed	sets the open property when the count crosses zero
+BarrelBlockEntity.startOpen	port	crates/horizon-client/src/game/blocks/block_entity_anims.rs::Game::barrel_openers_changed	
+BarrelBlockEntity.stopOpen	port	crates/horizon-client/src/game/blocks/block_entity_anims.rs::Game::barrel_openers_changed	
+BarrelBlockEntity.updateBlockState	inline	crates/horizon-client/src/game/blocks/block_entity_anims.rs::Game::barrel_openers_changed	sets the open property when the count crosses zero
 BlockEntityTicker	skip:java		ticker combinator; Horizon ticks each block entity directly
 BlockEntityType.getBlockEntity	skip:java		factory that makes the block entity object for a state
 BlockEntityTypes	skip:data		registry
 BoundingBoxRenderable.RenderableBox	skip:debug		test box outline renderer
-CopperGolemStatueBlockEntity.createStatue	port	crates/horizon-client/src/game/copper_golems.rs::Game::golem_turn_to_statue	gap: minor: the golem's custom name is not copied onto the statue
-CopperGolemStatueBlockEntity.getItem	port	crates/horizon-client/src/game/block_items.rs::Game::picked_stack	statue pose on the picked item
-CopperGolemStatueBlockEntity.initCopperGolem	port	crates/horizon-client/src/game/copper_golems.rs::Game::use_golem_statue	axe on an unaffected statue brings the golem back
+CopperGolemStatueBlockEntity.createStatue	port	crates/horizon-client/src/game/mobs/copper_golems.rs::Game::golem_turn_to_statue	gap: minor: the golem's custom name is not copied onto the statue
+CopperGolemStatueBlockEntity.getItem	port	crates/horizon-client/src/game/blocks/block_items.rs::Game::picked_stack	statue pose on the picked item
+CopperGolemStatueBlockEntity.initCopperGolem	port	crates/horizon-client/src/game/mobs/copper_golems.rs::Game::use_golem_statue	axe on an unaffected statue brings the golem back
 DecoratedPotPatterns	skip:data		bootstrap and asset registration
 EnchantingTableBlockEntity.bookAnimationTick	port	crates/horizon-client-render/src/block_entity_anim.rs::EnchantingBook::tick	
 ListBackedContainer	skip:java		slot helpers over a plain list
 PotDecorations.addSideDetailsToTooltip	port	crates/horizon-client/src/item_tooltip.rs::TooltipDisplay::detail_lines	sherd lines of the decorated pot tooltip
 PotDecorations.allBrick	skip:data		constant brick decoration set
-PotentSulfurBlockEntity.applyNauseaEffect	port	crates/horizon-client/src/game/potent_sulfur.rs::apply_nausea_effect_to_mob	ticked in #3516; `PotentSulfurBlockEntity.applyNauseaEffect` is cited at crates/horizon-client/src/game/potent_sulfur.rs:86
+PotentSulfurBlockEntity.applyNauseaEffect	port	crates/horizon-client/src/game/blocks/potent_sulfur.rs::apply_nausea_effect_to_mob	ticked in #3516; `PotentSulfurBlockEntity.applyNauseaEffect` is cited at crates/horizon-client/src/game/blocks/potent_sulfur.rs:86
 PotentSulfurBlockEntity.canBeReachedByNoxiousGas	port	crates/horizon-client-render/src/potent_sulfur.rs::can_be_reached_by_noxious_gas	ticked in #3516; `PotentSulfurBlockEntity.canBeReachedByNoxiousGas` is cited at crates/horizon-client-render/src/potent_sulfur.rs:73
 PotentSulfurBlockEntity.findNoxiousGasSourceBlock	port	crates/horizon-client-render/src/potent_sulfur.rs::find_noxious_gas_source_block	the first block above the sulfur that the gas can leave through, capped at the geyser's reach
-PotentSulfurBlockEntity.getNearbyLivingEntities	inline	crates/horizon-client/src/game/potent_sulfur.rs::nearby_living_area	the source block's box grown 2.5 blocks sideways, which the nausea and launch tickers ask for entities in
+PotentSulfurBlockEntity.getNearbyLivingEntities	inline	crates/horizon-client/src/game/blocks/potent_sulfur.rs::nearby_living_area	the source block's box grown 2.5 blocks sideways, which the nausea and launch tickers ask for entities in
 PotentSulfurBlockEntity.getUnobstructedBlockCount	port	crates/horizon-client-render/src/potent_sulfur.rs::unobstructed_block_count	how many blocks of the column above the source the gas is unobstructed through
-PotentSulfurBlockEntity.geyserPositional	port	crates/horizon-client/src/game/potent_sulfur.rs::geyser_positional	ticked in #3516; `PotentSulfurBlockEntity.geyserPositional` is cited at crates/horizon-client/src/game/potent_sulfur.rs:55
+PotentSulfurBlockEntity.geyserPositional	port	crates/horizon-client/src/game/blocks/potent_sulfur.rs::geyser_positional	ticked in #3516; `PotentSulfurBlockEntity.geyserPositional` is cited at crates/horizon-client/src/game/blocks/potent_sulfur.rs:55
 PotentSulfurBlockEntity.haveLineOfSight	port	crates/horizon-client-render/src/potent_sulfur.rs::have_line_of_sight	a clip over the collider shapes between the two points, water and passable blocks let through
 PotentSulfurBlockEntity.isGeyserPassableBlock	port	crates/horizon-client-render/src/potent_sulfur.rs::is_geyser_passable_block	air, water, or a block the gas passes through
 PotentSulfurBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	the countdown is read back, the only field vanilla's tag carries (eruptionTick is transient, and saveAdditional writes countdown alone)
-PotentSulfurBlockEntity.setLevel	inline	crates/horizon-client/src/game/potent_sulfur.rs::client_tick_potent_sulfur	the eruption tick is set to the level's game time while it is still -1, as setLevel does when the entity learns its level
-PotentSulfurBlockEntity.spawnGeyserParticle	port	crates/horizon-client/src/game/potent_sulfur.rs::Game::spawn_geyser_particle	ticked in #3516; `PotentSulfurBlockEntity.spawnGeyserParticle` is cited at crates/horizon-client/src/game/potent_sulfur.rs:380
-PotentSulfurBlockEntity.spawnNoxiousGasCloudParticle	port	crates/horizon-client/src/game/potent_sulfur.rs::Game::spawn_noxious_gas_cloud_particle	ticked in #3516; `PotentSulfurBlockEntity.spawnNoxiousGasCloudParticle` is cited at crates/horizon-client/src/game/potent_sulfur.rs:395
+PotentSulfurBlockEntity.setLevel	inline	crates/horizon-client/src/game/blocks/potent_sulfur.rs::client_tick_potent_sulfur	the eruption tick is set to the level's game time while it is still -1, as setLevel does when the entity learns its level
+PotentSulfurBlockEntity.spawnGeyserParticle	port	crates/horizon-client/src/game/blocks/potent_sulfur.rs::Game::spawn_geyser_particle	ticked in #3516; `PotentSulfurBlockEntity.spawnGeyserParticle` is cited at crates/horizon-client/src/game/blocks/potent_sulfur.rs:380
+PotentSulfurBlockEntity.spawnNoxiousGasCloudParticle	port	crates/horizon-client/src/game/blocks/potent_sulfur.rs::Game::spawn_noxious_gas_cloud_particle	ticked in #3516; `PotentSulfurBlockEntity.spawnNoxiousGasCloudParticle` is cited at crates/horizon-client/src/game/blocks/potent_sulfur.rs:395
 RandomizableContainerBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	the item's minecraft:container_loot hands the block its LootTable and LootTableSeed
-RandomizableContainerBlockEntity.canOpen	inline	crates/horizon-client/src/game/advancements.rs::Game::container_locked_for	the negative of it: a spectator opens any container, and otherwise the lock decides (LockCode.canUnlock)
+RandomizableContainerBlockEntity.canOpen	inline	crates/horizon-client/src/game/interface/advancements/mod.rs::Game::container_locked_for	the negative of it: a spectator opens any container, and otherwise the lock decides (LockCode.canUnlock)
 RandomizableContainerBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	the block's LootTable and LootTableSeed leave on the item as minecraft:container_loot
 RandomizableContainerBlockEntity.createMenu	port	crates/horizon-client/src/game.rs::Game::open_menu	gap: minor: the spectator and loot-table checks are not ported here
 SculkSensorBlockEntity.loadAdditional	port	crates/horizon-client-render/src/sculk.rs::SculkEntity::load	

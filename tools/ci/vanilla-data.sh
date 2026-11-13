@@ -6,41 +6,64 @@
 # copy of the bytes), and .local/ links to it as in a parity worktree.
 # .local/horizon-client and the exporter outputs beside it, what horizon-prepare makes, are prepared by this
 # checkout's own preparer once per preparer version (its sources, the exporters and research-lock.json), so a
-# change to the preparer is checked with what it prepares; the four newest preparations are kept.
+# change to the preparer is checked with what it prepares; the four newest preparations are kept on legacy runners.
+# Dyna uses a per-slot HORIZON_PREPARED_CACHE and read-only HORIZON_SHARED_SOURCE; old keys stay until slot GC.
 set -euo pipefail
-shared="${RUNNER_WORKSPACE:?}/shared-local"
+shared="${HORIZON_PREPARED_CACHE:-${RUNNER_WORKSPACE:?}/shared-local}"
 source="${HORIZON_SHARED_SOURCE:-$HOME/code/horizon-parity/shared-local}"
+dyna="${HORIZON_DYNA_CACHE:-false}"
 version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' research-lock.json | head -1)
 if [ ! -f "$shared/minecraft/$version/prepared.json" ]; then
-  [ -f "$source/minecraft/$version/prepared.json" ] || { echo "::error::no imported Minecraft $version in $source"; exit 1; }
+  [ -f "$source/minecraft/$version/prepared.json" ] || { echo "::error::no imported Minecraft $version"; exit 1; }
 fi
-# Whatever the source holds and this runner's copy doesn't yet: all of it the first time, and later additions (the
-# sounds came after the release runner's first clone, and its audio harnesses failed for want of them).
-mkdir -p "$shared"
-for entry in "$source"/*; do
-  name=$(basename "$entry")
-  [ "$name" = horizon-client ] || [ -e "$shared/$name" ] && continue
-  if [ "$(uname)" = Darwin ]; then cp -cR "$entry" "$shared/"; else cp -R --reflink=auto "$entry" "$shared/"; fi
-done
 mkdir -p .local "$shared/prepared"
-for entry in "$shared"/*; do
-  name=$(basename "$entry")
-  case "$name" in prepared|sounds|languages|*.log) continue ;; esac
-  if [ -L ".local/$name" ] || [ ! -e ".local/$name" ]; then ln -sfn "$entry" ".local/$name"; fi
-done
 
 # HORIZON_PREPARE_KEY: the same key, computed where the Git history is (tools/pr_ready.py on another machine).
 sha256() { if command -v shasum > /dev/null; then shasum -a 256; else sha256sum; fi; }
-key=${HORIZON_PREPARE_KEY:-$(git ls-files -s crates/horizon-prepare mods/horizon/src/test/java research-lock.json | sha256 | cut -c1-16)}
+key=${HORIZON_PREPARE_KEY:-$(git ls-files -s crates/horizon-prepare mods/horizon/src/test/java research-lock.json tools/ci/vanilla-data.sh tools/ci/seed_prepared_extras.py tools/prepare_output.py | sha256 | cut -c1-16)}
 prepared="$shared/prepared/$key"
-# Two runners share the vanilla data (~/.actions-runners/horizon-2/_work/horizon/shared-local links to the first
-# one's): one preparation at a time. A lock older than 30 minutes belongs to a job that died.
+report_prepared() {
+  echo "prepared cache footprint KiB: $(du -sk "$prepared" | cut -f1)"
+}
+# The lock protects preparation; flock releases on death, mkdir is the portable fallback.
 lock="$shared/prepared/.lock"
-until mkdir "$lock" 2>/dev/null; do
-  if [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then rmdir "$lock" 2>/dev/null || true; fi
-  sleep 5
-done
-trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+if command -v flock >/dev/null; then
+  exec 9>"$shared/prepared/.lock-file"
+  flock 9
+else
+  until mkdir "$lock" 2>/dev/null; do
+    if [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then rmdir "$lock" 2>/dev/null || true; fi
+    sleep 5
+  done
+  trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+fi
+if [ "$dyna" = true ] && [ -f "$prepared/.entries" ] && grep -qx horizon-client "$prepared/.entries"; then
+  echo "prepared key $key fresh"
+  for name in minecraft tools; do ln -sfn "$source/$name" ".local/$name"; done
+  while read -r name; do ln -sfn "$prepared/$name" ".local/$name"; done < "$prepared/.entries"
+  report_prepared
+  exit 0
+fi
+if [ "$dyna" = true ]; then
+  echo "prepared key $key stale"
+  # The preparer owns its scratch data; never let it write through the source mount.
+  for name in minecraft tools; do ln -sfn "$source/$name" ".local/$name"; done
+  # A killed preparation may have left private scratch that must not enter the next key.
+  for name in datagen command-registries horizon-client horizon-client-motion horizon-client-health horizon-client-collision horizon-client-render; do
+    if [ ! -L ".local/$name" ]; then rm -rf ".local/$name"; fi
+  done
+else
+  for entry in "$source"/*; do
+    name=$(basename "$entry")
+    [ "$name" = horizon-client ] || [ -e "$shared/$name" ] && continue
+    if [ "$(uname)" = Darwin ]; then cp -cR "$entry" "$shared/"; else cp -R --reflink=auto "$entry" "$shared/"; fi
+  done
+  for entry in "$shared"/*; do
+    name=$(basename "$entry")
+    case "$name" in prepared|sounds|languages|*.log) continue ;; esac
+    if [ -L ".local/$name" ] || [ ! -e ".local/$name" ]; then ln -sfn "$entry" ".local/$name"; fi
+  done
+fi
 # horizon-prepare writes .local/horizon-client and its exporters' outputs beside it: all of them live in
 # $prepared, listed in $prepared/.entries, and .local/ links to them. A real folder of that kind in .local/ is
 # what an older failed preparation left: it would hide the preparations (and a new one would not count it as its
@@ -66,9 +89,13 @@ if [ ! -f "$prepared/.entries" ]; then
   done
   before=$(ls -1A .local | LC_ALL=C sort)
   started=$SECONDS
-  cargo build --release --locked -p horizon-prepare
-  if ! target/release/horizon-prepare --root "$PWD" > "$RUNNER_TEMP/prepare.log" 2>&1; then
-    tail -40 "$RUNNER_TEMP/prepare.log"
+  if [ "$dyna" = true ]; then
+    cargo build --release --locked -p horizon-prepare >"$RUNNER_TEMP/prepare-build.log" 2>&1 || { echo "::error::preparer build failed"; exit 1; }
+  else
+    cargo build --release --locked -p horizon-prepare
+  fi
+  if ! "${CARGO_TARGET_DIR:-target}/release/horizon-prepare" --root "$PWD" > "$RUNNER_TEMP/prepare.log" 2>&1; then
+    if [ "$dyna" = true ]; then echo "::error::preparation failed; private log retained in runner temp"; else tail -40 "$RUNNER_TEMP/prepare.log"; fi
     # Nothing of a failed preparation stays in .local/: the next job prepares again.
     LC_ALL=C comm -13 <(echo "$before") <(ls -1A .local | LC_ALL=C sort) |
       while read -r name; do rm -rf ".local/${name:?}"; done
@@ -77,16 +104,28 @@ if [ ! -f "$prepared/.entries" ]; then
   fi
   LC_ALL=C comm -13 <(echo "$before") <(ls -1A .local | LC_ALL=C sort) > "$RUNNER_TEMP/prepared-entries"
   while read -r name; do mv ".local/$name" "$prepared/$name"; done < "$RUNNER_TEMP/prepared-entries"
+  if [ "$dyna" = true ]; then
+    # Optional dispatch-only measurement before shared extras can affect the output.
+    if [ -n "${HORIZON_PREPARE_EXPORT_DIGEST:-}" ]; then
+      python3 tools/prepare_output.py digest "$prepared/horizon-client/$version" > "$HORIZON_PREPARE_EXPORT_DIGEST" 2> "$RUNNER_TEMP/export-digest.log" || { echo "::error::export digest unavailable"; exit 1; }
+    fi
+    # Only sounds, languages and their metadata may come from the shared preparation.
+    python3 -m tools.ci.seed_prepared_extras "$source/horizon-client/$version" "$prepared/horizon-client/$version/" > "$RUNNER_TEMP/seed-extras.log" 2>&1 || { echo "::error::seeding launcher extras failed"; exit 1; }
+  fi
   mv "$RUNNER_TEMP/prepared-entries" "$prepared/.entries"
-  echo "Prepared in $((SECONDS - started)) s: $(tr '\n' ' ' < "$prepared/.entries")"
+  if [ "$dyna" != true ]; then echo "Prepared in $((SECONDS - started)) s: $(tr '\n' ' ' < "$prepared/.entries")"; fi
 fi
 # The game finds some data relative to its resources (<resources>/../../datagen): beside the prepared folders,
 # the same neighbours as in the shared folder.
-for entry in "$shared"/*; do
-  name=$(basename "$entry")
-  case "$name" in prepared|sounds|languages|*.log) continue ;; esac
-  [ -e "$prepared/$name" ] || ln -sfn "$entry" "$prepared/$name"
-done
+if [ "$dyna" = true ]; then
+  for name in minecraft tools; do [ -e "$prepared/$name" ] || ln -sfn "$source/$name" "$prepared/$name"; done
+else
+  for entry in "$shared"/*; do
+    name=$(basename "$entry")
+    case "$name" in prepared|sounds|languages|*.log) continue ;; esac
+    [ -e "$prepared/$name" ] || ln -sfn "$entry" "$prepared/$name"
+  done
+fi
 while read -r name; do
   if [ -L ".local/$name" ] || [ ! -e ".local/$name" ]; then ln -sfn "$prepared/$name" ".local/$name"; else
     echo "::error::.local/$name is not a link to the prepared resources"; exit 1; fi
@@ -125,5 +164,12 @@ if [ -d "$languages/minecraft/lang" ] && [ -d "$assets" ]; then
   fi
 fi
 touch "$prepared"
+if [ "$dyna" = true ]; then
+  echo "prepared in $((SECONDS - started)) s"
+  report_prepared
+fi
 # The four newest preparations stay.
-ls -1dt "$shared/prepared"/*/ 2>/dev/null | tail -n +5 | while read -r old; do rm -rf "$old"; done
+# Dyna keeps old keys because another active job may still read them; slot GC handles them.
+if [ "$dyna" != true ]; then
+  ls -1dt "$shared/prepared"/*/ 2>/dev/null | tail -n +5 | while read -r old; do rm -rf "$old"; done
+fi

@@ -5,7 +5,7 @@
 //! observers for the parity harness; this is the same data with the lookup a
 //! slot needs, and no observer (vanilla's own player uses the plain class).
 use crate::items::ItemStack;
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -37,15 +37,16 @@ impl UseCooldown {
         let Tag::Compound(c) = t else {
             return None;
         };
-        let text = |k: &str| match c.get(&horizon_world::nbt::JavaString::from(k)) {
+        let text = |k: &str| match c.get(&horizon_core::nbt::JavaString::from(k)) {
             Some(Tag::String(s)) => Some(s.to_string_lossy()),
             _ => None,
         };
-        let seconds = match c.get(&horizon_world::nbt::JavaString::from("seconds")) {
-            Some(Tag::Float(bits)) => f32::from_bits(*bits),
-            Some(Tag::Double(bits)) => f64::from_bits(*bits) as f32,
-            _ => return None,
-        };
+        // NbtOps.getNumberValue: any numeric tag (vanilla's codec reads a
+        // positive float).
+        let seconds = horizon_world::datafix::dynamic::as_number(
+            c.get(&horizon_core::nbt::JavaString::from("seconds"))?,
+        )?
+        .float_value();
         Some(Self {
             seconds,
             group: text("cooldown_group").map(Arc::from),
@@ -117,6 +118,12 @@ impl Cooldowns {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+    /// Each group still cooling down and its ticks left, in no set order.
+    pub fn remaining(&self) -> impl Iterator<Item = (&Arc<str>, i32)> {
+        self.entries
+            .iter()
+            .map(|(group, (_, end))| (group, end.wrapping_sub(self.tick_count)))
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +177,20 @@ mod tests {
         assert_eq!(&*group(&grouped, Some(&default)), "minecraft:pearls");
         // An item without the component has no cooldown.
         assert!(component(&stack("minecraft:dirt"), None).is_none());
+    }
+
+    #[test]
+    fn the_seconds_read_from_any_numeric_tag() {
+        let from = |seconds: Tag| UseCooldown::from_tag(&Tag::compound([("seconds", seconds)]));
+        // An integer tag was dropped before (#7638); seconds: 5 is 100 ticks.
+        let int = from(Tag::Int(5)).expect("the component");
+        assert_eq!(int.seconds, 5.0);
+        assert_eq!(int.ticks(), 100);
+        // The other numeric tags read the same way.
+        assert_eq!(from(Tag::Byte(5)).unwrap().seconds, 5.0);
+        assert_eq!(from(Tag::Long(5)).unwrap().seconds, 5.0);
+        assert_eq!(from(Tag::Double(2.5f64.to_bits())).unwrap().seconds, 2.5);
+        // The float path keeps working.
+        assert_eq!(from(Tag::Float(5.0f32.to_bits())).unwrap().seconds, 5.0);
     }
 }

@@ -7,6 +7,7 @@ use horizon_client::{
     motion::{LAVA, MotionEvent, MotionResources, MotionWorld, PlayerMotion, WATER},
     world::World,
 };
+use horizon_core::geometry::Aabb;
 use horizon_core::geometry::Vec3;
 use horizon_core::{position::BlockPos, random::RandomSource};
 use horizon_world::attributes::{Modifier, Operation};
@@ -245,7 +246,9 @@ pub fn main() -> Result<()> {
     let root = PathBuf::from(&args[0]);
     let dir = PathBuf::from(&args[1]);
     let assets = Assets::load(&root)?;
-    let render = assets.reload(&root)?;
+    let render = assets.reload(&horizon_assets::resource_source::ResourceRoot::directory(
+        root.to_path_buf(),
+    ))?;
     let mut scene = World::test_scene(&assets, &render, 1)?;
     let binding = collisions::load(&root, assets.registry)?;
     let resources = MotionResources::load(&root, &assets)?;
@@ -299,14 +302,35 @@ pub fn main() -> Result<()> {
         // portal_tick that went through.
         let mut portal = horizon_client::nether_portal::PortalState::default();
         let mut travel: Option<horizon_core::position::BlockPos> = None;
+        // The fixture's other entities, as the boxes `Level.getEntityCollisions`
+        // selects from: the resident scene holds only the player.
+        let entities: Vec<Aabb> = f["entities"]
+            .as_array()
+            .map(|boxes| {
+                boxes
+                    .iter()
+                    .map(|b| {
+                        Aabb::new(
+                            Vec3::new(number(&b[0]), number(&b[1]), number(&b[2])),
+                            Vec3::new(number(&b[3]), number(&b[4]), number(&b[5])),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         for op in f["ops"].as_array().unwrap() {
             let mut world = MotionWorld {
-                entities: &[],
+                entities: &entities,
                 player: &mut player,
                 scene: &mut scene,
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
+                tag_items: None,
+                block_registries: None,
+                loop_context: crate::test_resources::server_loop_context(),
+                damage_hooks: &horizon_client::health::DamageHooks::NONE,
             };
             match op["mode"].as_str().unwrap() {
                 "shift" => world.player.shift_key_down = op["value"].as_bool().unwrap(),
@@ -373,12 +397,15 @@ pub fn main() -> Result<()> {
                     op["nutrition"].as_i64().unwrap() as i32,
                     single(&op["value"]),
                 ),
-                "food_tick" => world
-                    .player
-                    .food_tick(&resources.health, world.scene.health_rules)?,
+                "food_tick" => world.player.food_tick(
+                    world.loop_context,
+                    &mut horizon_client::health::TestLevel::new(0).level(),
+                    &resources.health,
+                    world.scene.health_rules,
+                )?,
                 "peaceful" => world
                     .player
-                    .peaceful_regeneration(world.scene.health_rules)?,
+                    .peaceful_regeneration(world.loop_context, world.scene.health_rules)?,
                 "simulation_tick" => {
                     let v = vector(&op["value"]);
                     world.simulation_tick(
@@ -411,6 +438,7 @@ pub fn main() -> Result<()> {
                         },
                     ));
                     world.player.hurt(
+                        &mut horizon_client::health::TestLevel::new(0).level(),
                         &resources.health,
                         world.scene.health_rules,
                         source,

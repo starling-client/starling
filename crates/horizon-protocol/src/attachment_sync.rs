@@ -1,14 +1,14 @@
 //! Attachment sync: the values of a native mod's synced attachments, sent by a
 //! Horizon server to the Horizon clients that see their holder
-//! (docs/native-mods.md, "Server attachments").
+//! (docs/modding/src/how-to/native-mods.md, "Server attachments").
 //!
 //! A payload is the holder (a varint kind and its fields), whether the
 //! client's copy of the holder is replaced, then each change: the attachment's
 //! namespace and name and its value as an NBT compound, or no tag for a
 //! removal.
-use horizon_world::{
-    attachments::{AttachmentSync, Holder},
-    nbt::{self, Tag},
+use {
+    horizon_core::{nbt, nbt::Tag},
+    horizon_mod_runtime::attachments::{AttachmentSync, Holder},
 };
 
 use crate::{

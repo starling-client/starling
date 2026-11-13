@@ -10,6 +10,7 @@ use super::{
     goals::{Cx, Goal, LOOK, MOVE, goal_clone},
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
+use mod_api::SoundSource;
 
 /// `GoatAi.TIME_BETWEEN_RAMS` and `TIME_BETWEEN_RAMS_SCREAMER`.
 const RAMS: (i32, i32) = (600, 6000);
@@ -75,7 +76,7 @@ fn tempted(m: &Mob, w: &MobWorld) -> bool {
         item.as_deref()
             .is_some_and(|i| m.kind.food.iter().any(|f| f.as_str() == i))
     };
-    w.player.as_ref().is_some_and(|p| {
+    w.selected_player().is_some_and(|p| {
         p.alive
             && !p.spectator
             && m.distance_sqr(p.position) <= 100.0
@@ -179,10 +180,15 @@ fn block_of(p: Vec3) -> [i32; 3] {
     [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32]
 }
 fn play(m: &Mob, events: &mut Vec<MobEvent>, sound: &'static str, pitch: f32) {
-    if !m.silent {
-        let at = [m.position.x, m.position.y, m.position.z];
-        events.push(MobEvent::Sound(sound, at, 1.0, pitch));
-    }
+    // PrepareRamNearestTarget / RamTarget use the level overload even when
+    // Silent is set; the receiving client's bound instance checks silence.
+    events.push(MobEvent::bound_sound(
+        m,
+        sound,
+        SoundSource::Neutral,
+        1.0,
+        pitch,
+    ));
 }
 
 /// `PrepareRamNearestTarget.isWalkableBlock`.
@@ -241,7 +247,7 @@ fn choose(m: &mut Mob, w: &MobWorld, target: Who) {
 /// allow: not a goat, a player who is not creative or a spectator.
 fn nearest_target(m: &mut Mob, w: &MobWorld) -> Option<Who> {
     let mut best: Option<(Who, f64)> = None;
-    if let Some(p) = &w.player
+    if let Some(p) = w.selected_player()
         && p.alive
         && !p.creative
         && !p.spectator
@@ -408,11 +414,13 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
         // hurtServer by `noAggroMobAttack`, then the knockback.
         let amount = m.attrs.attack_damage;
         match target {
-            Who::Player => cx.events.push(MobEvent::DamagePlayer {
-                amount,
-                from,
-                kind: "minecraft:mob_attack_no_aggro",
-            }),
+            Who::Player => cx
+                .events
+                .push(cx.w.route_player_event(MobEvent::DamagePlayer {
+                    amount,
+                    from,
+                    kind: "minecraft:mob_attack_no_aggro",
+                })),
             Who::Mob(id) => cx.events.push(MobEvent::AttackMob {
                 target: id,
                 amount,
@@ -423,20 +431,25 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
             m.extra
                 .effects
                 .iter()
-                .find(|e| e.0 == effect)
-                .map_or(0, |e| e.2 + 1)
+                .find(|e| e.id == effect)
+                .map_or(0, |e| e.amplifier + 1)
         };
         let boost = 0.25 * (level("minecraft:speed") - level("minecraft:slowness")) as f32;
         let factor = (m.ai.speed * 1.65).clamp(0.2, 3.0) + boost;
         let force = if m.is_baby() { 1.0 } else { 2.5 };
         let d = m.extra.goat.ram_direction;
         // The knockback's source is `mobAttack`, not the hurt's `noAggroMobAttack`.
-        cx.events.push(MobEvent::Knockback {
+        let event = MobEvent::Knockback {
             target,
             power: f64::from(factor * force),
             x: d.x,
             z: d.z,
             source: Damage::mob(m.id, from),
+        };
+        cx.events.push(if target == Who::Player {
+            cx.w.route_player_event(event)
+        } else {
+            event
         });
         finish_ram(m, cx.events);
         play(m, cx.events, impact, 1.0);
@@ -455,7 +468,7 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
 /// allow.
 fn rammed(m: &Mob, w: &MobWorld) -> Option<Who> {
     let bounds = m.bounds();
-    if let Some(p) = &w.player
+    if let Some(p) = w.selected_player()
         && p.alive
         && !p.creative
         && !p.spectator
@@ -541,4 +554,42 @@ fn finish_ram(m: &mut Mob, events: &mut Vec<MobEvent>) {
     set_ram_cooldown(m, cooldown);
     m.extra.goat.ram_target = None;
     m.extra.goat.phase = Phase::Done;
+}
+
+#[cfg(test)]
+mod sound_tests {
+    use super::*;
+
+    #[test]
+    fn ram_sound_keeps_a_silent_emitters_identity_and_does_not_draw_its_random() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:goat".into();
+        k.species = super::super::Species::Goat;
+        let mut goat = Mob::new(37, kind, Vec3::new(0.123456789, 64.0, -3.25), 0.0);
+        goat.silent = true;
+        let mut expected = goat.random.clone();
+        let mut events = Vec::new();
+        play(&goat, &mut events, "entity.goat.ram_impact", 1.0);
+        let [
+            MobEvent::BoundSound {
+                mob,
+                sound,
+                at,
+                source,
+                volume,
+                pitch,
+            },
+        ] = &events[..]
+        else {
+            panic!("the level sound must survive Silent and retain its emitter");
+        };
+        assert_eq!(
+            (*mob, *sound, *source),
+            (37, "entity.goat.ram_impact", SoundSource::Neutral)
+        );
+        assert_eq!(*at, [0.123456789, 64.0, -3.25]);
+        assert_eq!((*volume, *pitch), (1.0, 1.0));
+        assert_eq!(goat.random.next_long(), expected.next_long());
+    }
 }

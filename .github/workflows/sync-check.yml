@@ -1,0 +1,54 @@
+name: sync-check
+# Temporary, for the sync with Horizon (sync-horizon-6): a pushed commit of this branch gets `cargo check` of the
+# workspace on one runner, and the step summary lists the errors, cut short. The PC has no build and the VM is out
+# of reach. Delete before the branch merges.
+
+on:
+  push:
+    branches: [sync-horizon-6]
+
+concurrency:
+  group: sync-check
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust and the ALSA and udev headers the client links against
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+          rustup toolchain install stable --profile minimal
+      # Starling's own CI cache, read only: the dependencies are mostly the same crates.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: verify
+          save-if: false
+      - name: cargo check
+        env:
+          CARGO_TERM_COLOR: never
+          CARGO_PROFILE_DEV_DEBUG: 0
+        run: |
+          set +e
+          cargo +stable check --workspace --all-targets --keep-going --message-format=short > check.log 2>&1
+          code=$?
+          {
+            echo "## cargo check: exit $code"
+            echo '```'
+            grep -E '^[^ ]+: *error|^error(\[|:)|could not compile|Finished' check.log | cut -c1-300 | head -400
+            echo '```'
+            echo "errors: $(grep -cE '^[^ ]+: *error|^error\[' check.log)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          tail -n 60 check.log
+          exit $code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: check-log
+          path: check.log
+          retention-days: 7

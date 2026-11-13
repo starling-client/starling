@@ -50,8 +50,8 @@ impl RandomSequences {
         self.sequences.insert(id, random);
     }
     /// `RandomSequences.CODEC` (`random_sequences.dat`'s data).
-    pub fn to_nbt(&self) -> horizon_world::nbt::Tag {
-        use horizon_world::nbt::Tag;
+    pub fn to_nbt(&self) -> horizon_core::nbt::Tag {
+        use horizon_core::nbt::Tag;
         let sequences = self
             .sequences
             .iter()
@@ -76,8 +76,8 @@ impl RandomSequences {
             ("sequences", Tag::compound(sequences)),
         ])
     }
-    pub fn from_nbt(tag: &horizon_world::nbt::Tag) -> Self {
-        use horizon_world::nbt::Tag;
+    pub fn from_nbt(tag: &horizon_core::nbt::Tag) -> Self {
+        use horizon_core::nbt::Tag;
         let int = |k: &str| match tag.get(k) {
             Some(Tag::Int(v)) => Some(*v),
             Some(Tag::Byte(v)) => Some(i32::from(*v)),

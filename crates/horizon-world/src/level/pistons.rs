@@ -5,17 +5,17 @@
 //!
 //! Entity pushing by moving blocks is the caller's (see `piston_movement`).
 use super::{
-    Behaviours, LevelAccess, LevelEvent, Sim, Ticks,
+    Behaviours, LevelAccess, LevelEvent, Signals, Sim, Ticks,
     data::PushReaction,
     states::BlockId,
     update::{above, rel},
 };
-use crate::{
-    java_hash_map::{JavaHashMap, JavaKey},
-    registry::BlockStateId,
-};
 use horizon_core::{geometry::Direction, position::BlockPos, random::RandomSource};
 use std::cmp::Ordering;
+use {
+    crate::registry::BlockStateId,
+    horizon_core::java_hash_map::{JavaHashMap, JavaKey},
+};
 
 /// `PistonMovingBlockEntity` state, owned by [`Ticks::moving_pistons`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,6 +80,8 @@ pub struct BlockEventData {
     pub block: BlockId,
     pub param_a: i32,
     pub param_b: i32,
+    /// Hook-selected instrument and note, never decoded from raw event parameters.
+    pub note_override: Option<(u8, i32)>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -129,15 +131,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         param_a: i32,
         param_b: i32,
     ) {
-        let event = BlockEventData {
+        self.ticks.queue_block_event(BlockEventData {
             pos,
             block,
             param_a,
             param_b,
-        };
-        if !self.ticks.block_events.contains(&event) {
-            self.ticks.block_events.push(event);
-        }
+            note_override: None,
+        });
     }
     /// `BlockState.triggerEvent`.
     fn trigger_event(&mut self, state: BlockStateId, pos: BlockPos, a: i32, b: i32) -> bool {
@@ -161,13 +161,6 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
 
     // ---- moving piston block entities ----
-    pub(crate) fn moving_piston(&self, pos: BlockPos) -> Option<MovingPiston> {
-        self.ticks
-            .moving_pistons
-            .iter()
-            .find(|(p, _)| *p == pos)
-            .map(|(_, m)| *m)
-    }
     fn set_moving_piston(&mut self, pos: BlockPos, mut piston: MovingPiston) {
         self.ticks.moving_pistons.retain(|(p, _)| *p != pos);
         self.ticks.next_block_entity_id += 1;
@@ -311,16 +304,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             let pushed_pos = rel_n(pos, direction, 2);
             let pushed = self.state(pushed_pos);
             let mut event = 1;
-            if b.is_block(pushed, b.named.moving_piston) && b.facing(pushed) == direction {
-                if let Some(piston) = self.moving_piston(pushed_pos) {
-                    if piston.extending
-                        && (piston.progress_o < 0.5
-                            || self.level.game_time() == piston.last_ticked
-                            || self.ticks.handling_tick)
-                    {
-                        event = 2;
-                    }
-                }
+            if b.is_block(pushed, b.named.moving_piston)
+                && b.facing(pushed) == direction
+                && let Some(piston) = self.moving_piston(pushed_pos)
+                && piston.extending
+                && (piston.progress_o < 0.5
+                    || self.level.game_time() == piston.last_ticked
+                    || self.ticks.handling_tick)
+            {
+                event = 2;
             }
             self.block_event(pos, block, event, direction as i32);
         }
@@ -336,7 +328,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     ) -> bool {
         let b = self.b;
         let (min_y, max_y) = (self.level.min_y(), self.level.max_y() - 1);
-        if pos.y < min_y || pos.y > max_y {
+        if pos.y < min_y || pos.y > max_y || !self.level.within_world_border(pos) {
             return false;
         }
         if b.is_air(state) {
@@ -364,6 +356,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             return false;
         }
         !b.has_flag(state, super::data::state_flags::BLOCK_ENTITY)
+            && !self.level.has_native_block_entity(state)
             && !self.level.has_mod_block_entity(pos)
     }
     fn is_slime_or_honey(&self, state: BlockStateId) -> bool {
@@ -568,10 +561,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         else {
             return Some(false);
         };
-        if !self
-            .level
-            .allow_piston_move(piston_pos, push_direction, &to_push, &to_destroy)
-        {
+        if !self.level.allow_piston_move(
+            piston_pos,
+            push_direction,
+            extending,
+            &to_push,
+            &to_destroy,
+        ) {
             return None;
         }
         let mut delete_after: JavaHashMap<PosKey, BlockStateId> = JavaHashMap::default();
@@ -680,6 +676,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if extending {
             self.update_neighbors_at_oriented(arm, b.named.piston_head, orientation);
         }
+        self.level.observe_piston_moved(
+            piston_pos,
+            push_direction,
+            extending,
+            &to_push,
+            &to_destroy,
+        );
         Some(true)
     }
     /// `PistonBaseBlock.triggerEvent`.
@@ -752,13 +755,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let two = rel_n(pos, direction, 2);
                 let moving_state = self.state(two);
                 let mut piston_piece = false;
-                if b.is_block(moving_state, b.named.moving_piston) {
-                    if let Some(entity) = self.moving_piston(two) {
-                        if entity.direction == direction && entity.extending {
-                            self.moving_piston_final_tick(two);
-                            piston_piece = true;
-                        }
-                    }
+                if b.is_block(moving_state, b.named.moving_piston)
+                    && let Some(entity) = self.moving_piston(two)
+                    && entity.direction == direction
+                    && entity.extending
+                {
+                    self.moving_piston_final_tick(two);
+                    piston_piece = true;
                 }
                 if !piston_piece {
                     let is_piston = b.is_block(moving_state, b.named.piston)
@@ -823,14 +826,21 @@ impl Behaviours {
         let mut reschedule = Vec::new();
         while !ticks.block_events.is_empty() {
             let event = ticks.block_events.remove(0);
-            if !level.is_ticking_chunk(event.pos.chunk()) {
+            if !level.should_tick_blocks_at(event.pos.chunk()) {
                 reschedule.push(event);
                 continue;
             }
             let mut sim = self.sim(level, ticks);
             let state = sim.state(event.pos);
             if self.block(state) == event.block
-                && sim.trigger_event(state, event.pos, event.param_a, event.param_b)
+                && sim.trigger_event(
+                    event.note_override.map_or(state, |(instrument, note)| {
+                        sim.note_played_state(state, instrument, note)
+                    }),
+                    event.pos,
+                    event.param_a,
+                    event.param_b,
+                )
             {
                 // ServerLevel.runBlockEvents broadcasts a handled event to
                 // the clients (`ClientboundBlockEventPacket`); their copy of
@@ -844,9 +854,7 @@ impl Behaviours {
             }
         }
         for event in reschedule {
-            if !ticks.block_events.contains(&event) {
-                ticks.block_events.push(event);
-            }
+            ticks.queue_block_event(event);
         }
     }
     /// `Level.tickBlockEntities` for moving pistons (the only block entities
@@ -940,7 +948,14 @@ impl Behaviours {
             let mut sim = self.sim(level, ticks);
             let state = sim.state(event.pos);
             if self.block(state) == event.block
-                && sim.trigger_event(state, event.pos, event.param_a, event.param_b)
+                && sim.trigger_event(
+                    event.note_override.map_or(state, |(instrument, note)| {
+                        sim.note_played_state(state, instrument, note)
+                    }),
+                    event.pos,
+                    event.param_a,
+                    event.param_b,
+                )
             {
                 sim.emit(LevelEvent::BlockEntityEvent {
                     pos: event.pos,
@@ -950,5 +965,22 @@ impl Behaviours {
                 });
             }
         }
+    }
+}
+
+impl<L: super::signal_access::SignalAccess + ?Sized> Signals<'_, L> {
+    pub(crate) fn moving_piston(&self, pos: BlockPos) -> Option<MovingPiston> {
+        self.ticks
+            .moving_pistons
+            .iter()
+            .find(|(p, _)| *p == pos)
+            .map(|(_, m)| *m)
+    }
+}
+
+/// `Sim` reads these through its [`Signals`], so there is one implementation of each.
+impl<L: LevelAccess + ?Sized> Sim<'_, L> {
+    pub(crate) fn moving_piston(&self, pos: BlockPos) -> Option<MovingPiston> {
+        self.signals().moving_piston(pos)
     }
 }

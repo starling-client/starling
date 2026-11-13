@@ -2,6 +2,18 @@
 //! milliseconds turn into game ticks, partial ticks and real-time deltas, and
 //! the `/tick` freeze, step and sprint state.
 
+/// `HORIZON_STILL=1`, read once (`FixedStep::still`).
+fn still_requested() -> bool {
+    static STILL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STILL.get_or_init(|| {
+        let on = std::env::var("HORIZON_STILL").is_ok_and(|v| v == "1");
+        if on {
+            log::warn!("HORIZON_STILL=1: worlds start frozen (/tick unfreeze), frames follow the world's ticks");
+        }
+        on
+    })
+}
+
 /// `DeltaTracker.Timer`: float arithmetic on integer milliseconds, exactly as
 /// the client does it.
 #[derive(Clone, Debug)]
@@ -311,11 +323,23 @@ pub struct FixedStep {
     /// (`ServerTickRateManager.updateStepTicks` broadcasts each one).
     step_changes: u32,
     step_requested: i32,
+    /// `HORIZON_STILL=1`, a dev switch for screenshots that come out the same every run: the
+    /// world starts frozen, and while it is, the camera's partial tick is held at 1 as the
+    /// level's is. With the frame's other time (`Game::visual_ticks`) following the world's
+    /// ticks, a frozen scene draws the same frame every time, and `/tick step` moves it on by
+    /// whole ticks.
+    still: bool,
 }
 
 impl Default for FixedStep {
     fn default() -> Self {
-        Self {
+        Self::new(still_requested())
+    }
+}
+
+impl FixedStep {
+    fn new(still: bool) -> Self {
+        let mut clock = Self {
             timer: Timer::new(20.0, 0),
             manager: ServerTickRateManager::default(),
             now: std::time::Duration::ZERO,
@@ -328,11 +352,16 @@ impl Default for FixedStep {
             client: false,
             step_changes: 0,
             step_requested: 0,
-        }
+            still,
+        };
+        // Frozen before any tick: how many run while the world loads differs between runs.
+        clock.manager.base.set_frozen(still);
+        clock
     }
-}
-
-impl FixedStep {
+    /// `HORIZON_STILL` (`still`).
+    pub fn still(&self) -> bool {
+        self.still
+    }
     /// The clock of a client connected to a server: the `ClientLevel`'s
     /// `TickRateManager`, set by the server's ticking packets.
     pub fn client() -> Self {
@@ -351,9 +380,21 @@ impl FixedStep {
     pub fn tick_duration(&self) -> std::time::Duration {
         std::time::Duration::from_nanos(self.manager.base.nanoseconds_per_tick().max(1) as u64)
     }
-    /// Feed one frame's elapsed time; returns the ticks to run (at most ten,
-    /// or a sprint frame's worth).
-    pub fn advance(&mut self, elapsed: std::time::Duration) -> u32 {
+    /// The milliseconds one tick lasts at the next `advance` (`Minecraft.getTickTargetMillis`
+    /// with the timer's default of 50): the level's tick rate when it runs normally (a server's
+    /// client only ever slows down), else the default.
+    pub fn tick_target_millis(&self) -> f32 {
+        let default = self.timer.ms_per_tick;
+        if !self.manager.base.runs_normally() {
+            return default;
+        }
+        let mspt = self.manager.base.milliseconds_per_tick();
+        if self.client { default.max(mspt) } else { mspt }
+    }
+    /// Feed one frame's elapsed time, with `target_millis` the length of a tick
+    /// (`tick_target_millis`, or what a mod made of it); returns the ticks to run (at most
+    /// ten, or a sprint frame's worth).
+    pub fn advance(&mut self, elapsed: std::time::Duration, target_millis: f32) -> u32 {
         self.now += elapsed;
         let now_ms = self.now_ms();
         if self.manager.is_sprinting() {
@@ -363,16 +404,7 @@ impl FixedStep {
             // One extra pass lets the sprint finish and report.
             return (remaining + 1).min(SPRINT_PER_FRAME) as u32;
         }
-        let runs = self.manager.base.runs_normally();
-        let mspt = self.manager.base.milliseconds_per_tick();
-        let client = self.client;
-        let ticks = self
-            .timer
-            .advance_game_time(now_ms, |default| match (runs, client) {
-                (true, true) => default.max(mspt),
-                (true, false) => mspt,
-                (false, _) => default,
-            });
+        let ticks = self.timer.advance_game_time(now_ms, |_| target_millis);
         ticks.clamp(0, 10) as u32
     }
     /// Restart pacing from now (after loading, so no backlog replays).
@@ -386,8 +418,12 @@ impl FixedStep {
     }
     /// The camera entity's partial tick (`Camera.getCameraEntityPartialTicks`
     /// for a player, who is never frozen): `getGameTimeDeltaPartialTick(true)`,
-    /// so the view and the hand stay smooth in a frozen level.
+    /// so the view and the hand stay smooth in a frozen level. Under `still`, held at 1 there
+    /// like the level's, so a frame doesn't depend on when it's drawn.
     pub fn camera_fraction(&self) -> f64 {
+        if self.still && !self.runs_normally() {
+            return 1.0;
+        }
         f64::from(self.timer.game_time_delta_partial_tick(true))
     }
     /// After a frame: whether the game is paused by a screen (the residual
@@ -404,14 +440,23 @@ impl FixedStep {
     /// `TickRateManager.tick` for one tick, then whether the world runs
     /// (`runsNormally`). Also the sprint check that opens a sprint tick.
     pub fn world_runs(&mut self) -> bool {
+        self.check_sprint_completion();
+        self.tick_world_runs()
+    }
+    /// Discover natural sprint completion before listeners and the tick-rate decision.
+    pub fn check_sprint_completion(&mut self) {
+        // MinecraftServer checks for a finished sprint before tickServer
+        // asks the tick-rate manager whether the levels should run.
+        if self.manager.is_sprinting() && self.manager.remaining_sprint_ticks() == 0 {
+            self.sprint_report = Some(self.manager.finish_tick_sprint());
+        }
+    }
+    /// Tick-rate decision after the server has dispatched any sprint-completion listener.
+    pub fn tick_world_runs(&mut self) -> bool {
         self.manager.base.tick();
         self.sprint_checked = false;
         if self.manager.is_sprinting() {
-            let (_, report) = self.manager.check_should_sprint_this_tick(self.now_ns());
-            self.sprint_checked = report.is_none();
-            if report.is_some() {
-                self.sprint_report = report;
-            }
+            self.sprint_checked = self.manager.check_should_sprint_this_tick(self.now_ns()).0;
         }
         self.manager.base.runs_normally()
     }
@@ -545,14 +590,77 @@ mod tests {
         assert!(!m.base.runs_normally());
     }
     #[test]
+    fn the_tick_length_given_paces_the_clock() {
+        let mut clock = FixedStep::client();
+        assert_eq!(clock.tick_target_millis(), 50.0);
+        // 200 ms of frames: four 50 ms ticks, or eight when a tick lasts 25 ms.
+        assert_eq!(
+            clock.advance(std::time::Duration::from_millis(200), 50.0),
+            4
+        );
+        assert_eq!(
+            clock.advance(std::time::Duration::from_millis(200), 25.0),
+            8
+        );
+        assert_eq!(
+            clock.advance(std::time::Duration::from_millis(5000), 25.0),
+            10,
+            "ten a frame at most"
+        );
+        // A frozen level paces at the default length, whatever its rate.
+        clock.set_rate(10.0);
+        clock.set_frozen(true);
+        clock.world_runs();
+        assert_eq!(clock.tick_target_millis(), 50.0);
+    }
+
+    #[test]
+    fn a_finished_sprint_restores_freeze_before_the_next_world_tick() {
+        for was_frozen in [false, true] {
+            let mut clock = FixedStep::default();
+            clock.set_frozen(was_frozen);
+            assert_eq!(clock.world_runs(), !was_frozen);
+
+            assert!(!clock.start_sprint(1));
+            assert!(clock.world_runs());
+            assert!(!clock.frozen());
+            assert!(clock.take_sprint_report().is_none());
+
+            assert_eq!(clock.world_runs(), !was_frozen);
+            assert_eq!(clock.frozen(), was_frozen);
+            assert!(clock.take_sprint_report().is_some());
+            assert_eq!(clock.world_runs(), !was_frozen);
+            assert!(clock.take_sprint_report().is_none());
+        }
+    }
+    #[test]
     fn the_camera_keeps_interpolating_in_a_frozen_level() {
         let mut clock = FixedStep::default();
         clock.set_frozen(true);
         clock.world_runs();
-        clock.advance(std::time::Duration::from_millis(25));
+        let target = clock.tick_target_millis();
+        clock.advance(std::time::Duration::from_millis(25), target);
         clock.end_frame(false);
         assert_eq!(clock.fraction(), 1.0, "frozen entities stay put");
         assert_eq!(clock.camera_fraction(), 0.5, "the player does not");
+    }
+    #[test]
+    fn a_still_clock_starts_frozen_and_holds_the_camera_too() {
+        let mut clock = FixedStep::new(true);
+        clock.world_runs();
+        assert!(!clock.runs_normally(), "frozen before the first tick");
+        let target = clock.tick_target_millis();
+        clock.advance(std::time::Duration::from_millis(25), target);
+        clock.end_frame(false);
+        assert_eq!(clock.fraction(), 1.0);
+        assert_eq!(clock.camera_fraction(), 1.0);
+        // `/tick unfreeze`: the world runs as without the switch.
+        clock.set_frozen(false);
+        assert!(clock.world_runs());
+        assert!(
+            FixedStep::new(false).world_runs(),
+            "without the switch, unfrozen"
+        );
     }
     #[test]
     fn only_a_started_or_stopped_step_is_broadcast() {
@@ -613,14 +721,17 @@ mod tests {
         let quarter = std::time::Duration::from_millis(250);
         let mut client = FixedStep::client();
         client.set_rate(40.0);
-        assert_eq!(client.advance(quarter), 5, "still 20 a second");
+        let target = client.tick_target_millis();
+        assert_eq!(client.advance(quarter, target), 5, "still 20 a second");
         let mut slow = FixedStep::client();
         slow.set_rate(10.0);
-        assert_eq!(slow.advance(quarter * 2), 5, "10 a second");
+        let target = slow.tick_target_millis();
+        assert_eq!(slow.advance(quarter * 2, target), 5, "10 a second");
         let mut local = FixedStep::default();
         local.set_rate(40.0);
+        let target = local.tick_target_millis();
         assert_eq!(
-            local.advance(quarter),
+            local.advance(quarter, target),
             10,
             "the integrated loop runs at the rate"
         );

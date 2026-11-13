@@ -56,6 +56,29 @@ impl BoundTags {
         }))
     }
 }
+/// The registry-derived integer property classification used by feature block-state codecs.
+/// Shared by generator loading and bounded startup leaf validation.
+pub(super) fn integer_properties(registry: &BlockRegistry) -> BTreeSet<(String, String)> {
+    let mut values = BTreeMap::<(String, String), bool>::new();
+    for i in 0..registry.len() {
+        let state = registry.state(BlockStateId(i as u32)).unwrap();
+        for (key, value) in &state.properties {
+            let integer = !value.is_empty()
+                && value
+                    .trim_start_matches('-')
+                    .bytes()
+                    .all(|b| b.is_ascii_digit());
+            *values
+                .entry((state.name.clone(), key.clone()))
+                .or_insert(true) &= integer;
+        }
+    }
+    values
+        .into_iter()
+        .filter_map(|(key, integer)| integer.then_some(key))
+        .collect()
+}
+
 pub struct FeatureBlockBindings<'r> {
     registry: &'r BlockRegistry,
     pub(crate) simple_blocks: Option<(
@@ -300,9 +323,6 @@ impl super::block_predicate::PredicateBlockResolver for FeatureBlockBindings<'_>
                 .ok_or_else(|| DecodeError::Registry(format!("unknown predicate block {name}")));
         }
         let names: Vec<String> = serde_json::from_str(json)?;
-        if names.len() > 8192 {
-            return Err(DecodeError::Field("predicate block list size"));
-        }
         let mut states = BTreeSet::new();
         for name in names {
             states.extend(
@@ -433,9 +453,6 @@ pub(crate) fn decode_targets(
 ) -> Result<BlockReplacements, DecodeError> {
     let values: Vec<Box<serde_json::value::RawValue>> =
         serde_json::from_str(required(object, "targets")?.get())?;
-    if values.len() > 8192 {
-        return Err(DecodeError::Field("replacement targets"));
-    }
     values
         .iter()
         .map(|value| {
@@ -459,8 +476,39 @@ pub(crate) fn decode_targets(
 #[cfg(test)]
 mod bound_tag_tests {
     use super::*;
-    use crate::nbt::Tag;
+    use horizon_core::nbt::Tag;
 
+    #[test]
+    fn block_holder_ceiling() {
+        let registry = registry();
+        let bindings = FeatureBlockBindings::new(&registry, BTreeSet::new()).unwrap();
+        let json = serde_json::to_string(&vec!["minecraft:stone"; 8193]).unwrap();
+        let predicate = format!(r#"{{"type":"matching_blocks","blocks":{json}}}"#);
+        assert!(
+            super::super::block_predicate::BlockPredicate::from_json_with_blocks(
+                &predicate, &bindings,
+            )
+            .is_ok()
+        );
+    }
+    #[test]
+    fn replacement_target_ceiling() {
+        let registry = registry();
+        let bindings = FeatureBlockBindings::new(&registry, BTreeSet::new()).unwrap();
+        let target =
+            r#"{"target":{"predicate_type":"always_true"},"state":{"id":"minecraft:stone"}}"#;
+        let json = format!(
+            r#"{{"type":"replace_single_block","targets":[{}]}}"#,
+            vec![target; 8193].join(",")
+        );
+        assert_eq!(
+            ReplaceBlockFeature::from_json(&json, &bindings)
+                .unwrap()
+                .targets
+                .len(),
+            8193
+        );
+    }
     fn registry() -> BlockRegistry {
         let state = |id: &str| Tag::compound([("id", Tag::String(id.into()))]);
         let log = |axis: &str| {
@@ -482,6 +530,8 @@ mod bound_tag_tests {
                     log("x"),
                     log("y"),
                     state("minecraft:dirt"),
+                    state("minecraft:cave_air"),
+                    state("minecraft:void_air"),
                 ]),
             ),
             (
@@ -491,6 +541,8 @@ mod bound_tag_tests {
                     ("minecraft:stone", Tag::Int(1)),
                     ("minecraft:oak_log", Tag::Int(3)),
                     ("minecraft:dirt", Tag::Int(4)),
+                    ("minecraft:cave_air", Tag::Int(5)),
+                    ("minecraft:void_air", Tag::Int(6)),
                 ]),
             ),
         ]))

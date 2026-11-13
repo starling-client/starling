@@ -2,7 +2,7 @@
 //! ItemsAdder pack puts its armours side by side in the leather layer's texture, each under a
 //! key colour, and its entity shader draws the one whose key is the leather's dye colour,
 //! animated by the game time; any other colour is the plain leather of the first column.
-use std::{collections::HashMap, io::Read, path::Path};
+use std::{collections::HashMap, path::Path};
 
 /// The constants ItemsAdder writes into its entity shader (between `%START_CUSTOM_ARMORS_VARS%`
 /// and `%END_CUSTOM_ARMORS_VARS%`): an armour is `4 v1` by `2 v1` pixels, frames advance
@@ -135,23 +135,37 @@ impl ArmorAtlas {
 /// pack's entity shader treats as custom armour: only with its constants in the shader, only
 /// textures of the size they give.
 pub fn load(root: &Path) -> HashMap<String, ArmorAtlas> {
+    load_from(&horizon_assets::resource_source::ResourceSource::directory(
+        root.to_owned(),
+    ))
+}
+
+/// [`load`] from the resources `source` reads: a resource reload's, with the packs over them.
+pub fn load_from(
+    source: &horizon_assets::resource_source::ResourceSource,
+) -> HashMap<String, ArmorAtlas> {
     let mut atlases = HashMap::new();
-    let shaders = root.join("assets/minecraft/shaders/core");
     let Some(shape) = ["entity.fsh", "rendertype_armor_cutout_no_cull.fsh"]
         .iter()
-        .find_map(|f| AtlasShape::parse(&std::fs::read_to_string(shaders.join(f)).ok()?))
+        .find_map(|f| {
+            let text = source
+                .read_to_string(&format!("assets/minecraft/shaders/core/{f}"))
+                .ok()?;
+            AtlasShape::parse(&text)
+        })
     else {
         return atlases;
     };
-    let Ok(entries) = std::fs::read_dir(root.join("assets/minecraft/equipment")) else {
-        return atlases;
-    };
-    for path in entries.flatten().map(|e| e.path()) {
-        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+    const EQUIPMENT: &str = "assets/minecraft/equipment/";
+    for path in source.list(EQUIPMENT) {
+        // The folder's own files, as vanilla's equipment assets are.
+        let Some(name) = (path.strip_prefix(EQUIPMENT))
+            .and_then(|n| n.strip_suffix(".json"))
+            .filter(|n| !n.contains('/'))
+        else {
             continue;
         };
-        let Some(asset) = std::fs::read(&path)
-            .ok()
+        let Some(asset) = (source.read(&path).ok())
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
         else {
             continue;
@@ -168,17 +182,19 @@ pub fn load(root: &Path) -> HashMap<String, ArmorAtlas> {
             if atlases.contains_key(&texture) {
                 continue;
             }
-            let file = root.join(format!("assets/minecraft/textures/{texture}.png"));
+            let file = format!("assets/minecraft/textures/{texture}.png");
             // The PNG header's size first: only a texture as big as the shader says is decoded.
-            let mut header = [0u8; 24];
-            let read = std::fs::File::open(&file).and_then(|mut f| f.read_exact(&mut header));
+            let Some(header) = source.read_head(&file, 24).ok().filter(|h| h.len() >= 24) else {
+                continue;
+            };
             let be = |i: usize| {
                 u32::from_be_bytes([header[i], header[i + 1], header[i + 2], header[i + 3]])
             };
-            if read.is_err() || (be(16), be(20)) != (shape.width, shape.height) {
+            if (be(16), be(20)) != (shape.width, shape.height) {
                 continue;
             }
-            if let Ok((w, h, rgba)) = crate::hud::decode(&file)
+            if let Some((w, h, rgba)) =
+                (source.read(&file).ok()).and_then(|bytes| crate::hud::decode_bytes(&bytes).ok())
                 && let Some(atlas) = ArmorAtlas::read(shape, w, h, &rgba)
             {
                 log::info!("Horizon: {texture} is a pack's custom armour, picked by dye colour");

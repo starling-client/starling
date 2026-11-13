@@ -11,7 +11,8 @@ description = "The desktop launcher's mod browser without its window, for Starli
 doctest = false
 
 [dependencies]
-horizon-mods = { path = "../horizon-mods", features = ["index"] }
+horizon-mod-package = { path = "../horizon-mod-package", features = ["index"] }
+horizon-platform = { path = "../horizon-platform" }
 horizon-port-pack = { path = "../horizon-port-pack" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 serde ={ version = "1", features = ["derive"] }

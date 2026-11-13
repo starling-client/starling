@@ -102,7 +102,7 @@ RuleBasedStateProvider.getOptionalState	port	crates/horizon-world/src/worldgen/s
 RuleBasedStateProvider.getState	port	crates/horizon-world/src/worldgen/state_provider.rs::BlockStateProvider::get_optional_state	RuleBased arm
 RuleBasedStateProvider.ifTrueThenProvide	skip:java		builder API; Horizon decodes rule_based JSON
 RuleBasedStateProvider.Builder	skip:java		builder API; Horizon decodes rule_based JSON
-AlterGroundDecorator.place	port	crates/horizon-world/src/worldgen/tree/decorator.rs::TreeDecorator::place	AlterGround arm
+AlterGroundDecorator.place	port	crates/horizon-world/src/worldgen/tree/decorator.rs::Decorate::alter_ground	TreeDecorator::place's AlterGround arm fires alter_ground first
 AlterGroundDecorator.placeBlockAt	inline	crates/horizon-world/src/worldgen/tree/decorator.rs::Decorate::circle	single set inside the circle loop
 AlterGroundDecorator.placeCircle	port	crates/horizon-world/src/worldgen/tree/decorator.rs::Decorate::circle	
 AttachedToLeavesDecorator.hasRequiredEmptyBlocks	inline	crates/horizon-world/src/worldgen/tree/decorator.rs::TreeDecorator::place	required_empty check in AttachedToLeaves arm

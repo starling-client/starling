@@ -187,10 +187,10 @@ mod tests {
                         break;
                     }
                     assert!(!header.to_ascii_lowercase().starts_with("authorization:"));
-                    if let Some((name, value)) = header.split_once(':') {
-                        if name.eq_ignore_ascii_case("content-length") {
-                            length = value.trim().parse::<usize>().unwrap();
-                        }
+                    if let Some((name, value)) = header.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse::<usize>().unwrap();
                     }
                 }
                 let mut bytes = vec![0; length];

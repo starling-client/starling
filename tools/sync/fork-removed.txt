@@ -1,0 +1,2 @@
+# Mod-work omissions only; upstream Horizon layer is retained.
+crates/horizon-mods/**

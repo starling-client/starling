@@ -7,8 +7,8 @@ Relative.direction	skip:java		EnumSet builder; bit constants
 Relative.isSet	skip:java		bit test; callers test the flag bits with &
 Relative.unpack	skip:java		the packet keeps the packed int and tests bits directly
 Relative.pack	skip:java		the packet keeps the packed int
-SlotAccess.forEquipmentSlot	inline	crates/horizon-client/src/game/commands/items.rs::slot_set	gap: minor: no validator, so /item replace puts any item in a chest, legs or feet slot; vanilla refuses an item that does not belong there
-SlotProvider.getSlotsFromRange	inline	crates/horizon-client/src/game/commands/items.rs::slots_named	slot names and ranges resolve to slots there; missing slots are skipped
+SlotAccess.forEquipmentSlot	inline	crates/horizon-client/src/game/administration/commands/items.rs::slot_set	gap: minor: no validator, so /item replace puts any item in a chest, legs or feet slot; vanilla refuses an item that does not belong there
+SlotProvider.getSlotsFromRange	inline	crates/horizon-client/src/game/administration/commands/items.rs::slots_named	slot names and ranges resolve to slots there; missing slots are skipped
 SpawnPlacements.register	skip:data		placements and heightmaps are read from tables (MobData)
 SpawnPlacements.getPlacementType	port	crates/horizon-client/src/mobs/data.rs::placement	on ground when unregistered
 SteppedInterpolationHandler.create	port	crates/horizon-world/src/stepped_interpolation.rs::new	client branch only: remote.rs builds one per living entity with its type's update interval; the server tracker is not created (see SteppedInterpolationTracker)
@@ -28,15 +28,15 @@ SulfurCubeArchetypes.bootstrap	skip:data		the 12 archetypes are the ARCHETYPES t
 SulfurCubeArchetypes.archetype	skip:data		builds the speed, bounce, friction and drag modifiers; values are in the table
 SulfurCubeArchetypes.contactDamage	skip:data		hot archetype's contact damage is a field of the table
 SulfurCubeArchetypes.register	skip:data		registry registration
-TamableAnimal.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	gap: minor: the flags byte (sitting 1, tame 4) is sent to LAN guests; the owner UUID data is never sent
-TamableAnimal.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Owner and Sitting for wolf, cat and parrot
-TamableAnimal.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	an owner makes the mob tame (wolf health 40), Sitting restored; old owner-name conversion is not done
+TamableAnimal.defineSynchedData	port	crates/horizon-client/src/game/network/lan/mod.rs::mob_meta	gap: minor: the flags byte (sitting 1, tame 4) is sent to LAN guests; the owner UUID data is never sent
+TamableAnimal.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Owner and modeled Sitting for wolf, cat, parrot and both nautili (their species codec)
+TamableAnimal.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	an owner makes the mob tame (wolf health 40); Sitting restored independently of owner, including both nautili; old owner-name conversion is not done
 TamableAnimal.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	event 7 hearts, event 6 smoke, seven particles
 TamableAnimal.isTame	skip:other		a field: Mob.extra.tame
 TamableAnimal.setInSittingPose	skip:other		a field: Mob.extra.sitting, set by the sit goals and interactions
-TamableAnimal.tame	inline	crates/horizon-client/src/game/creatures.rs::interact_mob	wolf (bone, 1 in 3), cat and parrot set tame, owner and sitting in their interaction arms, then the tame_animal trigger; mobs/tame.rs::set_tame gives the wolf 40 health
-TamableAnimal.getTeam	port	crates/horizon-client/src/game/scoreboard.rs::mob_team	own team first, else a tamed pet's root owner's (getRootOwner through pet owners); `@e[team=]` (selector_extra_filter) and the teamkill criteria still read the pet's own name only
-TamableAnimal.die	port	crates/horizon-client/src/game/combat.rs::Game::tell_owner_pet_died	ticked in #3514; `TamableAnimal.die` is cited at crates/horizon-client/src/game/combat.rs:506
+TamableAnimal.tame	inline	crates/horizon-client/src/game/mobs/creatures/mod.rs::interact_mob	wolf (bone, 1 in 3), cat and parrot set tame, owner and sitting in their interaction arms, then the tame_animal trigger; mobs/tame.rs::set_tame gives the wolf 40 health
+TamableAnimal.getTeam	port	crates/horizon-client/src/game/interface/scoreboard/mod.rs::mob_team	own team first, else a tamed pet's root owner's (getRootOwner through pet owners); `@e[team=]` (selector_extra_filter) and the teamkill criteria still read the pet's own name only
+TamableAnimal.die	port	crates/horizon-client/src/game/items/combat.rs::Game::tell_owner_pet_died	ticked in #3514; `TamableAnimal.die` is cited at crates/horizon-client/src/game/items/combat.rs:506
 TamableAnimal.shouldTryTeleportToOwner	port	crates/horizon-client/src/mobs/tame.rs::owner_distance_sqr	the >= 144 comparison is made in TamePanic::tick and the follow-owner goal
 TamableAnimal.teleportToAroundBlockPos	port	crates/horizon-client/src/mobs/tame.rs::teleport_to_owner	ten tries within 3 blocks; the walkable test is approximated (solid block below, not leaves, no fluid, no collision)
 WalkAnimationState.speed	port	crates/horizon-client/src/mobs/anim.rs::state	speed(partial) lerps previous and current limb speed, capped at 1; the plain speed() is the limb_speed field
@@ -110,7 +110,7 @@ CelebrateVillagersSurvivedRaid.checkExtraStartConditions	inline	crates/horizon-c
 CelebrateVillagersSurvivedRaid.canStillUse	inline	crates/horizon-client/src/mobs/villager_brain.rs::tick_or_stop	600 ticks while a raid is nearby
 CelebrateVillagersSurvivedRaid.stop	inline	crates/horizon-client/src/mobs/villager_brain.rs::do_stop	back to the scheduled activity
 CelebrateVillagersSurvivedRaid.tick	inline	crates/horizon-client/src/mobs/villager_brain.rs::tick_or_stop	celebrate sound 1 in 100, a firework 1 in 200 with open sky
-CelebrateVillagersSurvivedRaid.getFirework	port	crates/horizon-client/src/game/raids.rs::villager_firework	burst rocket in a random dye colour, flight 0 to 2
+CelebrateVillagersSurvivedRaid.getFirework	port	crates/horizon-client/src/game/mobs/raids/mod.rs::villager_firework	burst rocket in a random dye colour, flight 0 to 2
 ChargeAttack.canStillUse	port	crates/horizon-client/src/mobs/nautilus.rs::still_ok	tame, distance limits 12 and 11, line of sight and the cooldown
 ChargeAttack.dealDamageToTarget	inline	crates/horizon-client/src/mobs/nautilus.rs::tick	attack damage sent as an AttackPlayer or AttackMob event on contact
 ChargeAttack.dealKnockBack	inline	crates/horizon-client/src/mobs/nautilus.rs::tick	push along the nautilus's facing scaled by speed with speed and slowness effects
@@ -136,14 +136,14 @@ GiveGiftToHero.checkExtraStartConditions	inline	crates/horizon-client/src/mobs/v
 GiveGiftToHero.start	inline	crates/horizon-client/src/mobs/villager_brain.rs::try_start	interaction target set, look at the hero
 GiveGiftToHero.canStillUse	inline	crates/horizon-client/src/mobs/villager_brain.rs::tick_or_stop	hero visible and no gift given yet
 GiveGiftToHero.stop	inline	crates/horizon-client/src/mobs/villager_brain.rs::do_stop	next gift in 600 to 6600 ticks, memories cleared
-GiveGiftToHero.throwGift	port	crates/horizon-client/src/game/raids.rs::throw_gift	loot table by profession (villager::gift_table), tossed toward the player
+GiveGiftToHero.throwGift	port	crates/horizon-client/src/game/mobs/raids/mod.rs::throw_gift	loot table by profession (villager::gift_table), tossed toward the player
 GiveGiftToHero.isWithinThrowingDistance	inline	crates/horizon-client/src/mobs/villager_brain.rs::tick_or_stop	block distance under 5
 GoAndGiveItemsToTarget.start	inline	crates/horizon-client/src/mobs/allay.rs::tick	the Deliver goal flies to the deposit
-GoAndGiveItemsToTarget.tick	port	crates/horizon-client/src/game/allays.rs::allay_deliver	within 3 blocks of the deposit it throws one item a tick
+GoAndGiveItemsToTarget.tick	port	crates/horizon-client/src/game/mobs/allays.rs::allay_deliver	within 3 blocks of the deposit it throws one item a tick
 GoAndGiveItemsToTarget.canThrowItemToTarget	inline	crates/horizon-client/src/mobs/allay.rs::can_use	holding something and a deposit (note block or tame owner) exists
 GoToClosestVillage.create	port	crates/horizon-client/src/mobs/villager_brain.rs::try_start	B::GoToClosestVillage arm: five tries at a land position closer to a village
 GoToPotentialJobSite.checkExtraStartConditions	inline	crates/horizon-client/src/mobs/villager_brain.rs::try_start	idle, work or play activity
 GoToPotentialJobSite.tick	inline	crates/horizon-client/src/mobs/villager_brain.rs::tick_or_stop	walk to the potential job site
 GoToPotentialJobSite.stop	inline	crates/horizon-client/src/mobs/villager_brain.rs::do_stop	potential job site forgotten
 GoToTargetLocation.create	port	crates/horizon-client/src/mobs/warden_brain.rs::try_start	B::GoToDisturbance with getNearbyPos; the piglin's celebrate (mobs/piglin.rs Celebrate::walk) walks straight to the spot without the random offset
-GoToWantedItem.create	port	crates/horizon-client/src/mobs/piglin.rs::can_use	the game picks the gold (game/piglins.rs) and the goal walks to it at speed 1.0
+GoToWantedItem.create	port	crates/horizon-client/src/mobs/piglin.rs::can_use	the game picks the gold (game/mobs/piglins.rs) and the goal walks to it at speed 1.0

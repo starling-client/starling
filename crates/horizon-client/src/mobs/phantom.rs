@@ -46,17 +46,13 @@ pub fn set_size(m: &mut Mob, size: i32) {
     }
 }
 fn can_attack(w: &MobWorld) -> bool {
-    w.player
-        .as_ref()
+    w.selected_player()
         .is_some_and(|p| p.alive && !p.creative && !p.spectator)
 }
 /// `Phantom.canAttack(level, player, TargetingConditions.DEFAULT)`: as above,
 /// and in sight (`Sensing.hasLineOfSight`), so a roof or a wall hides the player.
 fn can_attack_seen(m: &mut Mob, w: &MobWorld) -> bool {
     can_attack(w) && m.sees(w, Who::Player)
-}
-fn sea_level() -> i32 {
-    63
 }
 /// `PhantomAttackPlayerTargetGoal`: every three seconds, the player
 /// within 16 blocks across and 64 up or down.
@@ -75,7 +71,7 @@ impl Goal for AttackPlayerTarget {
             return false;
         }
         self.next_scan = reduced(60);
-        let Some(p) = &cx.w.player else {
+        let Some(p) = cx.w.selected_player() else {
             return false;
         };
         let d = p.position;
@@ -83,7 +79,7 @@ impl Goal for AttackPlayerTarget {
             && (d.y - m.position.y).abs() <= 64.0
             && (d.z - m.position.z).abs() <= 16.0 + f64::from(m.width());
         if near && can_attack_seen(m, cx.w) {
-            m.ai.target = Some(Who::Player);
+            m.set_ai_target(cx.w, Some(Who::Player));
             return true;
         }
         false
@@ -103,7 +99,7 @@ impl AttackStrategy {
             return;
         };
         let y = (t.position.y.floor() as i32 + 20 + m.random.next_int_bound(20).unwrap_or(0))
-            .max(sea_level() + 1);
+            .max(cx.w.sea_level + 1);
         m.extra.home = Some([t.position.x.floor() as i32, y, t.position.z.floor() as i32]);
     }
 }
@@ -263,8 +259,8 @@ impl Goal for SweepAttack {
         }
         !self.scared
     }
-    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
-        m.ai.target = None;
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        m.set_ai_target(cx.w, None);
         m.extra.flag = false;
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
@@ -423,10 +419,11 @@ mod tests {
             // rule is about roofs and full walls, not foot walls).
             let mut target = AttackPlayerTarget { next_scan: 0 };
             let mut events = Vec::new();
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut test_level = crate::health::TestLevel::new(0);
+            let level = &mut test_level.level();
             let mut cx = Cx {
                 w: &w,
-                lr: &mut lr,
+                level,
                 events: &mut events,
             };
             m.ai.seen_cache.clear();
@@ -442,7 +439,7 @@ mod tests {
             let mut events = Vec::new();
             let mut cx = Cx {
                 w: &w,
-                lr: &mut lr,
+                level,
                 events: &mut events,
             };
             sweep.tick(&mut m, &mut cx);
@@ -470,10 +467,11 @@ mod tests {
             register(&mut m);
             let mut target = AttackPlayerTarget { next_scan: 0 };
             let mut events = Vec::new();
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut test_level = crate::health::TestLevel::new(0);
+            let level = &mut test_level.level();
             let mut cx = Cx {
                 w: &w,
-                lr: &mut lr,
+                level,
                 events: &mut events,
             };
             m.ai.seen_cache.clear();
@@ -522,10 +520,11 @@ mod tests {
                     let mut m = Mob::new(1, kind, Vec3::new(0.5, 80.0, 0.5), 0.0);
                     let mut target = AttackPlayerTarget { next_scan: 0 };
                     let mut events = Vec::new();
-                    let mut lr = horizon_core::random::LegacyRandom::new(0);
+                    let mut test_level = crate::health::TestLevel::new(0);
+                    let level = &mut test_level.level();
                     let mut cx = Cx {
                         w: &w,
-                        lr: &mut lr,
+                        level,
                         events: &mut events,
                     };
                     assert_eq!(target.can_use(&mut m, &mut cx), roof.is_none(), "{roof:?}");
@@ -539,5 +538,93 @@ mod tests {
                 },
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod anchor_save_tests {
+    use super::*;
+    use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
+    use horizon_core::nbt::Tag;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    /// A phantom at (0.5, 75, 0.5) with the vanilla size 2, and `anchor_pos`
+    /// when it has one. `storeNullable` writes the key only for an anchor.
+    fn saved_phantom(anchor: Option<[i32; 3]>) -> Tag {
+        let mut fields = vec![
+            ("id", Tag::String("minecraft:phantom".into())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(0.5_f64.to_bits()),
+                    Tag::Double(75.0_f64.to_bits()),
+                    Tag::Double(0.5_f64.to_bits()),
+                ]),
+            ),
+            ("size", Tag::Int(2)),
+        ];
+        if let Some(anchor) = anchor {
+            fields.push(("anchor_pos", Tag::IntArray(anchor.to_vec())));
+        }
+        Tag::compound(fields)
+    }
+
+    fn phantom_types() -> HashMap<String, Arc<crate::mobs::MobType>> {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let ty = Arc::make_mut(&mut kind);
+        ty.id = "minecraft:phantom".into();
+        ty.species = Species::Phantom;
+        [("minecraft:phantom".into(), kind)].into()
+    }
+
+    /// `Phantom.addAdditionalSaveData` writes `anchor_pos` with `storeNullable`
+    /// and `readAdditionalSaveData` reads it back
+    /// (`input.read("anchor_pos", BlockPos.CODEC).orElse(null)`). Horizon models
+    /// the anchor in `extra.home` (vanilla's `anchorPoint`) and neither side
+    /// carried it: a phantom saved and reloaded kept the anchor `register` gives
+    /// every new phantom — its own position five blocks up — and circled there
+    /// instead of around the anchor its save named, or around itself as vanilla
+    /// does for a save with no anchor at all.
+    #[test]
+    fn a_phantoms_circling_anchor_survives_the_chunk_save() {
+        let types = phantom_types();
+        let mut m = mob_from_nbt(&saved_phantom(Some([100, 64, -40])), &types, 1, None).unwrap();
+        assert_eq!(m.extra.home, Some([100, 64, -40]), "the loaded anchor");
+        // `PhantomCircleAroundAnchorGoal.selectNext` flies around the anchor:
+        // `anchor + (distance*cos(angle), -4 + height, distance*sin(angle))`.
+        let mut circle = CircleAroundAnchor {
+            distance: 10.0,
+            height: 2.0,
+            clockwise: 1.0,
+            angle: 0.0,
+        };
+        circle.select_next(&mut m);
+        let angle = 15.0f32.to_radians();
+        let around = [
+            100.0 + f64::from(10.0f32 * angle.mcos()),
+            64.0 + f64::from(-4.0 + 2.0f32),
+            -40.0 + f64::from(10.0f32 * angle.msin()),
+        ];
+        assert_eq!(
+            m.extra.vector, around,
+            "the circle point, 109.66 / 62 / -37.41 around the anchor"
+        );
+        // What the phantom circles now is what its chunk save keeps.
+        m.extra.home = Some([9, 70, -3]);
+        let source = saved_phantom(Some([100, 64, -40]));
+        let saved = mob_to_nbt(&m, [0; 4], Some(&source), None, |_| None);
+        assert_eq!(
+            saved.get("anchor_pos"),
+            Some(&Tag::IntArray(vec![9, 70, -3]))
+        );
+        // A phantom with no anchor: `orElse(null)` on the way in, and no
+        // `anchor_pos` on the way out even when the loaded save had one.
+        let mut loose = mob_from_nbt(&saved_phantom(None), &types, 2, None).unwrap();
+        assert_eq!(loose.extra.home, None, "a save without anchor_pos");
+        loose.extra.home = None;
+        let stale = saved_phantom(Some([100, 64, -40]));
+        let saved = mob_to_nbt(&loose, [0; 4], Some(&stale), None, |_| None);
+        assert_eq!(saved.get("anchor_pos"), None, "no anchor, no key");
     }
 }

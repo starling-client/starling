@@ -40,13 +40,6 @@ impl BiomeSourceCatalog {
         tags: &BTreeMap<String, Vec<String>>,
         presets: &BTreeSet<String>,
     ) -> Result<Self, DecodeError> {
-        if biomes.len() > 8192
-            || tags.len() > 8192
-            || presets.len() > 8192
-            || tags.values().map(Vec::len).sum::<usize>() > 65536
-        {
-            return Err(DecodeError::Field("biome source catalog size"));
-        }
         let biomes = biomes
             .iter()
             .map(|v| identifier(v))
@@ -96,9 +89,6 @@ impl BiomeSourceCatalog {
             return Ok(BiomeSet::Direct(vec![self.biome(raw)?]));
         }
         let values: Vec<Box<RawValue>> = serde_json::from_str(raw.get())?;
-        if values.len() > 8192 {
-            return Err(DecodeError::Field("biome holder set size"));
-        }
         Ok(BiomeSet::Direct(
             values
                 .iter()
@@ -108,7 +98,7 @@ impl BiomeSourceCatalog {
     }
     fn inline(&self, raw: &RawValue) -> Result<BiomeSourceDefinition, DecodeError> {
         let entries: Vec<Object> = serde_json::from_str(raw.get())?;
-        if entries.is_empty() || entries.len() > 65536 {
+        if entries.is_empty() {
             return Err(DecodeError::Field("multi-noise entry count"));
         }
         let mut result = Vec::with_capacity(entries.len());
@@ -150,10 +140,10 @@ impl BiomeSourceCatalog {
             }
             "minecraft:multi_noise" => {
                 // mapEither prefers a successful inline list, then tries preset.
-                if let Some(raw) = optional(&object, "biomes") {
-                    if let Ok(value) = self.inline(raw) {
-                        return Ok(value);
-                    }
+                if let Some(raw) = optional(&object, "biomes")
+                    && let Ok(value) = self.inline(raw)
+                {
+                    return Ok(value);
                 }
                 let raw = required(&object, "preset")?;
                 if raw.get().starts_with('"') {

@@ -1,107 +1,200 @@
 //! Startup shared by the gameplay library and its executable.
-use crate::{crash, game, logging, ram_limit};
+#[path = "horizon_look.rs"]
+mod horizon_look;
+use crate::{crash, game, logging};
+use horizon_mod_package::selection::{Argument, LaunchArguments};
 
-/// Start the game. The executable supplies the allocator and retains the mod API marker.
-pub fn main() {
-    main_with(Default::default());
+/// Validated startup state. No native hooks or workers may run before prepare returns.
+pub struct Startup {
+    launch: LaunchArguments,
+    options: game::Options,
+    _capture: Option<horizon_mod_package::output::Capture>,
 }
 
-/// Start the game with trait mods in dispatch order.
-pub fn main_with(mods: crate::mod_api::Mods) {
-    start(mods, || {});
-}
-
-/// [`main_with`], running `after_log` once the log is open (Android's start-up notes, its
-/// platform set-up that logs).
-pub fn start(mods: crate::mod_api::Mods, after_log: impl FnOnce()) {
-    // First: a trait injection into anything below (logging, the crash handler) calls its mod.
-    if crate::mod_api::MODS.set(mods).is_err() {
-        log::warn!("Trait mods already installed; ignoring the second list");
+impl Startup {
+    /// Validated launch context used by the platform's code loader.
+    pub fn launch(&self) -> &LaunchArguments {
+        &self.launch
     }
-    horizon_threads::configure_allocator();
-    horizon_client::telemetry::mark_start();
-    horizon_client::spans::startup::init(std::time::Instant::now());
+}
+
+/// Holder mode runs first. The game's sole Options validation reads arguments/environment
+/// and resource marker metadata only: no logging, account loading, mods or worker threads.
+/// Account IO, cwd changes and command registration remain in Options::read, after leases.
+pub fn prepare() -> Startup {
+    // The holder (mod lease process) is built for desktop only.
     #[cfg(not(target_os = "android"))]
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    // The process has no command line: `horizon-args.txt`'s, read by `android::main`.
+    horizon_mod_package::holder::enter();
+    let result: crate::Result<_> = (|| {
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        #[cfg(not(target_os = "android"))]
+        command.args(std::env::args_os().skip(1));
+        // The process has no command line: `horizon-args.txt`'s, read by `android::main`.
+        #[cfg(target_os = "android")]
+        command.args(crate::android::args());
+        let launch = LaunchArguments::for_command(&command)?;
+        let options = game::Options::validate(launch.clone())?;
+        Ok((launch, options))
+    })();
+    let (launch, options) = result.unwrap_or_else(|error| {
+        eprintln!("Horizon: {error}");
+        std::process::exit(game::exit_code::USAGE);
+    });
+    let Some(options) = options else {
+        std::process::exit(0);
+    };
+    #[cfg(not(target_os = "android"))]
+    let capture = horizon_mod_package::holder::acquire(&launch);
     #[cfg(target_os = "android")]
-    let args: Vec<String> = crate::android::args();
-    let game_args = args.iter().take_while(|a| *a != "--dedicated");
-    let help = game_args
-        .clone()
-        .any(|a| a == "--help" || a == "-h" || a == "--launch-api");
-    // --home before the log opens in it.
-    if let Some(dir) = game_args.clone().skip_while(|a| *a != "--home").nth(1) {
-        logging::set_game_home(std::path::absolute(dir).unwrap_or_else(|_| dir.into()));
+    let capture = None;
+    Startup {
+        launch,
+        options,
+        _capture: capture,
     }
-    // The dedicated server logs in its own folder (--game-dir's), as vanilla's does; the game in its home.
-    let (home, side, thread) = if args.iter().any(|a| a == "--dedicated") {
-        let folder = game_args
-            .clone()
-            .skip_while(|a| *a != "--game-dir" && *a != "--gameDir")
-            .nth(1)
-            .and_then(|dir| std::path::absolute(dir).ok())
-            .unwrap_or_else(|| ".".into());
-        (folder, "server", "Server thread")
+}
+
+/// Runs once the log is open (Android's start-up notes, its platform set-up that logs); set before [`start`].
+static AFTER_LOG: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>> = std::sync::Mutex::new(None);
+
+/// Register what runs once the log is open (see `AFTER_LOG`).
+pub fn set_after_log(hook: impl FnOnce() + Send + 'static) {
+    *AFTER_LOG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(hook));
+}
+
+/// A native function slot, checked against its place's exact type before erasure.
+pub use mod_points::__private::SlotListener as NativeSlot;
+
+/// The places raw listeners register at, named by the generated `main`.
+#[doc(hidden)]
+pub use mod_points::PointId;
+
+/// Code-runtime services supplied by the platform at startup.
+pub struct CodeRuntime {
+    pub initialize: fn(&[mod_api::PackageInfo]),
+    pub refusal: fn(&str) -> Option<String>,
+    pub startup_refused: fn(&str) -> bool,
+}
+static CODE_RUNTIME: std::sync::OnceLock<CodeRuntime> = std::sync::OnceLock::new();
+pub(crate) fn initialize_code(inventory: &[mod_api::PackageInfo]) {
+    let runtime = CODE_RUNTIME
+        .get()
+        .expect("code initialization requires entry::start");
+    (runtime.initialize)(inventory);
+}
+pub(crate) fn code_startup_refused(id: &str) -> bool {
+    CODE_RUNTIME
+        .get()
+        .is_some_and(|runtime| (runtime.startup_refused)(id))
+}
+pub(crate) fn code_refusal(id: &str) -> Option<String> {
+    CODE_RUNTIME.get().and_then(|runtime| (runtime.refusal)(id))
+}
+
+/// Start with named mods and their function slots in installed dependency order.
+pub fn start<G>(
+    native: horizon_mod_package::runtime::Runtime,
+    load: impl FnOnce(
+        &horizon_mod_package::runtime::Runtime,
+        &LaunchArguments,
+    ) -> (Vec<&'static str>, G),
+    code: CodeRuntime,
+    slots: &[NativeSlot],
+    startup: Startup,
+) {
+    let _ = CODE_RUNTIME.set(code);
+    let Startup {
+        launch,
+        options,
+        _capture,
+    } = startup;
+    horizon_threads::configure_allocator();
+    horizon_look::give();
+    // OptiFine's and Polytone's pack formats (platform, docs/layers.md), before any pack loads.
+    horizon_client::pack_formats::install();
+    // horizon-extras (docs/forking.md): without the feature, no Horizon Settings or Mods page.
+    if !cfg!(feature = "horizon-extras") {
+        horizon_client::options_ui::HORIZON_EXTRAS
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    horizon_client::telemetry::mark_start();
+    // Opt-in telemetry keeps each crash report (docs/telemetry.md), whatever the mode.
+    crash::on_report(horizon_client::telemetry::keep_crash);
+    // Crates above the engine registered their hooks before this (horizon-official's `main`),
+    // then the Horizon parts still in this crate; none registers after this point.
+    game::player_hooks::register();
+    horizon_hooks::engine::seal();
+    horizon_client::spans::startup::init(std::time::Instant::now());
+    horizon_client::spans::trace::start_from_env();
+    let (ids, _loaded_code) = load(&native, &launch);
+    for id in ids {
+        for slot in slots.iter().filter(|slot| slot.id() == id) {
+            if let Err(error) = mod_points::register(slot) {
+                eprintln!("Horizon: {id}: {error}");
+                std::process::exit(game::exit_code::ERROR);
+            }
+        }
+    }
+    logging::set_game_home(launch.context.home.clone());
+    // The dedicated server logs in its own folder, as vanilla's does; the game in its home.
+    let (home, side, thread) = if launch
+        .rest
+        .iter()
+        .any(|arg| matches!(arg, Argument::Dedicated(_)))
+    {
+        (launch.context.game_dir.clone(), "server", "Server thread")
     } else {
-        // --player-dir too (a game's, not a server's): a player of a shared game folder keeps
-        // its log and crash reports in its own; crash telemetry stays with the home's consent.
-        if let Some(dir) = game_args
-            .clone()
-            .skip_while(|a| *a != "--player-dir")
-            .nth(1)
-        {
+        // A player's own log stays separate; crash reports follow the shared home.
+        if let Some(dir) = launch.rest.iter().find_map(|arg| match arg {
+            Argument::Value(name, value) if name == "--player-dir" => Some(value),
+            _ => None,
+        }) {
             logging::set_player_dir(std::path::absolute(dir).unwrap_or_else(|_| dir.into()));
         }
-        (logging::game_home(), "client", "Render thread")
+        (launch.context.home.clone(), "client", "Render thread")
     };
-    if !help {
-        logging::init(
-            logging::player_dir_override().unwrap_or(home.as_path()),
-            thread,
-        );
-        // The log's first line names the build, so a bug report that carries the log says which one it was.
-        log::info!("Horizon {}", crash::version());
-        crash::install(home.clone(), side);
-        ram_limit::start(&home, side);
-    }
-    after_log();
-    let renderers = crate::mod_api::mods()
-        .iter()
-        .filter_map(|m| m.render())
-        .collect();
-    if crate::gfx::native_render::install(renderers).is_err() {
-        log::warn!("Trait renderers already installed; keeping the first list");
+    logging::init(
+        logging::player_dir_override().unwrap_or(home.as_path()),
+        thread,
+    );
+    // The log's first line names the build, so a bug report that carries the log says which one it was.
+    log::info!("Horizon {}", crash::version());
+    crash::install(home.clone(), side);
+    if let Some(after_log) = AFTER_LOG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        after_log();
     }
     if horizon_world::native_load_hooks::install(
         horizon_world::native_load_hooks::NativeLoadHooks {
-            loot_table_load: |id, table| {
-                crate::mod_api::dispatch_loot_table_load(crate::mod_api::mods(), id, table);
-            },
-            modify_default_components: |item, components| {
-                crate::mod_api::dispatch_modify_default_components(
-                    crate::mod_api::mods(),
-                    item,
-                    components,
+            loot_table_load: |context, id, table| {
+                if !mod_api::__private::listened(mod_api::HookId::LootTableLoad) {
+                    return;
+                }
+                let reader = horizon_client_render::api_context::LoadReader(context);
+                let context = mod_api::OwningLoad::new(
+                    horizon_client_render::api_context::load_origin(context.origin()),
+                    &reader,
                 );
+                mod_api::dispatch_loot_table_load(&context, id, table);
             },
-            loot_function: |kind, data, ctx, stack| {
-                crate::mod_api::dispatch_loot_function(
-                    crate::mod_api::mods(),
-                    kind,
-                    data,
-                    ctx,
-                    stack,
-                );
+            modify_default_components: |context, item, components| {
+                if !mod_api::__private::listened(mod_api::HookId::ModifyDefaultComponents) {
+                    return;
+                }
+                let reader = horizon_client_render::api_context::LoadReader(context);
+                let context = reader.context();
+                mod_api::dispatch_modify_default_components(&context, item, components);
             },
-            loot_condition: |kind, data, ctx, holds| {
-                crate::mod_api::dispatch_loot_condition(
-                    crate::mod_api::mods(),
-                    kind,
-                    data,
-                    ctx,
-                    holds,
-                );
+            loot_function: |kind, data, ctx, stack, tags| {
+                crate::game::api_values::dispatch_loot_function(kind, data, ctx, stack, tags);
+            },
+            loot_condition: |kind, data, ctx, holds, tags| {
+                crate::game::api_values::dispatch_loot_condition(kind, data, ctx, holds, tags);
             },
         },
     )
@@ -109,73 +202,25 @@ pub fn start(mods: crate::mod_api::Mods, after_log: impl FnOnce()) {
     {
         log::warn!("Native data-load hooks already installed; keeping the first callbacks");
     }
-    if crate::native_client_hooks::install(crate::native_client_hooks::NativeClientHooks {
-        menu_slot_rules: |menu, slot, stack, may_place, max_stack| {
-            crate::mod_api::dispatch_menu_slot_rules(
-                crate::mod_api::mods(),
-                menu,
-                slot,
-                stack,
-                may_place,
-                max_stack,
-            );
+    if horizon_world::native_worldgen_hooks::install(
+        horizon_world::native_worldgen_hooks::NativeWorldgenHooks {
+            alter_ground: crate::game::api_values::alter_ground,
         },
-        living_heal: |entity, amount, cancel| {
-            crate::mod_api::dispatch_living_heal(crate::mod_api::mods(), entity, amount, cancel);
-        },
-        living_breathe: |entity, kind, can_breathe, consume, refill| {
-            crate::mod_api::dispatch_living_breathe(
-                crate::mod_api::mods(),
-                entity,
-                kind,
-                can_breathe,
-                consume,
-                refill,
-            );
-        },
-        living_drown: |entity, kind, is_drowning, damage_amount, bubble_count, cancel| {
-            crate::mod_api::dispatch_living_drown(
-                crate::mod_api::mods(),
-                entity,
-                kind,
-                is_drowning,
-                damage_amount,
-                bubble_count,
-                cancel,
-            );
-        },
-        living_fall: |entity, kind, distance, multiplier, cancel| {
-            crate::mod_api::dispatch_living_fall(
-                crate::mod_api::mods(),
-                entity,
-                kind,
-                distance,
-                multiplier,
-                cancel,
-            );
-        },
-        living_jump: |entity, kind| {
-            crate::mod_api::dispatch_living_jump(crate::mod_api::mods(), entity, kind);
-        },
-        ingredient: |kind, data, items| {
-            crate::mod_api::dispatch_ingredient(crate::mod_api::mods(), kind, data, items);
-        },
-        ingredient_test: |kind, data, stack, accept| {
-            crate::mod_api::dispatch_ingredient_test(
-                crate::mod_api::mods(),
-                kind,
-                data,
-                stack,
-                accept,
-            );
-        },
-    })
+    )
     .is_err()
     {
-        log::warn!("Native client hooks already installed; keeping the first callbacks");
+        log::warn!("Native worldgen hooks already installed; keeping the first callbacks");
     }
+    if horizon_items::native_enchantment_hooks::install(
+        crate::enchantment_levels::get_enchantment_level,
+    )
+    .is_err()
+    {
+        log::warn!("The enchantment level hook is already installed; keeping the first");
+    }
+    install_client_hooks();
     raise_open_file_limit();
-    if let Err(error) = game::run_with() {
+    if let Err(error) = game::run_with(options, native) {
         // A bad command line is the caller's mistake, not a crash: no report.
         let usage = error.is::<game::UsageError>();
         #[cfg(target_os = "android")]
@@ -185,7 +230,7 @@ pub fn start(mods: crate::mod_api::Mods, after_log: impl FnOnce()) {
         log::error!("Horizon: {error}");
         logging::flush();
         // The report's path is the last line on stderr (crash::SAVED_LINE).
-        if !help && !usage {
+        if !usage {
             crash::report_error(&home, side, &*error);
         }
         // Started from Explorer, the console window closes with the game:
@@ -205,7 +250,157 @@ pub fn start(mods: crate::mod_api::Mods, after_log: impl FnOnce()) {
             game::exit_code::ERROR
         });
     }
+    horizon_hooks::engine::shutdown();
     logging::flush();
+}
+
+pub(crate) fn install_client_hooks() {
+    game::api_values::install_stack_hooks();
+    if !crate::native_client_hooks::install(crate::native_client_hooks::NativeClientHooks {
+        menu_slot_rules: game::api_values::menu_slot_rules,
+        item_stacked_on_other: |context, event, canceled| {
+            game::api_values::stacked_on_other(context, event, canceled);
+        },
+        living_heal: |context, entity, amount, cancel| {
+            if !mod_api::__private::listened(mod_api::HookId::LivingHeal) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_living_heal(&context, entity, amount, cancel);
+        },
+        living_breathe: |context, entity, kind, can_breathe, consume, refill| {
+            if !mod_api::__private::listened(mod_api::HookId::LivingBreathe) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_living_breathe(&context, entity, kind, can_breathe, consume, refill);
+        },
+        farmland_trample: |context, entity, pos, state, distance, cancel| {
+            if !mod_api::__private::listened(mod_api::HookId::FarmlandTrample) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_farmland_trample(&context, entity, pos, state, distance, cancel);
+        },
+        has_mods: || !mod_api::__private::mods().is_empty(),
+        player_name_format: |context, username, displayname| {
+            use game::api_values::{TryIntoApi, TryIntoEngine};
+            if !mod_api::__private::listened(mod_api::HookId::PlayerNameFormat) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            let username = username.try_into_api().unwrap();
+            let mut converted = displayname.try_into_api().unwrap();
+            mod_api::dispatch_player_name_format(&context, &username, &mut converted);
+            *displayname = converted.try_into_engine(&()).unwrap();
+        },
+        player_tab_list_name_format: |context, player, name, display_name| {
+            use game::api_values::{TryIntoApi, TryIntoEngine};
+            if !mod_api::__private::listened(mod_api::HookId::PlayerTabListNameFormat) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            let mut converted = display_name.try_into_api().unwrap();
+            mod_api::dispatch_player_tab_list_name_format(&context, player, name, &mut converted);
+            *display_name = converted.try_into_engine(&()).unwrap();
+        },
+        living_drown: |context, entity, kind, is_drowning, damage_amount, bubble_count, cancel| {
+            if !mod_api::__private::listened(mod_api::HookId::LivingDrown) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_living_drown(
+                &context,
+                entity,
+                kind,
+                is_drowning,
+                damage_amount,
+                bubble_count,
+                cancel,
+            );
+        },
+        living_fall: |context, entity, kind, distance, multiplier, cancel| {
+            if !mod_api::__private::listened(mod_api::HookId::LivingFall) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_living_fall(&context, entity, kind, distance, multiplier, cancel);
+        },
+        living_jump: |context, entity, kind| {
+            if !mod_api::__private::listened(mod_api::HookId::LivingJump) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_living_jump(&context, entity, kind);
+        },
+        living_jump_power: |context, entity, kind, power| {
+            if !mod_api::__private::listened(mod_api::HookId::LivingJumpPower) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_living_jump_power(&context, entity, kind, power);
+        },
+        living_speed: |context, entity, kind, speed| {
+            if !mod_api::__private::listened(mod_api::HookId::LivingSpeed) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_living_speed(&context, entity, kind, speed);
+        },
+        living_flying_speed: |context, entity, kind, speed| {
+            if !mod_api::__private::listened(mod_api::HookId::LivingFlyingSpeed) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_living_flying_speed(&context, entity, kind, speed);
+        },
+        block_jump_factor: |context, state, factor| {
+            crate::game::block_jump_factor(context, state, factor);
+        },
+        block_speed_factor: |context, state, factor| {
+            crate::game::block_speed_factor(context, state, factor);
+        },
+        is_ladder: |context, entity, pos, state, ladder| {
+            crate::game::is_ladder(context, entity, pos, state, ladder);
+        },
+        player_stays_on_ground_surface: |context, entity, staying| {
+            if !mod_api::__private::listened(mod_api::HookId::PlayerStaysOnGroundSurface) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_player_stays_on_ground_surface(&context, entity, staying);
+        },
+        ender_entity_teleport: |context, entity, kind, from, target, cancel| {
+            if !mod_api::__private::listened(mod_api::HookId::EnderEntityTeleport) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_ender_entity_teleport(&context, entity, kind, from, target, cancel);
+        },
+        fluid_flow: |context, fluid, pos, flow| {
+            if !mod_api::__private::listened(mod_api::HookId::FluidFlow) {
+                return;
+            }
+            let reader = horizon_client_render::api_context::LoopReader(context);
+            let context = reader.context();
+            mod_api::dispatch_fluid_flow(&context, fluid, pos, flow);
+        },
+    }) {
+        log::warn!("Native client hooks already installed; keeping the first callbacks");
+    }
 }
 
 /// The JVM raises its open-file limit to the hard limit as it starts

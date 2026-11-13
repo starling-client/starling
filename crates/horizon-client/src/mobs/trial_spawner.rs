@@ -14,8 +14,8 @@ use super::{
     spawner::{self, SpawnData, SpawnDataExt, SpawnerLevel, SpawnerSpawn},
 };
 pub use crate::chunk::block_entity::{ConfigSlot, TrialConfig, TrialSpawner};
+use horizon_core::nbt::{Compound, JavaString, Tag};
 use horizon_core::{position::BlockPos, random::RandomSource};
-use horizon_world::nbt::{Compound, JavaString, Tag};
 use std::{collections::HashMap, path::Path, sync::OnceLock};
 
 /// An entity's UUID as its four ints (`UUIDUtil.CODEC`).
@@ -468,7 +468,7 @@ pub trait TrialSpawnerExt: Sized {
         pos: [i32; 3],
         state: TrialState,
         ominous: bool,
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
         eject: &mut dyn FnMut(&str, &mut R) -> bool,
         events: &mut Vec<TrialEvent>,
     ) -> TrialState;
@@ -480,7 +480,7 @@ pub trait TrialSpawnerExt: Sized {
         random: &mut R,
         pos: [i32; 3],
         state: TrialState,
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
         eject: &mut dyn FnMut(&str, &mut R) -> bool,
         events: &mut Vec<TrialEvent>,
     ) -> TrialState;
@@ -490,7 +490,7 @@ pub trait TrialSpawnerExt: Sized {
         l: &L,
         random: &mut R,
         pos: [i32; 3],
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
         events: &mut Vec<TrialEvent>,
     ) -> Option<Uuid>;
 }
@@ -887,7 +887,7 @@ impl TrialSpawnerExt for TrialSpawner {
         pos: [i32; 3],
         state: TrialState,
         ominous: bool,
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
         eject: &mut dyn FnMut(&str, &mut R) -> bool,
         events: &mut Vec<TrialEvent>,
     ) -> TrialState {
@@ -913,7 +913,7 @@ impl TrialSpawnerExt for TrialSpawner {
         random: &mut R,
         pos: [i32; 3],
         state: TrialState,
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
         eject: &mut dyn FnMut(&str, &mut R) -> bool,
         events: &mut Vec<TrialEvent>,
     ) -> TrialState {
@@ -1044,7 +1044,7 @@ impl TrialSpawnerExt for TrialSpawner {
         l: &L,
         random: &mut R,
         pos: [i32; 3],
-        spawn: &mut dyn FnMut(&L, &SpawnerSpawn) -> Option<Uuid>,
+        spawn: &mut dyn FnMut(&L, &SpawnerSpawn, &mut R) -> Option<Uuid>,
         events: &mut Vec<TrialEvent>,
     ) -> Option<Uuid> {
         let data = self.next_or_create(random, events).clone();
@@ -1069,15 +1069,7 @@ impl TrialSpawnerExt for TrialSpawner {
             return None;
         }
         let block = at.map(|v| v.floor() as i32);
-        if !spawn_rules::check_spawn_rules(
-            species,
-            l,
-            Reason::TrialSpawner,
-            random,
-            block[0],
-            block[1],
-            block[2],
-        ) {
+        if !spawn_rules::check_spawn_rules(&id, species, l, Reason::TrialSpawner, random, block) {
             return None;
         }
         if let Some(rules) = data.custom_spawn_rules
@@ -1096,15 +1088,21 @@ impl TrialSpawnerExt for TrialSpawner {
             width * scale,
             height * scale,
         );
-        if !spawn_selection::spawn_obstruction(
-            species,
-            l,
-            bounds,
-            Some(&[]),
-            own[0],
-            own[1],
-            own[2],
-        ) {
+        let pending = spawn_selection::Pending {
+            yaw,
+            fresh: data.unconfigured(),
+        };
+        if !spawn_selection::position_ok(l, &id, Reason::TrialSpawner, placed, pending, || {
+            spawn_selection::spawn_obstruction(
+                species,
+                l,
+                bounds,
+                Some(&[]),
+                own[0],
+                own[1],
+                own[2],
+            )
+        }) {
             return None;
         }
         let request = SpawnerSpawn {
@@ -1116,7 +1114,7 @@ impl TrialSpawnerExt for TrialSpawner {
             equipment: data.equipment.as_ref(),
             trial: true,
         };
-        let uuid = spawn(l, &request)?;
+        let uuid = spawn(l, &request, random)?;
         let flame = i32::from(self.is_ominous);
         events.push(TrialEvent::LevelEvent(3011, pos, flame));
         events.push(TrialEvent::LevelEvent(3012, block, flame));
@@ -1160,7 +1158,7 @@ mod tests {
     use super::*;
 
     fn tag(snbt: &str) -> Tag {
-        horizon_world::nbt::parse_snbt(snbt).expect("snbt").0
+        horizon_core::nbt::parse_snbt(snbt).expect("snbt").0
     }
 
     #[test]

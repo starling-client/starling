@@ -15,7 +15,9 @@ path = "../horizon-client/src/android_lib.rs"
 
 # Everything is Android-only: on other targets the library is empty.
 [target.'cfg(target_os = "android")'.dependencies]
-horizon-client = { path = "../horizon-client", default-features = false }
+# `horizon-extras`, as the desktop's default: Options' Horizon Settings and Mods, Play with Friends
+# and the cosmetics, which 0.8.0 had before Horizon put them behind the feature.
+horizon-client = { path = "../horizon-client", default-features = false, features = ["horizon-extras"] }
 # The NativeActivity glue (android-activity): `android_main` gets the app.
 winit = { version = "0.30.13", features = ["android-native-activity"] }
 jni = "0.21.1"

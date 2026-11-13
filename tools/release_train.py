@@ -71,11 +71,12 @@ LAUNCHER_PATHS = [
     "crates/horizon-bench/",
     "crates/horizon-friends/",
     "crates/horizon-mcp/",
-    "crates/horizon-mods/",
+    "crates/horizon-mod-api-gen/",
+    "crates/horizon-mod-package/",
     "crates/horizon-port-pack/",
     "crates/horizon-prepare/",
     "crates/horizon-release-sign/",
-    "crates/horizon-telemetry/",
+    "crates/horizon-system/",
     "crates/horizon-theme/",
     # Its icon, its menu entries and its AppImage are compiled or packaged into a release
     # (launcher/build.rs, src/desktop.rs, packaging/linux/appimage.sh).
@@ -474,8 +475,19 @@ def gather(kind, head, releases=None):
 def merged_between(kind, base, head):
     """The pull requests merged into main between base and head, with their player-facing paths ("paths")."""
     exporter_paths = exporters()
+    candidates = merged_pull_requests(base, head)
+    if not candidates:
+        return []
+    # Merge subjects survive imports and PR numbers are repository-local. Enumerate this
+    # repository's closed PRs without a history cap, then require the actual merge SHA.
+    # A missing PR here is imported history, not a failed metadata request to suppress.
+    pages = gh_json("api", f"repos/{REPO}/pulls?state=closed&per_page=100", "--paginate", "--slurp")
+    owned = {(entry["number"], entry["merge_commit_sha"]) for page in pages for entry in page
+             if entry["merged_at"]}
     prs = []
-    for number, commit in merged_pull_requests(base, head):
+    for number, commit in candidates:
+        if (number, commit) not in owned:
+            continue
         pr = pull_request(number)
         pr["paths"] = [path for path in changed_paths(commit) if player_facing(path, kind, exporter_paths)]
         prs.append(pr)
@@ -492,18 +504,32 @@ def passed_on(workflow, sha):
 
 def green_main_head(parity=False):
     """The newest commit on main whose checks passed: what an automatic release builds. With parity (game
-    releases), the newest commit parity-main passed on, if its checks passed too: parity-main runs on batches of
-    merges, so the commits a run skipped are covered by the next one, and a superseded run counts for nothing."""
-    workflow = "parity-main" if parity else "checks"
-    # 50, not 10: every merge cancels the parity-main run before it, so a busy hour of merges pushes the last
-    # finished run out of a short window and no release goes out (2026-11-01: 14 h without a Nightly).
-    runs = gh_json("run", "list", "--repo", REPO, "--workflow", workflow, "--branch", "main", "--event", "push",
+    releases), the newest commit parity-main passed on whose checks passed too: parity-main runs on batches of
+    merges, so the commits a run skipped are covered by the next one, and a superseded run counts for nothing. A
+    later batch that failed holds only the merges after that commit, which the green one doesn't contain."""
+    if REPO == "arismoko/horizon":
+        # The fork replaces checks/parity-main with dyna-checks. Never query disabled
+        # upstream workflows, and never turn an untested main head into a release base.
+        runs = gh_json("run", "list", "--repo", REPO, "--workflow", "dyna-checks", "--branch", "main",
+                       "--event", "push", "--status", "success", "--limit", "50", "--json", "headSha,status,conclusion")
+        return next((entry["headSha"] for entry in runs
+                     if entry["status"] == "completed" and entry["conclusion"] == "success"), None)
+    if parity:
+        # Only the successful runs: while merges land, one run at a time finishes (the pending one is replaced at
+        # every push), and a later failed or timed-out batch must not starve the Nightly of the commit an earlier
+        # run passed (2026-11-02: no Nightly for 30 h while main had a green commit parity-main had passed).
+        runs = gh_json("run", "list", "--repo", REPO, "--workflow", "parity-main", "--branch", "main", "--event",
+                       "push", "--status", "success", "--limit", "20", "--json", "headSha,status,conclusion")
+        for entry in runs:
+            if entry["status"] == "completed" and entry["conclusion"] == "success" and passed_on("checks", entry["headSha"]):
+                return entry["headSha"]
+        return None
+    # 50, not 10: a busy hour of merges cancels many runs, which pushes the last finished one out of a short window.
+    runs = gh_json("run", "list", "--repo", REPO, "--workflow", "checks", "--branch", "main", "--event", "push",
                    "--limit", "50", "--json", "headSha,status,conclusion")
     for entry in runs:
         if entry["status"] == "completed" and entry["conclusion"] != "cancelled":
-            if entry["conclusion"] != "success":
-                return None
-            return entry["headSha"] if not parity or passed_on("checks", entry["headSha"]) else None
+            return entry["headSha"] if entry["conclusion"] == "success" else None
     return None
 
 

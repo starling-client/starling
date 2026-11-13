@@ -15,6 +15,9 @@ use crate::{
     items::ItemStack,
 };
 use std::{collections::HashMap, sync::Arc};
+#[path = "place/predicate.rs"]
+mod predicate;
+pub use predicate::can_craft_matching;
 
 /// `StackedContents<Holder<Item>>`: item counts in an iteration order.
 #[derive(Clone, Debug, Default)]
@@ -84,27 +87,32 @@ impl Stacked {
     pub fn can_craft(&self, ingredients: &[&Ingredient]) -> bool {
         self.clone().try_pick(ingredients, 1, None)
     }
-    /// `getResultUpperBound`.
-    fn upper_bound(&self, ingredients: &[&Ingredient]) -> i32 {
-        let mut min = i32::MAX;
-        'ingredients: for ing in ingredients {
-            let mut max = 0;
-            for (key, &count) in self.keys.iter().zip(&self.amounts) {
-                if count > max {
-                    if ing.items.contains(&**key) {
-                        max = count;
-                    }
-                    if max >= min {
-                        continue 'ingredients;
-                    }
-                }
+    fn pick(
+        &mut self,
+        ingredients: &[&Ingredient],
+        amount: i32,
+        all: bool,
+        output: Option<&mut Vec<Arc<str>>>,
+    ) -> i32 {
+        let keys = &self.keys;
+        let mut picker = Picker::new(&mut self.amounts, ingredients.len(), |key, ingredient| {
+            if ingredients[ingredient].items.contains(&*keys[key]) {
+                i32::MAX
+            } else {
+                0
             }
-            min = max;
-            if min == 0 {
-                break;
-            }
+        });
+        let mut selected = Vec::new();
+        let target = output.as_ref().map(|_| &mut selected);
+        let result = if all {
+            picker.try_pick_all(amount, target)
+        } else {
+            i32::from(picker.try_pick(amount, target))
+        };
+        if let Some(output) = output {
+            output.extend(selected.into_iter().map(|index| keys[index].clone()));
         }
-        min
+        result
     }
     /// `tryPick` (`canCraft(recipe, amount, output)`).
     pub fn try_pick(
@@ -113,7 +121,7 @@ impl Stacked {
         amount: i32,
         output: Option<&mut Vec<Arc<str>>>,
     ) -> bool {
-        Picker::new(self, ingredients).try_pick(amount, output)
+        self.pick(ingredients, amount, false, output) != 0
     }
     /// `tryPickAll` (`getBiggestCraftableStack`).
     pub fn try_pick_all(
@@ -122,173 +130,19 @@ impl Stacked {
         max_size: i32,
         output: Option<&mut Vec<Arc<str>>>,
     ) -> i32 {
-        Picker::new(self, ingredients).try_pick_all(max_size, output)
+        self.pick(ingredients, max_size, true, output)
     }
 }
 
-/// `StackedContents.RecipePicker`: augmenting paths over item-ingredient pairs.
-struct Picker<'a> {
-    stacked: &'a mut Stacked,
-    ingredients: Vec<&'a Ingredient>,
-    /// Indices into the stacked keys of the items any ingredient accepts.
-    items: Vec<usize>,
-    connection: Vec<bool>,
-    assigned: Vec<bool>,
-    satisfied: Vec<bool>,
-    visited_ingredient: Vec<bool>,
-    visited_item: Vec<bool>,
-    path: Vec<usize>,
-}
-
-impl<'a> Picker<'a> {
-    fn new(stacked: &'a mut Stacked, ingredients: &[&'a Ingredient]) -> Self {
-        // getUniqueAvailableIngredientItems
-        let items: Vec<usize> = (0..stacked.keys.len())
-            .filter(|&i| {
-                stacked.amounts[i] > 0
-                    && ingredients
-                        .iter()
-                        .any(|g| g.items.contains(&*stacked.keys[i]))
-            })
-            .collect();
-        let (ni, nt) = (ingredients.len(), items.len());
-        let mut connection = vec![false; ni * nt];
-        for (g, ing) in ingredients.iter().enumerate() {
-            for (t, &key) in items.iter().enumerate() {
-                if ing.items.contains(&*stacked.keys[key]) {
-                    connection[t * ni + g] = true;
-                }
-            }
-        }
-        Self {
-            stacked,
-            ingredients: ingredients.to_vec(),
-            items,
-            connection,
-            assigned: vec![false; ni * nt],
-            satisfied: vec![false; ni],
-            visited_ingredient: vec![false; ni],
-            visited_item: vec![false; nt],
-            path: Vec::new(),
-        }
-    }
-    fn at(&self, item: usize, ingredient: usize) -> usize {
-        item * self.ingredients.len() + ingredient
-    }
-    fn clear_visited(&mut self) {
-        self.visited_ingredient.fill(false);
-        self.visited_item.fill(false);
-    }
-    fn try_pick(&mut self, capacity: i32, mut output: Option<&mut Vec<Arc<str>>>) -> bool {
-        if capacity <= 0 {
-            return true;
-        }
-        let mut satisfied_count = 0;
-        loop {
-            let Some(path) = self.try_assigning_new_item(capacity) else {
-                let valid = satisfied_count == self.ingredients.len();
-                let has_output = valid && output.is_some();
-                self.clear_visited();
-                self.satisfied.fill(false);
-                for g in 0..self.ingredients.len() {
-                    for t in 0..self.items.len() {
-                        let at = self.at(t, g);
-                        if self.assigned[at] {
-                            self.assigned[at] = false;
-                            let key = self.items[t];
-                            self.stacked.amounts[key] += capacity;
-                            if has_output && let Some(out) = output.as_deref_mut() {
-                                out.push(self.stacked.keys[key].clone());
-                            }
-                            break;
-                        }
-                    }
-                }
-                return valid;
-            };
-            let key = self.items[path[0]];
-            self.stacked.amounts[key] -= capacity;
-            self.satisfied[path[path.len() - 1]] = true;
-            satisfied_count += 1;
-            for i in 0..path.len() - 1 {
-                if i & 1 == 0 {
-                    let at = self.at(path[i], path[i + 1]);
-                    self.assigned[at] = true;
-                } else {
-                    let at = self.at(path[i + 1], path[i]);
-                    self.assigned[at] = false;
-                }
-            }
-        }
-    }
-    fn try_assigning_new_item(&mut self, capacity: i32) -> Option<Vec<usize>> {
-        self.clear_visited();
-        for t in 0..self.items.len() {
-            if self.stacked.amounts[self.items[t]] >= capacity
-                && let Some(path) = self.find_path(t)
-            {
-                return Some(path);
-            }
-        }
-        None
-    }
-    fn find_path(&mut self, start: usize) -> Option<Vec<usize>> {
-        self.path.clear();
-        self.visited_item[start] = true;
-        self.path.push(start);
-        while !self.path.is_empty() {
-            let len = self.path.len();
-            if (len - 1) & 1 == 0 {
-                let item = self.path[len - 1];
-                for g in 0..self.ingredients.len() {
-                    let at = self.at(item, g);
-                    if !self.visited_ingredient[g] && self.connection[at] && !self.assigned[at] {
-                        self.visited_ingredient[g] = true;
-                        self.path.push(g);
-                        break;
-                    }
-                }
-            } else {
-                let ingredient = self.path[len - 1];
-                if !self.satisfied[ingredient] {
-                    return Some(self.path.clone());
-                }
-                for t in 0..self.items.len() {
-                    if !self.visited_item[t] && self.assigned[self.at(t, ingredient)] {
-                        self.visited_item[t] = true;
-                        self.path.push(t);
-                        break;
-                    }
-                }
-            }
-            if self.path.len() == len {
-                self.path.pop();
-            }
-        }
-        None
-    }
-    fn try_pick_all(&mut self, max_size: i32, output: Option<&mut Vec<Arc<str>>>) -> i32 {
-        let mut min = 0i32;
-        // Java int arithmetic: an empty ingredient list overflows as vanilla does.
-        let mut max = max_size
-            .min(self.stacked.upper_bound(&self.ingredients))
-            .wrapping_add(1);
-        loop {
-            let mid = min.wrapping_add(max) / 2;
-            if self.try_pick(mid, None) {
-                if max.wrapping_sub(min) <= 1 {
-                    if mid > 0 {
-                        self.try_pick(mid, output);
-                    }
-                    return mid;
-                }
-                min = mid;
-            } else {
-                max = mid;
-            }
-        }
-    }
-}
+#[path = "place/picker.rs"]
+pub(super) mod picker;
+use picker::Picker;
+#[path = "place/custom.rs"]
+mod custom;
+#[path = "place/custom_access.rs"]
+mod custom_access;
+#[path = "place/custom_plan.rs"]
+pub mod custom_plan;
 
 /// `RecipeBookMenu.PostPlaceAction`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,6 +150,14 @@ pub enum PostPlace {
     Nothing,
     /// The client shows the recipe as a ghost (`ClientboundPlaceGhostRecipePacket`).
     Ghost,
+}
+
+/// Why a viewer transfer could not move a complete set of ingredients.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferError {
+    Missing,
+    NoRoom,
+    Unavailable,
 }
 
 /// The menu slots a placement works on.
@@ -328,6 +190,13 @@ impl Menu {
                 inputs: vec![0],
                 clear: vec![0, 2],
             }),
+            // A mod menu type's crafting grid places as a crafting table's.
+            Kind::Mod(t) => t.crafting.map(|c| Grid {
+                width: c.size,
+                height: c.size,
+                inputs: c.grid_slots().collect(),
+                clear: c.grid_slots().collect(),
+            }),
             _ => None,
         }
     }
@@ -337,6 +206,10 @@ impl Menu {
     pub fn stacked_contents(&self, env: &Env) -> Stacked {
         let mut stacked = Stacked::default();
         for stack in self.containers[PLAYER][..36].iter().flatten() {
+            stacked.account_simple(stack, Self::max_stack(env, stack));
+        }
+        // The mods' extra sources, after the inventory.
+        for stack in self.sources.iter().flatten().flatten() {
             stacked.account_simple(stack, Self::max_stack(env, stack));
         }
         match self.kind {
@@ -384,7 +257,8 @@ impl Menu {
         }
         let ingredients: Vec<&Ingredient> = placement.ingredients.iter().collect();
         let post = if stacked.try_pick(&ingredients, 1, None) {
-            self.place(env, id, &grid, &placement, &mut stacked, use_max);
+            let matches = self.recipe_in_grid(env, id);
+            self.place(env, &grid, &placement, &mut stacked, use_max, matches);
             PostPlace::Nothing
         } else {
             self.clear_grid(env, &grid);
@@ -393,6 +267,58 @@ impl Menu {
         // AbstractCraftingMenu.finishPlacingRecipe: the result follows the grid.
         self.recompute(env);
         post
+    }
+
+    /// Move one set of ingredients from the player's real inventory and grid,
+    /// or with `all` as many as they allow (`useMaxItems`: the largest count
+    /// every grid slot can take, alternatives shared out by
+    /// `StackedItemContents`, capped at the ingredients' stack size).
+    /// The viewer leaves both alone on failure, including in creative mode.
+    pub fn transfer_recipe(&mut self, env: &Env, id: &str, all: bool) -> Result<(), TransferError> {
+        if !(matches!(self.kind, Kind::Inventory | Kind::Crafting) || self.mod_crafting().is_some())
+            || self.carried.is_some()
+        {
+            return Err(TransferError::Unavailable);
+        }
+        let grid = self.place_grid().ok_or(TransferError::Unavailable)?;
+        let placement = env
+            .recipes
+            .placement(id)
+            .ok_or(TransferError::Unavailable)?;
+        if placement.impossible()
+            || placement.ingredients.len() > grid.inputs.len()
+            || placement
+                .shaped
+                .is_some_and(|(w, h)| w > grid.width || h > grid.height)
+        {
+            return Err(TransferError::Unavailable);
+        }
+        let mut stacked = self.stacked_contents(env);
+        let ingredients: Vec<_> = placement.ingredients.iter().collect();
+        if !stacked.try_pick(&ingredients, 1, None) {
+            return Err(TransferError::Missing);
+        }
+        // The vanilla placement can return leftover grid items as drops.
+        // A viewer transfer must keep the original slots if it cannot move
+        // every input without dropping anything.
+        let previous = self.containers.clone();
+        let sources = self.sources.clone();
+        let (drops, dropped) = (self.drops.len(), self.dropped.len());
+        self.place(env, &grid, &placement, &mut stacked, all, false);
+        let no_room = self.dropped.len() != dropped;
+        if no_room || !self.recipe_in_grid(env, id) {
+            self.containers = previous;
+            self.sources = sources;
+            self.drops.truncate(drops);
+            self.dropped.truncate(dropped);
+            return Err(if no_room {
+                TransferError::NoRoom
+            } else {
+                TransferError::Unavailable
+            });
+        }
+        self.recompute(env);
+        Ok(())
     }
 
     /// `recipeMatches`: the recipe already fills the grid.
@@ -404,27 +330,29 @@ impl Menu {
                     env.recipes.cooking.iter().find(|c| c.id == name),
                     self.containers[MAIN][0].as_ref(),
                 ) {
-                    (Some(c), Some(input)) => c.ingredient.test(input),
+                    (Some(c), Some(input)) => c.ingredient.test_in(env.loop_context, input),
                     _ => false,
                 }
             }
-            _ => env
-                .recipes
-                .recipe_matches(id, &self.containers[GRID], self.grid_size),
+            _ => env.recipes.recipe_matches(
+                env.loop_context,
+                id,
+                &self.containers[GRID],
+                self.grid_size,
+            ),
         }
     }
 
     fn place(
         &mut self,
         env: &Env,
-        id: &str,
         grid: &Grid,
         placement: &Placement,
         stacked: &mut Stacked,
         use_max: bool,
+        matches: bool,
     ) {
         let ingredients: Vec<&Ingredient> = placement.ingredients.iter().collect();
-        let matches = self.recipe_in_grid(env, id);
         let biggest = stacked.try_pick_all(&ingredients, i32::MAX, None);
         if matches {
             for &s in &grid.inputs {
@@ -437,18 +365,8 @@ impl Menu {
             }
         }
         // calculateAmountToCraft
-        let amount = if use_max {
-            biggest
-        } else if matches {
-            let smallest = grid
-                .inputs
-                .iter()
-                .filter_map(|&s| self.slot(s))
-                .map(|s| s.count as i32)
-                .min();
-            smallest.map_or(i32::MAX, |n| n + 1)
-        } else {
-            1
+        let Some(amount) = self.recipe_place_amount(&grid.inputs, use_max, matches, biggest) else {
+            return;
         };
         let mut used = Vec::new();
         if !stacked.try_pick(&ingredients, amount, Some(&mut used)) {
@@ -486,21 +404,49 @@ impl Menu {
     }
 
     /// `moveItemToGrid`: the rest still to move, or -1 when nothing matches.
+    /// The inventory first, then the mods' extra sources in order.
     fn move_item_to_grid(&mut self, target: usize, item: &str, count: i32) -> i32 {
         let existing = self.slot(target).cloned();
-        let found = (0..36).find(|&i| {
-            self.containers[PLAYER][i].as_ref().is_some_and(|s| {
+        let fits = |s: &Option<ItemStack>| {
+            s.as_ref().is_some_and(|s| {
                 &*s.item == item
                     && usable_for_crafting(s)
                     && existing
                         .as_ref()
                         .is_none_or(|e| e.same_item_same_components(s))
             })
-        });
-        let Some(i) = found else {
+        };
+        let found = match (0..36).find(|&i| fits(&self.containers[PLAYER][i])) {
+            Some(i) => Some((None, i)),
+            None => self
+                .sources
+                .iter()
+                .enumerate()
+                .find_map(|(k, source)| source.iter().position(fits).map(|i| (Some(k), i))),
+        };
+        let Some((source, i)) = found else {
             return -1;
         };
-        let cell = &mut self.containers[PLAYER][i];
+        let requested = count;
+        let slot = self.slots[target];
+        let count = if slot.container == super::MAIN {
+            match self.container_limits.get(slot.index).copied().flatten() {
+                Some(limit) => {
+                    let room = limit.saturating_sub(existing.as_ref().map_or(0, |s| s.count));
+                    if room == 0 {
+                        return -1;
+                    }
+                    count.min(room as i32)
+                }
+                None => count,
+            }
+        } else {
+            count
+        };
+        let cell = match source {
+            None => &mut self.containers[PLAYER][i],
+            Some(k) => &mut self.sources[k][i],
+        };
         let taken = match cell.as_mut() {
             Some(have) if (count as u32) < have.count => split(have, count as u32),
             _ => cell.take().expect("found"),
@@ -512,7 +458,7 @@ impl Menu {
             None => self.containers[slot.container][slot.index] = Some(taken),
             Some(have) => have.count += taken.count,
         }
-        count - taken_count
+        requested - taken_count
     }
 
     /// `clearGrid`: the slots to clear go back to the inventory (or drop),
@@ -635,6 +581,9 @@ impl Menu {
 }
 
 #[cfg(test)]
+mod transfer_all_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -693,7 +642,7 @@ mod tests {
     #[test]
     fn damaged_or_named_stacks_are_not_counted() {
         let mut named = ItemStack::new("minecraft:stick", 4);
-        named.data_mut().custom_name = Some(horizon_world::nbt::Tag::String("x".into()));
+        named.data_mut().custom_name = Some(horizon_core::nbt::Tag::String("x".into()));
         let mut damaged = ItemStack::new("minecraft:iron_sword", 1);
         damaged.damage = 3;
         let mut s = Stacked::default();
@@ -703,5 +652,23 @@ mod tests {
         assert_eq!(s.keys().len(), 1);
         assert!(s.can_craft(&[&ing(&["minecraft:stick"]), &ing(&["minecraft:stick"])]));
         assert!(!s.can_craft(&[&ing(&["minecraft:stick"]); 3]));
+    }
+}
+
+#[cfg(test)]
+mod container_limit_tests {
+    #[test]
+    fn recipe_placement_stops_at_the_container_override() {
+        let mut menu = super::Menu::new(super::Kind::Furnace("smelting"));
+        menu.set_container_limits(vec![Some(10); 3]);
+        menu.containers[super::PLAYER][0] =
+            Some(crate::items::ItemStack::new("minecraft:stick", 20));
+        assert_eq!(menu.move_item_to_grid(0, "minecraft:stick", 20), 10);
+        assert_eq!(menu.slot(0).unwrap().count, 10);
+        assert_eq!(menu.move_item_to_grid(0, "minecraft:stick", 10), -1);
+        assert_eq!(
+            menu.containers[super::PLAYER][0].as_ref().unwrap().count,
+            10
+        );
     }
 }

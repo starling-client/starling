@@ -3,10 +3,12 @@ use crate::{
     chunk::{Chunk, LevelShape},
     streaming::ChunkGenerator,
 };
-use horizon_world::{
-    nbt::Tag,
-    registry::{BlockRegistry, BlockStateId},
-    worldgen::feature::{BasicFeature, FeatureBlocks, FeatureWorld},
+use {
+    horizon_core::nbt::Tag,
+    horizon_world::{
+        registry::{BlockRegistry, BlockStateId},
+        worldgen::feature::{BasicFeature, FeatureBlocks, FeatureWorld},
+    },
 };
 
 /// The layers of a flat generator, bottom up from the world's minimum Y.
@@ -68,8 +70,9 @@ impl FeatureWorld for ChunkWorld<'_> {
 impl FlatTerrain {
     /// The overworld generator of `world_gen_settings` (`data.dimensions`), if it
     /// is flat. Its layers, as FlatLevelSource places them, and of the features
-    /// its settings decorate the world with, `void_start_platform`; the other
-    /// features and the lakes are not placed yet.
+    /// its settings decorate the world with, `void_start_platform`. A world that
+    /// places other features or lakes runs on the pipeline instead
+    /// ([`Self::pipeline_settings`]).
     pub fn from_settings(
         settings: &Tag,
         registry: &BlockRegistry,
@@ -150,12 +153,13 @@ impl FlatTerrain {
             void_platform,
         })
     }
-    /// The settings of a superflat overworld that lets structure sets generate
-    /// (`FlatLevelSource.createState`): its layers, biome and `structure_overrides`
-    /// (no key means every set; `[]` none). `None` for anything else, a world with no
-    /// structure set to generate, the Void preset's biome (its platform is a feature
-    /// this generator places) or one that is not superflat.
-    pub fn structure_settings(
+    /// The settings of a superflat overworld that runs on the structure and feature
+    /// pipeline (`FlatLevelSource`): one that lets structure sets generate
+    /// (`createState`: no `structure_overrides` key means every set, `[]` none) or
+    /// that decorates (`features` or `lakes`, `adjustGenerationSettings`). `None` for a
+    /// world with neither, the Void preset's biome (its platform is a feature this
+    /// generator places) or one that is not superflat.
+    pub fn pipeline_settings(
         settings: &Tag,
     ) -> Option<horizon_world::worldgen::generator::FlatSettings> {
         let generator = settings
@@ -187,13 +191,17 @@ impl FlatTerrain {
             Some(Tag::String(set)) => Some(vec![set.to_string_lossy()]),
             _ => None,
         };
-        if structure_overrides.as_ref().is_some_and(Vec::is_empty) {
+        let flag = |key| crate::save::number(s.get(key)).is_some_and(|v| v != 0);
+        let decorates = flag("features") || flag("lakes");
+        if structure_overrides.as_ref().is_some_and(Vec::is_empty) && !decorates {
             return None;
         }
         Some(horizon_world::worldgen::generator::FlatSettings {
             layers,
             biome,
             structure_overrides,
+            features: flag("features"),
+            lakes: flag("lakes"),
         })
     }
     /// FlatLevelSource.getSpawnHeight: the top of the layers.
@@ -203,6 +211,23 @@ impl FlatTerrain {
 }
 /// DimensionType.Y_SIZE: the most layers FlatLevelGeneratorSettings takes.
 const Y_SIZE: i64 = 4064;
+
+/// Check layer block identifiers and heights before `from_settings` expands them.
+pub(crate) fn valid_layer_heights(settings: &Tag) -> bool {
+    let Some(Tag::List(layers)) = settings.get("layers") else {
+        return false;
+    };
+    layers
+        .iter()
+        .try_fold(0i64, |total, layer| {
+            horizon_core::identifier::Identifier::parse(&crate::save::text(layer.get("block"))?)
+                .ok()?;
+            let height = crate::save::number(layer.get("height"))?;
+            let total = total.checked_add(height)?;
+            (height >= 0 && total <= Y_SIZE).then_some(total)
+        })
+        .is_some()
+}
 
 /// FlatLevelGeneratorSettings.CODEC reading a dedicated server's
 /// `generator-settings` (DedicatedServerProperties.WorldDimensionData for
@@ -365,6 +390,27 @@ mod tests {
     use crate::save::{number, text};
     use crate::server::json::{self, Json};
 
+    #[test]
+    fn preset_editor_flat_layers_allow_void_but_reject_malformed_blocks_and_heights() {
+        let valid = |layers| {
+            valid_layer_heights(&crate::save::json_tag(
+                &serde_json::json!({"layers": layers}),
+            ))
+        };
+        assert!(valid(serde_json::json!([])));
+        assert!(valid(
+            serde_json::json!([{"block":"minecraft:air","height":0}])
+        ));
+        for layers in [
+            serde_json::json!([{"height":1}]),
+            serde_json::json!([{"block":"bad:block:id","height":1}]),
+            serde_json::json!([{"block":"minecraft:stone","height":-1}]),
+            serde_json::json!([{"block":"minecraft:stone","height":4065}]),
+        ] {
+            assert!(!valid(layers));
+        }
+    }
+
     fn read(text: &str) -> (Option<Tag>, Vec<String>) {
         let json: Json = json::parse(text, false).unwrap();
         settings_from_json(
@@ -414,7 +460,10 @@ mod tests {
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
         let registry = assets.registry;
-        let biomes = crate::biome::Biomes::load(&root).unwrap();
+        let biomes = crate::biome::Biomes::load(
+            &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+        )
+        .unwrap();
         let terrain = |biome, features, layers: &[(&str, i32)]| {
             FlatTerrain::from_settings(
                 &flat_world(biome, features, layers),
@@ -556,10 +605,10 @@ mod tests {
             ]))
         };
         // No key: every set. A list: those. An empty list: none. The void and a noise world: none.
-        let all = FlatTerrain::structure_settings(&flat(vec![], "minecraft:plains")).unwrap();
+        let all = FlatTerrain::pipeline_settings(&flat(vec![], "minecraft:plains")).unwrap();
         assert_eq!(all.structure_overrides, None);
         assert_eq!(all.layers, [("minecraft:stone".to_owned(), 3)]);
-        let some = FlatTerrain::structure_settings(&flat(
+        let some = FlatTerrain::pipeline_settings(&flat(
             vec![(
                 "structure_overrides",
                 Tag::List(vec![Tag::String("minecraft:villages".into())]),
@@ -573,15 +622,31 @@ mod tests {
         );
         assert_eq!(some.biome, "minecraft:desert");
         assert!(
-            FlatTerrain::structure_settings(&flat(
+            FlatTerrain::pipeline_settings(&flat(
                 vec![("structure_overrides", Tag::List(vec![]))],
                 "minecraft:plains"
             ))
             .is_none()
         );
-        assert!(FlatTerrain::structure_settings(&flat(vec![], "minecraft:the_void")).is_none());
+        // No structure set, but features or lakes to place: the pipeline, with no set.
+        for key in ["features", "lakes"] {
+            let decorated = FlatTerrain::pipeline_settings(&flat(
+                vec![
+                    ("structure_overrides", Tag::List(vec![])),
+                    (key, Tag::Byte(1)),
+                ],
+                "minecraft:plains",
+            ))
+            .unwrap();
+            assert_eq!(decorated.structure_overrides, Some(vec![]), "{key}");
+            assert_eq!(
+                (decorated.features, decorated.lakes),
+                (key == "features", key == "lakes")
+            );
+        }
+        assert!(FlatTerrain::pipeline_settings(&flat(vec![], "minecraft:the_void")).is_none());
         assert!(
-            FlatTerrain::structure_settings(&world(Tag::compound([(
+            FlatTerrain::pipeline_settings(&world(Tag::compound([(
                 "type",
                 Tag::String("minecraft:noise".into())
             )])))

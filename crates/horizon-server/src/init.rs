@@ -2,11 +2,15 @@
 //! port and who may join, imports an existing `server.properties`, finds the game, and writes `server.toml`.
 //! Every question has a flag, so it also runs unattended (Docker, scripts).
 
-use crate::{config, config::Config, engine};
-use horizon_server_files::{
+use crate::engine;
+use horizon_platform::server_files::{
     eula,
     java_properties::now_millis,
     user_lists::{OpEntry, OpList, WhiteEntry, WhiteList},
+};
+use horizon_server_launch::{
+    self as launch,
+    config::{self, Config},
 };
 use std::{
     io::{BufRead, IsTerminal, Write},
@@ -202,13 +206,13 @@ pub fn run(dir: &Path, answers: Answers) -> Result<(), String> {
     add_players(dir, &players, op.as_deref(), cfg.server.online_mode)?;
 
     // 5. The game and its files.
-    match engine::program(&cfg, dir) {
+    match launch::program(&cfg, dir) {
         Ok(program) => {
             println!("Game: {}", program.display());
             if let Err(e) = engine::check_starts(&program) {
                 println!("Warning: {e}");
             }
-            match engine::resources(&cfg, dir, Some(&program)) {
+            match launch::resources(&cfg, dir, Some(&program)) {
                 Ok(resources) => {
                     println!("Game files: {}", resources.display());
                     if let Err(e) = engine::check_prepared(&resources) {

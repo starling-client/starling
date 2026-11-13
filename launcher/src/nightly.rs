@@ -37,9 +37,21 @@ pub fn date_of(version: &str) -> Option<&str> {
     is_date(date).then_some(date)
 }
 
+/// A full 40-character commit as a player reads it, `b1ff51d9e…`; anything else as it is.
+pub fn short_commit(version: &str) -> String {
+    if version.len() == 40 && version.bytes().all(|b| b.is_ascii_hexdigit()) {
+        format!("{}…", &version[..9])
+    } else {
+        version.to_owned()
+    }
+}
+
 /// A Nightly's version as a player reads it: `Nightly · 4baa571` for `nightly-2026-10-29-4baa571`,
 /// or None for anything that is not one. The date is already on the row beside it.
 pub fn label(version: &str) -> Option<String> {
+    if let Some(label) = crate::developer_install::label(version) {
+        return Some(label);
+    }
     date_of(version)?;
     let commit = version.strip_prefix("nightly-")?.get(11..);
     Some(match commit {
@@ -74,22 +86,34 @@ pub fn after_update(version: &str) {
         .into_iter()
         .filter_map(|i| i.version)
         .collect();
-    for old in stale(&backend::installed(), version, selected.as_deref(), &pinned) {
-        let _ = backend::remove(&old);
+    for old in stale(
+        &backend::installed(),
+        version,
+        selected.as_deref(),
+        &pinned,
+        backend::auto_installed,
+    ) {
+        // A removal stops at the first running program, with half the version already gone.
+        if !backend::in_use(&old) {
+            let _ = backend::remove(&old);
+        }
     }
 }
 
-/// The installed Nightlies to remove once `current` is installed: every other one that is neither
-/// selected nor pinned by an instance.
+/// The automatically installed Nightlies to remove once `current` is installed: every other one
+/// that is neither selected nor pinned by an instance. Manual and legacy installs stay.
 fn stale(
     installed: &[String],
     current: &str,
     selected: Option<&str>,
     pinned: &[String],
+    auto: impl Fn(&str) -> bool,
 ) -> Vec<String> {
     installed
         .iter()
-        .filter(|v| date_of(v).is_some() && *v != current && Some(v.as_str()) != selected)
+        .filter(|v| {
+            date_of(v).is_some() && auto(v) && *v != current && Some(v.as_str()) != selected
+        })
         .filter(|v| !pinned.contains(v))
         .cloned()
         .collect()
@@ -105,6 +129,7 @@ mod tests {
             name: name.into(),
             body: String::new(),
             date: date.into(),
+            time: String::new(),
             asset: Some(("https://example/horizon.zip".into(), 1)),
             prerelease: true,
             nightly: None,
@@ -121,6 +146,13 @@ mod tests {
         assert_eq!(date_of("v0.2.95"), None);
         assert_eq!(date_of("nightly"), None);
         assert!(horizon_release_sign::is_nightly(&version_of(&r)));
+    }
+
+    #[test]
+    fn a_full_commit_reads_as_nine_characters() {
+        let full = "b1ff51d9e0123456789abcdef0123456789abcde";
+        assert_eq!(short_commit(full), "b1ff51d9e…");
+        assert_eq!(short_commit("v0.2.97"), "v0.2.97");
     }
 
     #[test]
@@ -149,9 +181,22 @@ mod tests {
                 &installed,
                 "nightly-2026-10-29-aaaaaaa",
                 Some("nightly-2026-10-28-ccccccc"),
-                &pinned
+                &pinned,
+                |tag| tag != "nightly-2026-10-28-ccccccc"
             ),
             ["nightly-2026-10-28-bbbbbbb"]
+        );
+    }
+
+    #[test]
+    fn cli_update_keeps_unselected_manual_nightly() {
+        let current = "nightly-2026-11-05-aaaaaaa";
+        let manual = "nightly-2026-11-03-bbbbbbb";
+        let previous_auto = "nightly-2026-11-02-ccccccc";
+        let installed = [current, manual, previous_auto].map(String::from);
+        assert_eq!(
+            stale(&installed, current, None, &[], |tag| tag != manual),
+            [previous_auto]
         );
     }
 }

@@ -60,7 +60,7 @@ fn read_tag(root: &Path, name: &str, depth: u32) -> Vec<Arc<str>> {
 }
 
 impl Banners {
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &Path, defaults: &horizon_world::item_defaults::ItemDefaults) -> Self {
         let mut banners = Self::default();
         let mut files: Vec<_> = fs::read_dir(root.join("data/minecraft/banner_pattern"))
             .into_iter()
@@ -92,23 +92,21 @@ impl Banners {
             });
         }
         banners.no_item_required = read_tag(root, "no_item_required", 0);
-        if let Ok(raw) = horizon_world::item_defaults::read(root) {
-            for (item, c) in raw {
-                let id: Arc<str> = Arc::from(item.as_str());
-                if let Some(dye) = c["minecraft:dye"].as_str() {
-                    banners.dyes.insert(id.clone(), Arc::from(dye));
+        for (item, c) in defaults.entries() {
+            let id: Arc<str> = Arc::from(item.as_str());
+            if let Some(dye) = c["minecraft:dye"].as_str() {
+                banners.dyes.insert(id.clone(), Arc::from(dye));
+            }
+            match &c["minecraft:provides_banner_patterns"] {
+                Value::String(tag) if tag.starts_with('#') => {
+                    banners.provided.insert(id, read_tag(root, &tag[1..], 0));
                 }
-                match &c["minecraft:provides_banner_patterns"] {
-                    Value::String(tag) if tag.starts_with('#') => {
-                        banners.provided.insert(id, read_tag(root, &tag[1..], 0));
-                    }
-                    Value::String(single) => {
-                        banners
-                            .provided
-                            .insert(id, vec![Arc::from(single.as_str())]);
-                    }
-                    _ => {}
+                Value::String(single) => {
+                    banners
+                        .provided
+                        .insert(id, vec![Arc::from(single.as_str())]);
                 }
+                _ => {}
             }
         }
         banners
@@ -175,9 +173,13 @@ pub fn banner_color(item: &str) -> Option<&'static str> {
     let name = item.strip_prefix("minecraft:")?.strip_suffix("_banner")?;
     DYES.iter().map(|d| d.0).find(|d| *d == name)
 }
-/// `DyeColor.getTextureDiffuseColor` (RGB) by dye name.
+/// `DyeColor.getTextureDiffuseColor` (RGB) by dye name, as the resource
+/// packs draw it (`pack_palette`): banner layers, banner and shield items and the
+/// loom follow a pack's dye colours as the banner base does.
 pub fn dye_rgb(name: &str) -> u32 {
-    DYES.iter().find(|d| d.0 == name).map_or(0xFFFFFF, |d| d.1)
+    DYES.iter()
+        .position(|d| d.0 == name)
+        .map_or(0xFFFFFF, crate::pack_palette::diffuse)
 }
 /// The layers of a banner or shield stack.
 pub fn layers(stack: &ItemStack) -> &[BannerLayer] {
@@ -262,7 +264,7 @@ mod tests {
         );
         assert!(tooltip_layers(&banner).is_empty());
         banner.data_mut().custom_name =
-            Some(horizon_world::nbt::Tag::String("Captain's Standard".into()));
+            Some(horizon_core::nbt::Tag::String("Captain's Standard".into()));
         assert!(tooltip_layers(&banner).is_empty());
         banner.data_mut().ominous_banner = false;
         assert_eq!(tooltip_layers(&banner), layers(&banner));

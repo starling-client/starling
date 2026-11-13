@@ -139,8 +139,8 @@ WorldUpgrader.work	port	crates/horizon-world/src/datafix/files.rs::upgrade_world
 WorldUpgrader.upgradeLevels	inline	crates/horizon-world/src/datafix/files.rs::upgrade_world	per-dimension loop folded into upgrade_world
 LongJumpUtil.isClearTransition	port	crates/horizon-client/src/mobs/breeze.rs::clear_transition	boxed steps of nine tenths the smaller side from one point to the next must all be clear, for the breeze's long jump
 Cushion.isAnchorBuried	inline	crates/horizon-client/src/cushion.rs::can_place	the resting-slab test; can_place returns false when the slab is covered
-FishingHook.calculateOpenWater	port	crates/horizon-client/src/game/fishing.rs::Game::calculate_open_water	
-AbstractContainerMenu.getRedstoneSignalFromBlockEntity	port	crates/horizon-client/src/game/machines.rs::container_signal	block entity containers for the comparator; 0 when there is none
+FishingHook.calculateOpenWater	port	crates/horizon-client/src/game/items/fishing.rs::Game::calculate_open_water	
+AbstractContainerMenu.getRedstoneSignalFromBlockEntity	port	crates/horizon-client/src/game/blocks/machines/mod.rs::container_signal	block entity containers for the comparator; 0 when there is none
 CreativeModeTabs.validate	skip:data		bootstrap check of creative tab positions
 BundleContents.Mutable.removeOne	port	crates/horizon-items/src/bundle.rs::Contents::remove_one	selected stack or the first; nothing is selected afterwards
 LevelAccessor.neighborShapeChanged	port	crates/horizon-world/src/level/update.rs::Sim::neighbor_shape_changed	minor: unsure: updateLimit - 1 is applied by the callers (set_block_limit), not here; redstone.rs passes its limit straight through

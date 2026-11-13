@@ -7,7 +7,7 @@ use crate::{
     snbt::to_snbt,
     text::Text,
 };
-use horizon_world::nbt::{Compound, Tag};
+use horizon_core::nbt::{Compound, Tag};
 
 /// `CompoundTag.merge`: compounds merge recursively, anything else replaces.
 pub fn merge_compound(target: &mut Compound, source: &Compound) {
@@ -198,13 +198,13 @@ pub fn scaled_value(tag: &Tag, path: &NbtPath, scale: f64) -> Result<i32, Comman
 }
 /// The text `data get ... <scale>` prints for the scale (`%.2f`).
 pub fn scale_text(scale: f64) -> Text {
-    Text::literal(format!("{scale:.2}"))
+    Text::literal(crate::java_text::format_fixed(scale, 2))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_world::nbt::parse_snbt;
+    use horizon_core::nbt::parse_snbt;
 
     fn tag(s: &str) -> Tag {
         parse_snbt(s).unwrap().0
@@ -311,5 +311,6 @@ mod tests {
             "commands.data.get.multiple"
         );
         assert_eq!(scale_text(1.0).plain(), "1.00");
+        assert_eq!(scale_text(0.125).plain(), "0.13");
     }
 }

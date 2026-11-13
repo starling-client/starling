@@ -31,7 +31,9 @@ pub fn main() -> Result<()> {
     };
     let root = PathBuf::from(root);
     let assets = Assets::load(&root)?;
-    let render = assets.reload(&root)?;
+    let render = assets.reload(&horizon_assets::resource_source::ResourceRoot::directory(
+        root.to_path_buf(),
+    ))?;
     let mut scene = World::test_scene(&assets, &render, 1)?;
     let binding = collisions::load(&root, assets.registry)?;
     let resources = MotionResources::load(&root, &assets)?;
@@ -100,15 +102,33 @@ pub fn main() -> Result<()> {
         player.status.jump_boost = p["boost"].as_i64().map(|a| a as i32);
         player.auto_jump_enabled = p["enabled"].as_bool().unwrap();
         player.auto_jump_time = p["time"].as_i64().unwrap() as i32;
-        MotionWorld {
-            entities: &[],
-            player: &mut player,
-            scene: &mut scene,
-            assets: &assets,
-            collision_binding: &binding,
-            resources: &resources,
+        // canAutoJump, which is where the rider state is read: the movement world drives an
+        // unmounted player, so the case's flag goes to the predicate itself.
+        let ready = horizon_client::auto_jump::can_auto_jump(
+            player.auto_jump_enabled,
+            player.auto_jump_time,
+            player.ground.on_ground,
+            player.shift_key_down,
+            p["passenger"].as_bool().unwrap_or(false),
+            player.move_vector,
+            1.0,
+        );
+        if ready {
+            MotionWorld {
+                entities: &[],
+                player: &mut player,
+                scene: &mut scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+                health: &resources.health,
+                tag_items: None,
+                block_registries: None,
+                loop_context: crate::test_resources::server_loop_context(),
+                damage_hooks: &horizon_client::health::DamageHooks::NONE,
+            }
+            .update_auto_jump(fl(&c["xa"]), fl(&c["za"]))?;
         }
-        .update_auto_jump(fl(&c["xa"]), fl(&c["za"]))?;
         writeln!(out, "jump {}", player.auto_jump_time)?;
         for (x, y, z, state) in restore.into_iter().rev() {
             scene.set(x, y, z, state)?;

@@ -3,7 +3,7 @@
 use super::{Definition, Instance, Observer};
 use crate::{DATA_VERSION, compression::invalid};
 use serde_json::Value;
-use std::{collections::BTreeMap, convert::Infallible, io, sync::Arc};
+use std::{collections::BTreeMap, convert::Infallible, fmt, io, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AttributeId(usize);
@@ -17,17 +17,65 @@ impl AttributeId {
         self.0 as i32
     }
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RegisteredAttribute {
     pub name: String,
     pub definition: Definition,
     pub syncable: bool,
+    pub sentiment: super::Sentiment,
 }
-#[derive(Debug)]
+/// A mod's declared attribute type, as the game hands it to
+/// [`Catalog::with_attributes`]: the declaring mod's id (the sort key), the
+/// namespaced attribute id, its definition, sync flag and sentiment.
+#[derive(Clone, Debug)]
+pub struct AddedAttribute {
+    /// The declaring mod's id (`mymod`).
+    pub mod_id: String,
+    /// The attribute's namespaced id (`mymod:mana`).
+    pub id: String,
+    /// The attribute's definition: default and bounds.
+    pub definition: Definition,
+    /// Whether the attribute joins the sync set.
+    pub syncable: bool,
+    /// The tooltip sentiment of a rising or falling value.
+    pub sentiment: super::Sentiment,
+}
+#[derive(Clone, Debug)]
 pub struct Catalog {
     attributes: Vec<RegisteredAttribute>,
     ids: BTreeMap<String, AttributeId>,
     defaults: BTreeMap<String, Arc<[Option<f64>]>>,
+}
+/// A row `Catalog::with_entity_row` or `Catalog::with_entity_additions`
+/// refused: an override names an attribute the catalog does not know, or the
+/// template (or, for additions, the entity type itself) has no row of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EntityRowError {
+    UnknownAttribute { entity: String, attribute: String },
+    UnknownTemplate { entity: String, template: String },
+    UnknownEntity { entity: String },
+}
+impl fmt::Display for EntityRowError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownAttribute { entity, attribute } => {
+                write!(f, "entity {entity} has no attribute {attribute}")
+            }
+            Self::UnknownTemplate { entity, template } => {
+                write!(
+                    f,
+                    "entity {entity} copies {template}, which has no attribute row"
+                )
+            }
+            Self::UnknownEntity { entity } => {
+                write!(
+                    f,
+                    "entity {entity} has no attribute row to add to (a mod's type needs a declared set first)"
+                )
+            }
+        }
+    }
 }
 fn string(v: &Value) -> io::Result<&str> {
     v.as_str()
@@ -80,6 +128,9 @@ impl Catalog {
                 syncable: a["syncable"]
                     .as_bool()
                     .ok_or_else(|| invalid("missing attribute sync flag"))?,
+                // The vanilla export carries no sentiment: vanilla's own
+                // colors stay where the tooltip reads them.
+                sentiment: super::Sentiment::default(),
             });
         }
         let mut defaults = BTreeMap::new();
@@ -108,6 +159,144 @@ impl Catalog {
     /// The entity type's supplier base of an attribute, if the type has it.
     pub fn default_base(&self, entity: &str, id: AttributeId) -> Option<f64> {
         self.defaults.get(entity).and_then(|b| b[id.0])
+    }
+    /// The entity type's whole supplier row, attribute name to base — the
+    /// shape of an `entity-types.json` row. None if the type has no row.
+    pub fn entity_row(&self, entity: &str) -> Option<std::collections::HashMap<String, f64>> {
+        let bases = self.defaults.get(entity)?;
+        Some(
+            self.attributes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, a)| bases[i].map(|base| (a.name.clone(), base)))
+                .collect(),
+        )
+    }
+    /// A copy of the catalog with `entity`'s supplier built from its
+    /// `template`'s row and `overrides`: a mod entity type's declared
+    /// attribute set (`EntityAttributeCreationEvent`), as its content row is
+    /// the template's values with its own on top. An override id the catalog
+    /// does not know, or a template without a row, refuses, naming the
+    /// entity.
+    pub fn with_entity_row(
+        &self,
+        entity: &str,
+        template: &str,
+        overrides: &[(String, f64)],
+    ) -> Result<Catalog, EntityRowError> {
+        let start = self
+            .defaults
+            .get(template)
+            .ok_or_else(|| EntityRowError::UnknownTemplate {
+                entity: entity.to_owned(),
+                template: template.to_owned(),
+            })?;
+        self.with_bases(
+            entity,
+            start,
+            overrides.iter().map(|(name, base)| (name, Some(*base))),
+        )
+    }
+    /// A copy of the catalog with attributes added to `entity`'s own supplier
+    /// (NeoForge's `EntityAttributeModificationEvent`, whose `add` puts an
+    /// attribute on an existing type's `AttributeSupplier.Builder`): each
+    /// named attribute takes its base, or the attribute's own default with
+    /// none (the one-argument `add`), whether the row had it or not. The rest
+    /// of the row stays. An attribute the catalog does not know, or an entity
+    /// type without a row, refuses, naming the entity.
+    pub fn with_entity_additions(
+        &self,
+        entity: &str,
+        additions: &[(String, Option<f64>)],
+    ) -> Result<Catalog, EntityRowError> {
+        let start = self
+            .defaults
+            .get(entity)
+            .ok_or_else(|| EntityRowError::UnknownEntity {
+                entity: entity.to_owned(),
+            })?;
+        self.with_bases(
+            entity,
+            start,
+            additions.iter().map(|(name, base)| (name, *base)),
+        )
+    }
+    /// A copy of the catalog with new attribute types appended
+    /// (`Registrar::declare_attribute`, #812): after every attribute the
+    /// export listed, in order sorted by declaring mod id, then attribute id
+    /// — the network order every side running the same mods builds, since
+    /// [`AttributeId::registry_id`](Self::attribute)'s number is the index.
+    /// Vanilla ids never shift. Every entity's default row grows to the new
+    /// width, so a row resolved later (#845's `with_entity_row`, #846's
+    /// additions) may name an attribute a mod added. A duplicate id — one
+    /// the export already listed, or one two mods declared — refuses,
+    /// naming the id.
+    pub fn with_attributes(&self, added: &[AddedAttribute]) -> io::Result<Catalog> {
+        let mut attributes = self.attributes.clone();
+        let mut ids = self.ids.clone();
+        let from = attributes.len();
+        let mut sorted: Vec<&AddedAttribute> = added.iter().collect();
+        sorted.sort_by(|a, b| {
+            (a.mod_id.as_str(), a.id.as_str()).cmp(&(b.mod_id.as_str(), b.id.as_str()))
+        });
+        for (offset, attribute) in sorted.into_iter().enumerate() {
+            let id = AttributeId(from + offset);
+            if self.ids.contains_key(attribute.id.as_str())
+                || ids.insert(attribute.id.clone(), id).is_some()
+            {
+                return Err(invalid(format!(
+                    "duplicate attribute identifier {}",
+                    attribute.id
+                )));
+            }
+            attributes.push(RegisteredAttribute {
+                name: attribute.id.clone(),
+                definition: attribute.definition,
+                syncable: attribute.syncable,
+                sentiment: attribute.sentiment,
+            });
+        }
+        let defaults = self
+            .defaults
+            .iter()
+            .map(|(entity, bases)| {
+                let mut grown = bases.to_vec();
+                grown.resize(attributes.len(), None);
+                (entity.clone(), Arc::from(grown))
+            })
+            .collect();
+        Ok(Catalog {
+            attributes,
+            ids,
+            defaults,
+        })
+    }
+    /// A copy of the catalog whose `entity` row is `start` with `overrides`
+    /// on top; an override without a base takes the attribute's default.
+    fn with_bases<'a>(
+        &self,
+        entity: &str,
+        start: &[Option<f64>],
+        overrides: impl Iterator<Item = (&'a String, Option<f64>)>,
+    ) -> Result<Catalog, EntityRowError> {
+        let mut bases = start.to_vec();
+        for (name, base) in overrides {
+            let Some(id) = self.ids.get(name.as_str()) else {
+                return Err(EntityRowError::UnknownAttribute {
+                    entity: entity.to_owned(),
+                    attribute: name.clone(),
+                });
+            };
+            let default = self.attributes[id.0].definition.default_value();
+            bases[id.0] = Some(base.unwrap_or(default));
+        }
+        let mut defaults = self.defaults.clone();
+        defaults.insert(entity.to_owned(), Arc::from(bases));
+        Ok(Catalog {
+            attributes: self.attributes.clone(),
+            ids: self.ids.clone(),
+            defaults,
+        })
     }
     pub fn id(&self, name: &str) -> Option<AttributeId> {
         self.ids.get(name).copied()
@@ -159,6 +348,7 @@ impl Observer for DirtyObserver<'_> {
         Ok(())
     }
 }
+#[derive(Clone, Debug)]
 pub struct EntityAttributes {
     catalog: Arc<Catalog>,
     bases: Arc<[Option<f64>]>,
@@ -273,5 +463,224 @@ impl EntityAttributes {
     }
     pub fn clear_sync(&mut self, id: AttributeId) {
         self.sync[id.0] = false;
+    }
+}
+
+#[cfg(test)]
+mod row_tests {
+    use super::*;
+
+    fn catalog() -> Catalog {
+        let bits = |n: f64| format!("{:016x}", n.to_bits());
+        Catalog::from_json(&serde_json::json!({
+            "data_version": DATA_VERSION,
+            "attributes": [
+                {"id": "minecraft:max_health", "default": bits(20.0), "min": bits(1.0), "max": bits(1024.0), "syncable": true},
+                {"id": "minecraft:armor", "default": bits(0.0), "min": bits(0.0), "max": bits(30.0), "syncable": true},
+                {"id": "minecraft:luck", "default": bits(0.0), "min": bits(-1024.0), "max": bits(1024.0), "syncable": true},
+                {"id": "minecraft:follow_range", "default": bits(32.0), "min": bits(0.0), "max": bits(2048.0), "syncable": false}
+            ],
+            "entities": {
+                "minecraft:zombie": {"minecraft:max_health": bits(20.0), "minecraft:armor": bits(2.0)}
+            }
+        }))
+        .unwrap()
+    }
+
+    /// A declared row starts from its template's, as a content row does and
+    /// `Zombie.createAttributes` does for the event's supplier (#845).
+    #[test]
+    fn a_declared_row_starts_from_its_templates() {
+        let catalog = catalog();
+        let merged = catalog
+            .with_entity_row(
+                "ruby:ghoul",
+                "minecraft:zombie",
+                &[("minecraft:max_health".into(), 55.0)],
+            )
+            .unwrap();
+        let health = merged.id("minecraft:max_health").unwrap();
+        let armor = merged.id("minecraft:armor").unwrap();
+        assert_eq!(merged.default_base("ruby:ghoul", health), Some(55.0));
+        // The template's own attributes come along.
+        assert_eq!(merged.default_base("ruby:ghoul", armor), Some(2.0));
+        // The catalog itself keeps what it had.
+        assert_eq!(catalog.default_base("minecraft:zombie", health), Some(20.0));
+        assert_eq!(catalog.default_base("ruby:ghoul", health), None);
+    }
+
+    #[test]
+    fn a_declared_row_refuses_unknown_attributes_and_templates() {
+        let catalog = catalog();
+        assert!(matches!(
+            catalog.with_entity_row(
+                "ruby:ghoul",
+                "minecraft:zombie",
+                &[("missing:attribute".into(), 1.0)]
+            ),
+            Err(EntityRowError::UnknownAttribute { .. })
+        ));
+        assert!(matches!(
+            catalog.with_entity_row("ruby:ghoul", "missing:template", &[]),
+            Err(EntityRowError::UnknownTemplate { .. })
+        ));
+    }
+
+    /// A merged row reads back whole, name to base, as an
+    /// `entity-types.json` row is.
+    #[test]
+    fn an_entity_row_lists_its_values() {
+        let catalog = catalog();
+        let merged = catalog
+            .with_entity_row(
+                "ruby:ghoul",
+                "minecraft:zombie",
+                &[("minecraft:max_health".into(), 55.0)],
+            )
+            .unwrap();
+        assert_eq!(
+            merged.entity_row("ruby:ghoul").unwrap(),
+            [
+                ("minecraft:max_health".to_owned(), 55.0),
+                ("minecraft:armor".to_owned(), 2.0)
+            ]
+            .into()
+        );
+        assert_eq!(merged.entity_row("missing:entity"), None);
+    }
+
+    /// Additions put attributes on a type's own row
+    /// (`EntityAttributeModificationEvent.add`, #846): one it lacks joins the
+    /// row, with its base or the attribute's default; one it has takes the
+    /// new base; the rest of the row stays.
+    #[test]
+    fn additions_extend_a_types_own_row() {
+        let catalog = catalog();
+        let added = catalog
+            .with_entity_additions(
+                "minecraft:zombie",
+                &[
+                    ("minecraft:luck".into(), Some(3.5)),
+                    ("minecraft:follow_range".into(), None),
+                    ("minecraft:armor".into(), Some(4.0)),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            added.entity_row("minecraft:zombie").unwrap(),
+            [
+                ("minecraft:max_health".to_owned(), 20.0),
+                ("minecraft:armor".to_owned(), 4.0),
+                ("minecraft:luck".to_owned(), 3.5),
+                ("minecraft:follow_range".to_owned(), 32.0),
+            ]
+            .into()
+        );
+        // A new map of the type has the added attribute.
+        let mut live = Arc::new(added).create("minecraft:zombie").unwrap();
+        let luck = catalog.id("minecraft:luck").unwrap();
+        assert_eq!(live.value(luck).unwrap(), 3.5);
+        // The catalog itself keeps what it had.
+        assert_eq!(catalog.default_base("minecraft:zombie", luck), None);
+    }
+
+    /// Mod attributes append after every vanilla attribute, sorted by
+    /// declaring mod id then attribute id (#812): the order is the network
+    /// id's, the same whatever order the mods declared in, and vanilla ids
+    /// never shift.
+    #[test]
+    fn mod_attributes_append_after_vanilla_in_a_sorted_order() {
+        use super::super::Sentiment;
+        let catalog = catalog();
+        let added = |mod_id: &str, id: &str, syncable| AddedAttribute {
+            mod_id: mod_id.into(),
+            id: id.into(),
+            definition: Definition::ranged(1.0, 0.0, 10.0).unwrap(),
+            syncable,
+            sentiment: Sentiment::Neutral,
+        };
+        // Declared in the order the mods happen to register: the catalog
+        // sorts them by mod id, then attribute id.
+        let grown = catalog
+            .with_attributes(&[
+                added("zeta", "zeta:alpha", true),
+                added("alpha", "alpha:zeta", false),
+                added("alpha", "alpha:beta", true),
+            ])
+            .unwrap();
+        for (name, id) in [
+            ("minecraft:max_health", 0),
+            ("minecraft:armor", 1),
+            ("minecraft:luck", 2),
+            ("minecraft:follow_range", 3),
+            ("alpha:beta", 4),
+            ("alpha:zeta", 5),
+            ("zeta:alpha", 6),
+        ] {
+            assert_eq!(grown.id(name).unwrap().registry_id(), id, "{name}");
+        }
+        assert_eq!(
+            grown.id("minecraft:max_health"),
+            catalog.id("minecraft:max_health"),
+            "vanilla ids never shift"
+        );
+        // The same declarations in another order build the same ids.
+        let again = catalog
+            .with_attributes(&[
+                added("alpha", "alpha:zeta", false),
+                added("alpha", "alpha:beta", true),
+                added("zeta", "zeta:alpha", true),
+            ])
+            .unwrap();
+        assert_eq!(again.id("zeta:alpha"), grown.id("zeta:alpha"));
+        assert_eq!(again.id("alpha:beta"), grown.id("alpha:beta"));
+        // Every entity's row grows to the new width.
+        let mut live = Arc::new(grown.clone()).create("minecraft:zombie").unwrap();
+        let added_id = grown.id("alpha:beta").unwrap();
+        assert_eq!(live.value(added_id), Err(LookupError::MissingAttribute));
+        // Grown to the new width, but the type does not gain the attribute:
+        // an addition below may put it on the row, with its default.
+        assert!(!live.has(added_id));
+        let added_row = grown
+            .with_entity_additions("minecraft:zombie", &[("alpha:beta".into(), None)])
+            .unwrap();
+        let mut live = Arc::new(added_row).create("minecraft:zombie").unwrap();
+        assert_eq!(live.value(added_id), Ok(1.0));
+        // A duplicate — a vanilla id, or one declared twice — refuses.
+        assert!(
+            catalog
+                .with_attributes(&[added("minecraft", "minecraft:armor", true)])
+                .is_err()
+        );
+        assert!(
+            catalog
+                .with_attributes(&[
+                    added("alpha", "alpha:beta", true),
+                    added("zeta", "alpha:beta", false)
+                ])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn additions_refuse_unknown_attributes_and_types_without_a_row() {
+        let catalog = catalog();
+        assert_eq!(
+            catalog
+                .with_entity_additions("minecraft:zombie", &[("missing:attribute".into(), None)])
+                .err(),
+            Some(EntityRowError::UnknownAttribute {
+                entity: "minecraft:zombie".into(),
+                attribute: "missing:attribute".into(),
+            })
+        );
+        assert_eq!(
+            catalog
+                .with_entity_additions("minecraft:pig", &[("minecraft:luck".into(), None)])
+                .err(),
+            Some(EntityRowError::UnknownEntity {
+                entity: "minecraft:pig".into(),
+            })
+        );
     }
 }

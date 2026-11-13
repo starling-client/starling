@@ -1,64 +1,12 @@
 //! The uniforms a shader pack's gbuffers programs read per draw (`HzDraw` at set 2, the
 //! translator's `DRAW_UNIFORMS`): one slot per render stage of a uniform buffer, picked with a
 //! dynamic offset at each draw.
+pub use mod_render::render::EntitySpan;
 
 use horizon_shaders::{RENDER_STAGES, render_stage};
 
-/// Where a run of `Frame::entities` begins, and what it is (slice 7): the run lasts until the
-/// next span. Recorded only while a shader pack draws entities, so Horizon's own frames carry
-/// none; Horizon itself still draws the whole list at once.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EntitySpan {
-    /// The first vertex.
-    pub start: u32,
-    /// The render stage (5.4: `ENTITIES`, `BLOCK_ENTITIES`, `PARTICLES`, `DESTROY`), which picks
-    /// the program.
-    pub stage: u32,
-    /// `entityId` for entities, `blockEntityId` for block entities (5.3), else 0.
-    pub id: i32,
-    /// An entity part that blends (a name tag, a shadow): `gbuffers_entities_translucent`.
-    pub translucent: bool,
-    /// Hidden from the camera (Horizon's entity culling, the player in first person): only the
-    /// shadow pass draws it.
-    pub hidden: bool,
-    /// The local player (`shadowPlayer`).
-    pub player: bool,
-    /// A block entity whose block emits light (`shadowLightBlockEntities`).
-    pub emissive: bool,
-}
-
-impl EntitySpan {
-    /// Marks vertices `start..end` of `spans`' list (one entity) as hidden: the span covering
-    /// `start` is split there, the spans inside are hidden, and the geometry after `end` goes
-    /// on in the last span's kind. False when no span covers `start`.
-    pub fn hide(spans: &mut Vec<EntitySpan>, start: usize, end: usize) -> bool {
-        let Some(i) = spans.iter().rposition(|s| s.start as usize <= start) else {
-            return false;
-        };
-        let after = spans[spans.len() - 1];
-        if spans[i].start as usize != start {
-            let split = EntitySpan {
-                start: start as u32,
-                ..spans[i]
-            };
-            spans.insert(i + 1, split);
-        }
-        for s in spans.iter_mut().skip(i) {
-            if s.start as usize >= start {
-                s.hidden = true;
-            }
-        }
-        if end > start {
-            spans.push(EntitySpan {
-                start: end as u32,
-                ..after
-            });
-        }
-        true
-    }
-}
-
-/// `HzDraw`'s size: `renderStage`, `entityId`, `blockEntityId`, a pad, `entityColor`.
+/// `HzDraw`'s size: `renderStage`, `entityId`, `blockEntityId`, `currentRenderedItemId`,
+/// `entityColor`.
 const SIZE: u32 = 32;
 
 pub(super) struct DrawUniforms {
@@ -73,8 +21,10 @@ impl DrawUniforms {
         let mut contents = vec![0u8; stride as usize * RENDER_STAGES.len()];
         for (i, slot) in contents.chunks_mut(stride as usize).enumerate() {
             slot[..4].copy_from_slice(&(i as i32).to_le_bytes());
-            // `blockEntityId` outside block entities, as Iris has it.
+            // `blockEntityId` outside block entities, as Iris has it; `currentRenderedItemId`
+            // outside items, as Iris 1.11.7 gives it to terrain, water and the sky (observed).
             slot[8..12].copy_from_slice(&(-1i32).to_le_bytes());
+            slot[12..16].copy_from_slice(&(-1i32).to_le_bytes());
         }
         let buffer = wgpu::util::DeviceExt::create_buffer_init(
             device,

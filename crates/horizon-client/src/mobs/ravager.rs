@@ -95,19 +95,17 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if !m.alive() {
         return;
     }
-    let max = if immobile(m) {
-        0.0
-    } else if m.ai.target.is_some() {
-        0.35
-    } else {
-        0.3
-    };
-    m.attrs.speed = if max == 0.0 {
+    // The speed lives in the attribute's base, which the save writes and the
+    // load restores (AttributeMap.pack and apply).
+    let speed = if immobile(m) {
         0.0
     } else {
-        m.attrs.speed + (max - m.attrs.speed) * 0.1
+        let max = if m.ai.target.is_some() { 0.35 } else { 0.3 };
+        let base = super::finalize::base_value(m, super::finalize::Attr::MovementSpeed);
+        base + (max - base) * 0.1
     };
-    if m.horizontal_collision && w.mob_griefing {
+    super::finalize::set_base(m, super::finalize::Attr::MovementSpeed, speed);
+    if m.horizontal_collision && w.can_grief(m.id) {
         let b = m
             .bounds()
             .inflate(horizon_core::geometry::Vec3::new(0.2, 0.2, 0.2));
@@ -121,20 +119,33 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                         events.push(MobEvent::BreakBlock {
                             pos: [x, y, z],
                             drop: true,
+                            by: Some(m.id),
+                            breaker: None,
                         });
                         destroyed = true;
                     }
                 }
             }
         }
-        if !destroyed && m.on_ground {
-            m.ai.jumping = true;
+        if m.on_ground {
+            if !destroyed {
+                m.ai.jumping = true;
+            } else if w.asks_living_destroy_block {
+                // The jump follows only when the game kept every leaf.
+                events.push(MobEvent::IfBroke {
+                    mob: m.id,
+                    effects: Vec::new(),
+                    otherwise: vec![MobEvent::Jump { mob: m.id }],
+                });
+            }
         }
     }
     // Entity.checkInsideBlocks -> CropBlock.entityInside: a ravager walking
     // through a crop destroys it, drops and all, with mobGriefing; a pitcher
     // crop (PitcherCropBlock.entityInside) goes the same way, both halves.
-    if w.mob_griefing {
+    // Mods are asked through `can_grief` for each crop; a pitcher crop reads
+    // the rule alone.
+    if w.griefing_possible() {
         let b = m
             .bounds()
             .deflate(horizon_core::geometry::Vec3::new(1.0e-5, 1.0e-5, 1.0e-5));
@@ -142,18 +153,21 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
             for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
                 for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
-                    if matches!(
-                        w.block_name(x, y, z),
+                    let breaks = match w.block_name(x, y, z) {
                         "minecraft:wheat"
-                            | "minecraft:carrots"
-                            | "minecraft:potatoes"
-                            | "minecraft:beetroots"
-                            | "minecraft:torchflower_crop"
-                            | "minecraft:pitcher_crop"
-                    ) {
+                        | "minecraft:carrots"
+                        | "minecraft:potatoes"
+                        | "minecraft:beetroots"
+                        | "minecraft:torchflower_crop" => w.can_grief(m.id),
+                        "minecraft:pitcher_crop" => w.mob_griefing,
+                        _ => false,
+                    };
+                    if breaks {
                         events.push(MobEvent::BreakBlock {
                             pos: [x, y, z],
                             drop: true,
+                            by: None,
+                            breaker: Some(m.id),
                         });
                     }
                 }
@@ -235,15 +249,15 @@ fn roar(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         let dd = (xd * xd + zd * zd).max(0.001);
         [xd / dd * 4.0, 0.2, zd / dd * 4.0]
     };
-    if let Some(p) = &w.player
+    if let Some(p) = w.selected_player()
         && p.alive
         && p.bounds.intersects(area)
     {
-        events.push(MobEvent::AttackPlayer(6.0, from));
-        events.push(MobEvent::Push {
+        events.push(w.route_player_event(MobEvent::AttackPlayer(6.0, from)));
+        events.push(w.route_player_event(MobEvent::Push {
             target: Who::Player,
             velocity: fling(p.position),
-        });
+        }));
     }
     for s in w.others_near(area) {
         if s.id == m.id || !s.alive || s.species == Species::Ravager || !s.bounds.intersects(area) {
@@ -254,7 +268,7 @@ fn roar(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             Species::Pillager | Species::Vindicator | Species::Evoker | Species::Illusioner
         );
         if !illager {
-            events.push(MobEvent::AttackMob {
+            events.push(MobEvent::DamageMob {
                 target: s.id,
                 amount: 6.0,
                 source: Damage::mob(m.id, from),
@@ -334,4 +348,137 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
     p.xrot("left_hind_leg", (pos * 0.6662 + PI).mcos() * leg);
     p.xrot("right_front_leg", (pos * 0.6662 + PI).mcos() * leg);
     p.xrot("left_front_leg", (pos * 0.6662).mcos() * leg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    #[test]
+    #[ignore = "needs prepared resources"]
+    fn modded_collision_without_leaves_jumps_without_if_broke() {
+        assert!(super::super::world::with_test_world(&[], |world, types| {
+            let mut world = world.clone();
+            world.asks_living_destroy_block = true;
+            let mut mob = Mob::new(
+                1,
+                Arc::new(types.types.get("minecraft:ravager").unwrap().clone()),
+                Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            mob.horizontal_collision = true;
+            mob.on_ground = true;
+            let mut events = Vec::new();
+            ai_step(&mut mob, &world, &mut events);
+            assert!(mob.ai.jumping);
+            assert!(!events.iter().any(|e| matches!(e, MobEvent::IfBroke { .. })));
+        }));
+    }
+
+    /// `CropBlock.entityInside` and `PitcherCropBlock.entityInside`:
+    /// `destroyBlock(pos, true, ravager)` names the ravager for the loot, and
+    /// `LivingDestroyBlockEvent` doesn't hear of it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_trampled_crop_names_the_ravager() {
+        for crop in ["minecraft:wheat", "minecraft:pitcher_crop"] {
+            let build =
+                |world: &mut crate::world::World,
+                 registry: &horizon_world::registry::BlockRegistry| {
+                    world
+                        .chunks
+                        .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                    let state = registry.default_state(crop).unwrap();
+                    world.set(0, 64, 0, state).unwrap();
+                };
+            assert!(super::super::world::with_built_test_world(
+                &[],
+                build,
+                |world, types| {
+                    let mut world = world.clone();
+                    world.mob_griefing = true;
+                    let mut mob = Mob::new(
+                        1,
+                        Arc::new(types.types.get("minecraft:ravager").unwrap().clone()),
+                        Vec3::new(0.5, 64.0, 0.5),
+                        0.0,
+                    );
+                    let mut events = Vec::new();
+                    ai_step(&mut mob, &world, &mut events);
+                    assert!(events.iter().any(|e| matches!(
+                        e,
+                        MobEvent::BreakBlock {
+                            pos: [0, 64, 0],
+                            drop: true,
+                            by: None,
+                            breaker: Some(1),
+                        }
+                    )));
+                },
+            ));
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources"]
+    fn modded_collision_with_leaves_defers_jump() {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            world
+                .set(
+                    0,
+                    64,
+                    0,
+                    registry.default_state("minecraft:oak_leaves").unwrap(),
+                )
+                .unwrap();
+        };
+        assert!(super::super::world::with_built_test_world(
+            &[],
+            build,
+            |world, types| {
+                let mut world = world.clone();
+                world.asks_living_destroy_block = true;
+                let mut mob = Mob::new(
+                    1,
+                    Arc::new(types.types.get("minecraft:ravager").unwrap().clone()),
+                    Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                );
+                mob.horizontal_collision = true;
+                mob.on_ground = true;
+                let mut events = Vec::new();
+                ai_step(&mut mob, &world, &mut events);
+                assert!(!mob.ai.jumping);
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::BreakBlock { .. }))
+                );
+                assert!(events.iter().any(|e| matches!(e, MobEvent::IfBroke { otherwise, .. } if matches!(otherwise.as_slice(), [MobEvent::Jump { mob: 1 }]))));
+                world.asks_living_destroy_block = false;
+                let mut mob = Mob::new(
+                    2,
+                    Arc::new(types.types.get("minecraft:ravager").unwrap().clone()),
+                    Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                );
+                mob.horizontal_collision = true;
+                mob.on_ground = true;
+                let mut events = Vec::new();
+                ai_step(&mut mob, &world, &mut events);
+                assert!(
+                    !events
+                        .iter()
+                        .any(|event| matches!(event, MobEvent::IfBroke { .. }))
+                );
+                assert!(!mob.ai.jumping);
+            }
+        ));
+    }
 }

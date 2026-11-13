@@ -1523,7 +1523,8 @@ pub fn draw_goy_hud(
         }
         let [nx, ny, nw, nh] = p_draw.rect(tc.aspect());
         let [rx, ry, rw, rh] = [nx * w, ny * h, nw * w, nh * h];
-        let alpha = (p.opacity.clamp(0.15, 1.0) * hud_scale).clamp(0.0, 1.0);
+        // Down to 0%, as before 0.8.0 (#258): an invisible control still works.
+        let alpha = (p.opacity.clamp(0.0, 1.0) * hud_scale).clamp(0.0, 1.0);
         let js = &tc.settings.joystick_style;
         let side = rw.min(rh);
         let jx = rx + (rw - side) * 0.5;
@@ -1558,7 +1559,7 @@ pub fn draw_goy_hud(
         }
         let [nx, ny, nw, nh] = p.rect(tc.aspect());
         let [rx, ry, rw, rh] = [nx * w, ny * h, nw * w, nh * h];
-        let alpha = (p.opacity.clamp(0.15, 1.0) * hud_scale).clamp(0.0, 1.0);
+        let alpha = (p.opacity.clamp(0.0, 1.0) * hud_scale).clamp(0.0, 1.0);
         if alpha <= 0.001 {
             continue;
         }
@@ -5103,7 +5104,7 @@ pub fn draw_hud_editor(
                         ),
                         (
                             format!("Stick Alpha|{:.0}%", js.stick_opacity * 100.0),
-                            (js.stick_opacity - 0.15) / 0.85,
+                            js.stick_opacity,
                         ),
                         (
                             format!("Stick Stroke|{:.1}dp", js.stick_stroke),
@@ -5266,7 +5267,7 @@ pub fn draw_hud_editor(
                     for (i, (txt, frac)) in [
                         (
                             format!("Base Alpha|{:.0}%", js.base_opacity * 100.0),
-                            (js.base_opacity - 0.15) / 0.85,
+                            js.base_opacity,
                         ),
                         (
                             format!("Base Stroke|{:.1}dp", js.base_stroke),
@@ -5556,7 +5557,7 @@ pub fn draw_hud_editor(
                         &mut ui,
                         [wx + 12.0, cards_y, cw3, card_h],
                         &format!("Opacity|{:.0}%", p.opacity * 100.0),
-                        (p.opacity - 0.15) / 0.85,
+                        p.opacity,
                         st_cyan,
                         st_cyan_soft,
                         st_card,
@@ -6590,11 +6591,12 @@ fn apply_props_slider(
         let slot = tc.settings.slot(Control::Move);
         match (tab, index) {
             (0, 0) => tc.settings.joystick_style.stick_size = (0.20 + t * 0.65).clamp(0.20, 0.85),
-            (0, 1) => tc.settings.joystick_style.stick_opacity = (0.15 + t * 0.85).clamp(0.15, 1.0),
+            // Opacities from 0%, as before 0.8.0 (#258).
+            (0, 1) => tc.settings.joystick_style.stick_opacity = t,
             (0, _) => {
                 tc.settings.joystick_style.stick_stroke = ((t * 16.0).round() * 0.5).clamp(0.0, 8.0)
             }
-            (1, 0) => tc.settings.joystick_style.base_opacity = (0.15 + t * 0.85).clamp(0.15, 1.0),
+            (1, 0) => tc.settings.joystick_style.base_opacity = t,
             (1, 1) => {
                 tc.settings.joystick_style.base_stroke = ((t * 16.0).round() * 0.5).clamp(0.0, 8.0)
             }
@@ -6608,7 +6610,7 @@ fn apply_props_slider(
         return;
     }
     let apply_pl = |pl: &mut crate::android_controls::Placement| match (tab, index) {
-        (0, 0) => pl.opacity = (0.15 + t * 0.85).clamp(0.15, 1.0),
+        (0, 0) => pl.opacity = t,
         (1, 0) => pl.stroke_size = ((t * 16.0).round() * 0.5).clamp(0.0, 8.0),
         (1, 1) => {
             pl.roundness = (t * 50.0).round().clamp(0.0, 50.0);
@@ -8077,7 +8079,13 @@ mod tests {
     #[test]
     fn slider_vertical_swipe_scrolls_without_changing_its_value() {
         let atlas = HudAtlas::boot();
-        let mut batch = HudBatch::new([1280, 720]);
+        let mut batch = HudBatch::new(
+            [1280, 720],
+            crate::hud::GuiScale {
+                requested: 0,
+                unicode: false,
+            },
+        );
         let (w, h, density, scale) = {
             let ui = crate::android_control_theme::Ui::mobile(&atlas, &mut batch, (0., 0.));
             (ui.w, ui.h, ui.density, ui.batch.scale)

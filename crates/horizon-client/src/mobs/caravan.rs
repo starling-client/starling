@@ -238,7 +238,7 @@ impl Goal for DefendTrader {
         target_continue(&mut self.st, false, m, cx)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
-        m.ai.target = self.attacker;
+        m.set_ai_target(cx.w, self.attacker);
         if let Some(super::leash::Holder::Mob(id)) = m.extra.leash
             && let Some(owner) = cx.w.seen(id)
             && let Some((_, stamp)) = owner.hurt_by
@@ -246,8 +246,8 @@ impl Goal for DefendTrader {
             self.timestamp = stamp;
         }
     }
-    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
-        m.ai.target = None;
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        m.set_ai_target(cx.w, None);
     }
 }
 /// `TraderLlama.maybeDespawn`: counts down its own delay, or follows the

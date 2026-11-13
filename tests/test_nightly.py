@@ -1,5 +1,6 @@
 import datetime as dt
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tools.ci import nightly
@@ -19,7 +20,8 @@ def lookup(*prs):
 
 
 def run(state, text, login="kacpherek", *prs):
-    return ns.apply(state, ns.parse(text), login, NOW, lookup(*prs), PATTERNS)
+    return ns.apply(state, ns.parse(text), ns.Actor(login, 101 if login == "kacpherek" else 9999), NOW,
+                    lookup(*prs), PATTERNS)
 
 T = dt.datetime(2026, 10, 28, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -61,7 +63,29 @@ class NightlyTests(unittest.TestCase):
 
     def test_notes_open_with_the_way_to_the_launcher(self):
         # A raw HTML line that launchers skip, as on a game release.
-        self.assertTrue(notes().startswith(nightly.train.PLAYERS + "\n\nNightly 2026-10-28 · bbbbbbb: "))
+        with mock.patch.object(nightly.train, "REPO", "horizon-rust/horizon"):
+            self.assertTrue(notes().startswith(nightly.train.PLAYERS + "\n\nNightly 2026-10-28 · bbbbbbb: "))
+            self.assertIn(nightly.PLAYERS, notes())
+
+    def test_fork_notes_use_source_launcher_instructions_and_keep_build_details(self):
+        with mock.patch.object(nightly.train, "REPO", "arismoko/horizon"):
+            # An older selected checkout may not contain the template. It must already be loaded.
+            with mock.patch.object(Path, "read_text", side_effect=AssertionError("late template read")):
+                text = notes(merged=[merged_pr(9, "Fix fork install", [])], issues=["- Known issue"])
+        self.assertIn("git clone --depth 1 https://github.com/arismoko/horizon.git", text)
+        self.assertIn("--bin horizon-launcher -- install nightly", text)
+        self.assertNotIn("https://playhorizon.dev", text)
+        self.assertNotIn(nightly.PLAYERS, text)
+        self.assertIn("Nightly 2026-10-28 · bbbbbbb: main (mmmmmmm)", text)
+        self.assertIn("nightly-source/2026-10-28-bbbbbbb", text)
+        self.assertIn("### Fixed\n- Fix fork install (#9)", text)
+        self.assertIn("### Known issues\n- Known issue", text)
+        self.assertTrue(text.endswith(nightly.train.DISCLAIMER + "\n"))
+
+    def test_other_repositories_keep_the_upstream_intro(self):
+        with mock.patch.object(nightly.train, "REPO", "another/horizon"):
+            self.assertTrue(notes().startswith(nightly.train.PLAYERS + "\n\n"))
+            self.assertIn(nightly.PLAYERS, notes())
 
     def test_notes_name_the_commit_and_its_permanent_source_tag(self):
         sha = "0c0206714abc" + "0" * 28
@@ -118,6 +142,28 @@ HORIZON_RELEASES = unittest.skipUnless(
 
 
 @HORIZON_RELEASES
+class FirstNightlyTests(unittest.TestCase):
+    def test_fetch_succeeds_with_or_without_an_existing_nightly_tag(self):
+        class ReachedGreenBase(Exception):
+            pass
+
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                calls = []
+                def git(*args):
+                    calls.append(args)
+                    if args[0] == "ls-remote":
+                        return "abc\\trefs/tags/nightly" if existing else ""
+                    return ""
+                with mock.patch.object(nightly, "git", side_effect=git), mock.patch.object(nightly, "green_base", side_effect=ReachedGreenBase):
+                    with self.assertRaises(ReachedGreenBase):
+                        nightly.pick(False)
+                fetched = next(args for args in calls if args[0] == "fetch")
+                self.assertIn("+refs/heads/main:refs/remotes/origin/main", fetched)
+                self.assertEqual("+refs/tags/nightly:refs/tags/nightly" in fetched, existing)
+
+
+@HORIZON_RELEASES
 class UntrustedBuildTests(unittest.TestCase):
     """A nightly can hold pull requests nobody reviewed: nothing its build leaves may reach a release (game-build.yml)."""
 
@@ -140,12 +186,16 @@ class UntrustedBuildTests(unittest.TestCase):
         self.assertEqual(self.game.count("Swatinem/rust-cache"), 1)
 
     def test_an_untrusted_build_never_runs_on_the_release_runner(self):
-        runs_on = [line for line in self.game.splitlines() if "runs-on:" in line]
-        self.assertEqual(len(runs_on), 2)
+        runs_on = [line for line in self.game.splitlines() if "runs-on: ${{" in line]
+        self.assertEqual(len(runs_on), 3)
         # The nightly's own runner: never the release runner, and never behind pull requests' parity queue.
-        nightly_runner = "fromJSON('[\"self-hosted\", \"macOS\", \"horizon-nightly\"]')"
-        for line in runs_on:
-            self.assertIn(f"inputs.trusted && vars.MAC_RUNNER || {nightly_runner}", line)
+        nightly_default = "'[\"self-hosted\", \"macOS\", \"horizon-nightly\"]'"
+        for line, variable in zip(runs_on, ("NIGHTLY_EXPORTERS_RUNNER", "NIGHTLY_MAC_RUNNER")):
+            self.assertIn("inputs.trusted && toJSON(vars.MAC_RUNNER)", line)
+            self.assertIn(f"vars.DYNA_CI_SELF_HOSTED == 'true' && vars.{variable}", line)
+            self.assertIn(f"vars.SELF_HOSTED_CI != 'off' && {nightly_default}", line)
+        self.assertNotIn("NIGHTLY_LINUX_RUNNER", runs_on[1])
+        self.assertIn("vars.NIGHTLY_LINUX_RUNNER", runs_on[2])
 
     def test_a_trusted_build_never_reads_the_shared_sccache(self):
         calls = self.game.count("bash tools/ci/runner-env.sh")

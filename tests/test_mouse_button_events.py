@@ -13,13 +13,14 @@ ROOT = Path(__file__).resolve().parents[1]
 class MouseButtonEventsTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_order_cancellation_release_and_synthetic_input(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
-        outer = method(source.replace("pub(super) fn", "fn"), "handle_window_event")
+        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                          for path in ("game/runtime/window_handler.rs", "game.rs"))
+        outer = method(source.replace("pub(super) fn", "fn"), "handle_window_event_as")
         dispatch = outer[outer.index("        if let WindowEvent::MouseInput { state, button, .. } = &event {"):]
         fixture = r"""
 use std::collections::HashSet;
 #[derive(Clone, Copy, PartialEq)] enum ElementState { Pressed, Released }
-enum WindowEvent { MouseInput { state: ElementState, button: i32 }, Other }
+enum WindowEvent { MouseInput { state: ElementState, button: i32 }, Resized(()), Other }
 fn glfw_button(button: i32) -> i32 { button }
 fn glfw_modifiers(modifiers: u32) -> u32 { modifiers }
 struct Game { physical_buttons: HashSet<i32>, modifiers: u32, synthetic: bool, cancel: bool,
@@ -36,6 +37,8 @@ impl Game {
         assert_eq!(self.physical_buttons.contains(&button), pressed);
         self.calls.push("post");
     }
+    fn settle_title_mode(&mut self) {}
+    fn notify_window_resize(&mut self) {}
     fn handle_window_event_inner(&mut self, _: (), _: WindowEvent) {
         self.calls.push("handle");
         if self.early { return; }

@@ -23,10 +23,10 @@ jobs:
   check:
     # Horizon's own repository files these issues; a fork would only repeat them.
     if: github.repository == 'horizon-rust/horizon'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SELF_HOSTED_CI != 'off' && fromJSON('["self-hosted", "linux", "horizon-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check the manifest
         env:
           GH_TOKEN: ${{ github.token }}

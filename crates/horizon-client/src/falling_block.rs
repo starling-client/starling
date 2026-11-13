@@ -1,5 +1,6 @@
 //! FallingBlockEntity's impact damage, anvil wear, saved impact settings and
 //! the blocks it moves through (cobwebs, bubble columns).
+use crate::health::DamageLevel;
 use crate::motion::BubbleColumn;
 use crate::{
     mobs::{Damage as MobDamage, DamageKind, Mob},
@@ -9,7 +10,7 @@ use horizon_core::{
     geometry::{Aabb, Axis, Direction, Vec3, sweep_intersected_blocks},
     position::BlockPos,
 };
-use horizon_world::{chunk::BlockState, nbt::Tag};
+use {horizon_core::nbt::Tag, horizon_world::chunk::BlockState};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Damage {
@@ -119,11 +120,19 @@ pub fn bounds(position: Vec3) -> Aabb {
 pub fn web_multiplier() -> Vec3 {
     Vec3::new(0.25, f64::from(0.05_f32), 0.25)
 }
+/// `PowderSnowBlock.entityInside`'s `makeStuckInBlock` multiplier for an
+/// entity that is not living: the next move goes at 0.9F across, 1.5 down.
+pub fn powder_snow_multiplier() -> Vec3 {
+    Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32))
+}
 /// What a block a falling block moves through does to it in `entityInside`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Inside {
     /// `WebBlock`: `Entity.makeStuckInBlock`.
     Cobweb,
+    /// `PowderSnowBlock`, for an entity that is not living:
+    /// `Entity.makeStuckInBlock`.
+    PowderSnow,
     /// `BubbleColumnBlock`: lifts or drags it.
     BubbleColumn(BubbleColumn),
     Nothing,
@@ -132,8 +141,9 @@ pub enum Inside {
 /// (`from` to `to`; `original` the move it asked for, when the move was
 /// recorded; `velocity` already zeroed on the axes `Entity.move` collided on):
 /// the blocks it went through (`block` says what each is) push it and reset
-/// its fall. Returns whether a cobweb made it stuck, and adds to `surfaces` the
-/// column blocks it is at the top of (`Entity.sendBubbleColumnParticles`).
+/// its fall. Returns the multiplier of the last block that made it stuck
+/// (`Entity.makeStuckInBlock`), and adds to `surfaces` the column blocks it is
+/// at the top of (`Entity.sendBubbleColumnParticles`).
 pub fn apply_effects_from_blocks(
     from: Vec3,
     to: Vec3,
@@ -142,38 +152,62 @@ pub fn apply_effects_from_blocks(
     fall_distance: &mut f64,
     surfaces: &mut Vec<BlockPos>,
     mut block: impl FnMut(BlockPos) -> Inside,
-) -> bool {
-    let mut stuck = false;
-    inside_blocks(from, to, original, |p, intersects| match block(p) {
-        Inside::Cobweb => {
-            // makeStuckInBlock forgets the fall.
-            *fall_distance = 0.0;
-            stuck = true;
-        }
-        // BubbleColumnBlock.entityInside acts only when intersecting.
-        Inside::BubbleColumn(column) if intersects => {
-            if column.push(velocity) {
+) -> Option<Vec3> {
+    let mut stuck = None;
+    inside_blocks(
+        from,
+        to,
+        original,
+        |p, intersects, step_from, step_to| match block(p) {
+            Inside::Cobweb => {
+                // makeStuckInBlock forgets the fall.
                 *fall_distance = 0.0;
+                stuck = Some(web_multiplier());
+                true
             }
-            if column.surface {
-                surfaces.push(p);
+            Inside::PowderSnow => {
+                // getEntityInsideCollisionShape: after a fall over 2.5 it is the
+                // 0.9-high top, which only counts once the step reaches it.
+                let corner = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
+                let top = Aabb::new(
+                    corner,
+                    corner.add_vector(Vec3::new(1.0, f64::from(0.9_f32), 1.0)),
+                );
+                let entered = *fall_distance <= 2.5
+                    || bounds(step_from).collided_along_vector(step_to.subtract(step_from), &[top]);
+                if entered {
+                    *fall_distance = 0.0;
+                    stuck = Some(powder_snow_multiplier());
+                }
+                entered
             }
-        }
-        Inside::BubbleColumn(_) | Inside::Nothing => {}
-    });
+            // BubbleColumnBlock.entityInside acts only when intersecting.
+            Inside::BubbleColumn(column) if intersects => {
+                if column.push(velocity) {
+                    *fall_distance = 0.0;
+                }
+                if column.surface {
+                    surfaces.push(p);
+                }
+                true
+            }
+            Inside::BubbleColumn(_) | Inside::Nothing => true,
+        },
+    );
     stuck
 }
-/// Each block `checkInsideBlocks` reaches, once, in order, with
-/// whether its `entityInside` counts the block as intersected (every block of a
-/// movement a block or longer, else only those the box ends in). Each movement
-/// sweeps its axes in `Direction.axisStepOrder` within 16 iterations, then the
-/// end alone. The blocks the caller acts on (cobwebs, bubble columns) have a
-/// whole-block `getEntityInsideCollisionShape`, so every one visited counts.
+/// Each block `checkInsideBlocks` reaches, in order, with whether its
+/// `entityInside` counts the block as intersected (every block of a movement a
+/// block or longer, else only those the box ends in) and the step reaching it.
+/// Each movement sweeps its axes in `Direction.axisStepOrder` within 16
+/// iterations, then the end alone. `visit` says whether the box was inside the
+/// block's `getEntityInsideCollisionShape`; only a block it was inside is not
+/// visited again.
 fn inside_blocks(
     from: Vec3,
     to: Vec3,
     original: Option<Vec3>,
-    mut visit: impl FnMut(BlockPos, bool),
+    mut visit: impl FnMut(BlockPos, bool, Vec3, Vec3) -> bool,
 ) {
     let mut seen = std::collections::HashSet::new();
     // checkInsideBlocks(from, to, ..): the iterations used plus one.
@@ -188,11 +222,13 @@ fn inside_blocks(
                 return false;
             }
             iterations = iteration;
-            if seen.insert(p) {
+            if !seen.contains(&p) {
                 let corner = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
                 let inside =
                     target.intersects_corners(corner, corner.add_vector(Vec3::new(1.0, 1.0, 1.0)));
-                visit(p, long || inside);
+                if visit(p, long || inside, from, to) {
+                    seen.insert(p);
+                }
             }
             true
         });
@@ -223,11 +259,22 @@ fn inside_blocks(
         check(to, to, 1);
     }
 }
-pub fn hurt_mobs(mobs: &mut [Mob], position: Vec3, amount: f32) {
-    hurt_mobs_with_kind(mobs, position, amount, DamageKind::FallingBlock);
+pub fn hurt_mobs<'a>(
+    level: &mut DamageLevel<'_>,
+    mobs: impl IntoIterator<Item = &'a mut Mob>,
+    position: Vec3,
+    amount: f32,
+) {
+    hurt_mobs_with_kind(level, mobs, position, amount, DamageKind::FallingBlock);
 }
 
-pub fn hurt_mobs_with_kind(mobs: &mut [Mob], position: Vec3, amount: f32, kind: DamageKind) {
+pub fn hurt_mobs_with_kind<'a>(
+    level: &mut DamageLevel<'_>,
+    mobs: impl IntoIterator<Item = &'a mut Mob>,
+    position: Vec3,
+    amount: f32,
+    kind: DamageKind,
+) {
     if amount <= 0.0 {
         return;
     }
@@ -236,12 +283,13 @@ pub fn hurt_mobs_with_kind(mobs: &mut [Mob], position: Vec3, amount: f32, kind: 
         kind,
         attacker: None,
         from: Some([position.x, position.y, position.z]),
+        attacker_species: None,
     };
     for mob in mobs
-        .iter_mut()
+        .into_iter()
         .filter(|m| m.alive() && bounds.intersects(m.bounds()))
     {
-        mob.damage(amount, source);
+        mob.damage(level, amount, source);
     }
 }
 
@@ -322,8 +370,8 @@ mod tests {
                 }
             },
         );
-        assert_eq!(fall == 0.0, stuck);
-        stuck
+        assert_eq!(fall == 0.0, stuck.is_some());
+        stuck.is_some()
     }
     #[test]
     fn a_cobweb_on_the_path_or_at_the_end_holds_a_falling_block() {
@@ -386,7 +434,7 @@ mod tests {
                 &mut tops.borrow_mut(),
                 block,
             );
-            assert!(!stuck);
+            assert!(stuck.is_none());
             (velocity.y, fall)
         };
         let near = |a: f64, b: f64| (a - b).abs() < 1.0e-9;
@@ -420,6 +468,8 @@ mod tests {
     #[test]
     #[ignore = "requires prepared entity models/data in HORIZON_TEST_RESOURCES"]
     fn impact_hurts_only_living_intersecting_noninvulnerable_mobs() {
+        let mut test_level = crate::health::TestLevel::new(0);
+        let level = &mut test_level.level();
         use crate::mobs::{Mob, MobTypes};
         use std::{path::Path, sync::Arc};
         let root = std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES");
@@ -432,9 +482,13 @@ mod tests {
             Mob::new(4, cow, Vec3::ZERO, 0.0),
         ];
         mobs[2].invulnerable_flag = true;
-        mobs[3].extra.head = Some("minecraft:carved_pumpkin".into());
+        mobs[3].extra.set_slot_id(
+            horizon_items::equipment::HEAD,
+            Some("minecraft:carved_pumpkin".into()),
+        );
         let initial = mobs.iter().map(|m| m.health).collect::<Vec<_>>();
         hurt_mobs(
+            level,
             &mut mobs,
             Vec3::ZERO,
             Damage::anvil().impact(5.0).unwrap().amount,

@@ -1,43 +1,38 @@
-# Sync with Horizon (temporary, delete after the merge lands)
+# Sync with Horizon 5 (temporary, delete after the merge lands)
 
-Upstream commit merged: `31f83499b` (2026-11-02, horizon-rust/horizon#7585). Base `f8988d5a7`.
-Android before the merge: `73fb969be`. Wasm removal, files only: `30344a60b` (does not build).
+Upstream commit merged: `c98a51a664` (2026-11-08). Base `31f83499b6`. Starling before the merge: `121742ad89`.
+Only this branch goes to `starling-client`: nothing merges into `starling` or `android`, nothing is released.
+The release comes first; before merging this, `starling` has to be merged in again and the owner tests it.
 
-The merge commit `212b96cb7` holds its conflict markers on purpose; each group below was resolved in
-a commit of its own. Part of the conflicts came resolved from the older `sync-horizon-3` worktree,
-read only and carried forward with 3-way merges (the mod crates were left out).
+The merge commit `06d7176a62` holds its conflict markers on purpose (307 hunks in 83 files); each group was
+resolved in a commit of its own.
 
-How to work and tools: `sync4/` in the session notes folder
+How to work and tools: `sync5/` in the session notes folder
 (`%APPDATA%/Claude/side-session-notes/local_4c49e3d5-8a78-4799-b072-15ba12d5ea8a/`): `BRIEF.md`,
 `COMPILE.md`, `FOLLOWUPS.md` (what fell, in detail), `vm.sh MODE` (check, all, android, clippy,
-clippy-android, fmt, test, raw CMD). On the VM: `~/sync4`, `~/sync4-target`, `~/sync4-apk.sh`.
+clippy-android, fmt, test, raw CMD). On the VM: `~/sync5`, `~/sync5-target`, `~/sync5-sweep`, `~/sync5.log`.
 
 ## Steps
-- [x] A. Mods: `8f18fd9d6`
-- [x] B. Render and shaders: `26f8ed428`
-- [x] C. Client gameplay: `2315ac2db`
-- [x] D. game.rs, title, Cargo, CI: `3bbeb3a20`
-- [x] E. Desktop builds (`cda4b7629`); Android builds, hooks in `horizon_client::android`, Dev APK (`7a5fb6925`)
-- [x] fmt
-- [x] Client opens on the VM (Xvfb, software Vulkan, new world, no mods or pack)
-- [x] Tests: 5495 passed, 0 failed, 104 ignored
-- [x] Clippy desktop and Android, `-D warnings`
-- [ ] Owner tests the APK; merge into android
+- [x] Merge with markers: `06d7176a62`
+- [x] A. Docs, CI, manifests, languages: `7731f158b7`
+- [x] B. Render, shaders, assets: `cc75569f5c`
+- [x] C. Screens, options, mods: `c7e91f5431`
+- [x] D. Network, gameplay, input: `6b56ffa0e4`
+- [x] E. game.rs and crate roots: `e42338e694`
+- [ ] **Next: desktop and Android build** (`vm.sh check`, `vm.sh android`); uncommitted work may be in the worktree
+- [ ] Put back on upstream's new pages what fell from them: the Shader Packs rows (Resolution, FPS Limit, Auto
+      profile) on `shader_ui.rs`, the Android Controller list and stick rows on `controller_ui.rs`
+- [ ] `MIXINS_REV` to upstream's `5a64af938ec86b00d53d16a408aabc0038fb3e57` (`native_build.sh`, `launcher/src/native_mods.rs`)
+- [ ] fmt, clippy (desktop and Android), tests
+- [ ] Draft PR `[NÃO MESCLAR]` against `starling` for the org's CI and a Preview APK; no auto-merge
+- [ ] Sweep "after" of the site's 104 native mods; compare with "before" (`~/sync5-sweep/before/job/out`)
+- [ ] Check the last sync's regressions: accessibility screen on first run, focus and keyboard in
+      `enter_singleplayer`, the loading stall (`follow_loader`, `Loading::retry`), upscale and FPS on Mali
 
-## What fell
-- Wasm mods and their API: horizon-mod-sdk, starling-mod-sdk, starling-mod-cli, mods/official
-  (far-view, fps-overlay, keystrokes, minimap, recipes, zoom) and the SDK examples.
-- Create: own block states (`states`, `own-states.json`) and so placement orientation and belt
-  funnels (`belt_funnel_for`); `fuel` on items; the support and occlusion part of `properties.shape`.
-  The local .hmod data has to move to `state_properties` and `components`.
-- Create New World's "Mods & Data Packs": upstream's Data Packs screen stays; a new world plays with
-  the running mods; the phone's `datapacks` folder choice.
-- Stack tooltip grids; Starling's remote item displays (upstream's `text_displays` instead).
-- Failed shader experiments `HORIZON_PACK_SKY_LAST`, `HORIZON_PACK_VRS`, `HORIZON_PACK_HALF`.
-- Item grids in tooltips (`StackTooltip`), the Config button and summary line on the Mods page.
-- Android: `learn_layout` does nothing, the splitscreen pad router is a stub.
+## What fell so far (details in FOLLOWUPS.md)
+- Create's OBJ-shaped blocks: upstream's OBJ loader replaced Starling's reader; they need porting to it.
+- Starling's own block predictions: upstream's `Prediction` does the same.
 
-## Not checked
-Nothing ran on a phone. On the VM the client ran without mods and without a shader pack: Create,
-shader packs, touch, custom buttons, the setup download and native mods builds were not run after
-the merge.
+## Resuming
+The VM keeps running what was started detached (`~/sync5-sweep/before/run.sh`). `~/sync5-holdwatch.sh` takes
+`~/modbuild/hold` away after 30 minutes without sync work; every `vm.sh` run touches it again.

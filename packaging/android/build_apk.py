@@ -207,6 +207,22 @@ def compile_java(build_tools, android_jar, out):
     return dex / "classes.dex"
 
 
+def version_name(variant):
+    """The APK's versionName: the release's VERSION_NAME, and a test build's (Preview, Dev) with
+    its variant and commit after it. Compile asks the native-mod build service for the game of this
+    version, and the service has the released versions' code only: a test build numbered as the
+    release got that release's game in place of its own (NativeMods.chosen loaded it)."""
+    if not variant:
+        return VERSION_NAME
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short=10", "HEAD"], cwd=ROOT, text=True,
+            stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        commit = ""
+    return f"{VERSION_NAME}-{variant}" + (f".{commit}" if commit else "")
+
+
 def link_resources(aapt2, android_jar, out, assets, variant, abi=ABI):
     """The manifest, the launcher icon, the themes and `assets`, compiled and linked into
     `out/base.apk`; `variant` is None (the release's app) or a key of VARIANTS."""
@@ -255,7 +271,7 @@ def link_resources(aapt2, android_jar, out, assets, variant, abi=ABI):
         "--java", out / "generated", "--custom-package", "io.github.juanluci.starling",
         "-I", android_jar,
         "--min-sdk-version", MIN_SDK, "--target-sdk-version", TARGET_SDK,
-        "--version-code", VERSION_CODE, "--version-name", VERSION_NAME,
+        "--version-code", VERSION_CODE, "--version-name", version_name(variant),
         *debug,
         "-A", assets,
         *sorted(compiled.glob("*.flat")),

@@ -1,17 +1,23 @@
 //! StructureTemplate: NBT loading, palettes, transforms and bounding boxes.
-use super::{BoundingBox, Mirror, Rotation, StateTransforms};
-use crate::{
-    chunk::BlockState,
-    nbt::{Compound, Tag},
-    registry::{BlockRegistry, BlockStateId},
-};
 use std::sync::{Arc, OnceLock};
+use {
+    super::{Mirror, Rotation, StateTransforms},
+    horizon_core::bounding_box::BoundingBox,
+};
+use {
+    crate::{
+        chunk::BlockState,
+        registry::{BlockRegistry, BlockStateId},
+    },
+    horizon_core::nbt::{Compound, Tag},
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockInfo {
     pub pos: [i32; 3],
     pub state: BlockStateId,
-    pub nbt: Option<Compound>,
+    /// Boxed: nearly no block has any, and a template holds thousands of these for the session.
+    pub nbt: Option<Box<Compound>>,
 }
 #[derive(Clone, Debug)]
 pub struct JigsawInfo {
@@ -68,7 +74,7 @@ fn string(tag: Option<&Tag>) -> Option<String> {
     }
 }
 fn get<'a>(compound: &'a Compound, key: &str) -> Option<&'a Tag> {
-    compound.get(&crate::nbt::JavaString::from(key))
+    compound.get(&horizon_core::nbt::JavaString::from(key))
 }
 /// NbtUtils.readBlockState: unknown blocks read as air; missing or invalid
 /// properties keep the block's defaults.
@@ -172,7 +178,7 @@ pub fn save_nbt(
         tag.insert("pos".into(), int_list(block.pos));
         tag.insert("state".into(), Tag::Int(index as i32));
         if let Some(nbt) = &block.nbt {
-            tag.insert("nbt".into(), Tag::Compound(nbt.clone()));
+            tag.insert("nbt".into(), Tag::Compound((**nbt).clone()));
         }
         block_list.push(Tag::Compound(tag));
     }
@@ -260,7 +266,7 @@ impl StructureTemplate {
                     .copied()
                     .unwrap_or(air);
                 let nbt = match get(block, "nbt") {
-                    Some(Tag::Compound(c)) => Some(c.clone()),
+                    Some(Tag::Compound(c)) => Some(Box::new(c.clone())),
                     _ => None,
                 };
                 let class = if nbt.is_some() {
@@ -490,6 +496,46 @@ mod save_tests {
     }
 
     #[test]
+    fn a_data_pack_template_is_found_and_others_stay_empty() {
+        let registry: &'static BlockRegistry = Box::leak(Box::new(registry()));
+        let transforms = StateTransforms::from_json(
+            r#"{"rotate":[[0,0,0],[1,1,1],[2,2,2]],"mirror":[[0,0],[1,1],[2,2]],
+                "full_block":[false,true,false],"loot_containers":[],"block_entities":{}}"#,
+            3,
+        )
+        .unwrap();
+        let tag = save_nbt(
+            registry,
+            &transforms,
+            [3, 1, 2],
+            vec![BlockInfo {
+                pos: [0, 0, 0],
+                state: BlockStateId(1),
+                nbt: None,
+            }],
+            &[],
+            DATA_VERSION,
+        );
+        let named = horizon_core::nbt::NamedTag {
+            name: "".into(),
+            tag,
+        };
+        let raw =
+            horizon_core::nbt::write_named(&named, horizon_core::nbt::Limits::templates()).unwrap();
+        let file = crate::compression::Compression::Gzip.encode(&raw).unwrap();
+        let resources = super::super::StructureResources::new(
+            registry,
+            transforms,
+            std::path::Path::new("/nonexistent"),
+            Default::default(),
+            &Default::default(),
+        )
+        .with_pack_templates([("p:room/a".to_owned(), file.into())].into());
+        assert_eq!(resources.template("p:room/a").unwrap().size, [3, 1, 2]);
+        assert_eq!(resources.template("p:room/b").unwrap().size, [0, 0, 0]);
+    }
+
+    #[test]
     fn save_orders_like_fill_from_world_and_reads_back() {
         let registry = registry();
         let transforms = StateTransforms::from_json(
@@ -504,7 +550,7 @@ mod save_tests {
             nbt: nbt.then(|| {
                 let mut c = Compound::new();
                 c.insert("id".into(), Tag::String("minecraft:chest".into()));
-                c
+                Box::new(c)
             }),
         };
         let blocks = vec![

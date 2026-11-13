@@ -42,6 +42,12 @@ pub struct Interaction {
     pub sound: Option<&'static str>,
     /// The custom statistic the player earns (`use_cauldron`, ...).
     pub stat: Option<&'static str>,
+    /// `lowerFillLevel` posts BLOCK_CHANGE with the new state.
+    pub lower_fill_level: bool,
+    /// The `Level.gameEvent` the interaction ends with, after its sound:
+    /// `FLUID_PICKUP` from `fillBucket` and the glass bottle, `FLUID_PLACE`
+    /// from `emptyBucket` and a water potion. Washing posts none.
+    pub fluid_event: Option<&'static str>,
 }
 
 fn state(name: &str, level: Option<u8>) -> BlockState {
@@ -60,11 +66,24 @@ fn pass() -> Interaction {
         block: None,
         sound: None,
         stat: None,
+        lower_fill_level: false,
+        fluid_event: None,
     }
 }
 
-/// `ItemUtils.createFilledResult`.
-fn filled(player: &mut dyn Player, new: ItemStack, limit_creative: bool) {
+/// `InteractionResult.CONSUME`: a lava or powder snow bucket under water.
+fn consume() -> Interaction {
+    Interaction {
+        outcome: Outcome::Consume,
+        ..pass()
+    }
+}
+
+/// `ItemUtils.createFilledResult`: `new` for one item of the stack in `player`'s hand. In
+/// creative (with `limit_creative`) the hand is kept and `new` added unless the inventory has
+/// it; otherwise one item of the hand is used up, and `new` takes its place when it was the
+/// last, else goes into the inventory, else is dropped.
+pub fn create_filled_result(player: &mut dyn Player, new: ItemStack, limit_creative: bool) {
     let creative = player.creative();
     if limit_creative && creative {
         if !player.contains(&new) {
@@ -126,6 +145,26 @@ fn changed(block: BlockState, sound: Option<&'static str>, stat: &'static str) -
         block: Some(block),
         sound,
         stat: Some(stat),
+        lower_fill_level: false,
+        fluid_event: None,
+    }
+}
+
+fn changed_lowered(
+    cauldron: &BlockState,
+    sound: Option<&'static str>,
+    stat: &'static str,
+) -> Interaction {
+    let mut result = changed(lowered(cauldron), sound, stat);
+    result.lower_fill_level = true;
+    result
+}
+
+impl Interaction {
+    /// The same answer, ending with the interaction's `Level.gameEvent`.
+    fn with_event(mut self, event: &'static str) -> Self {
+        self.fluid_event = Some(event);
+        self
     }
 }
 
@@ -148,6 +187,55 @@ const COLORS: [&str; 16] = [
     "black",
 ];
 
+#[derive(Clone, Copy)]
+enum Action {
+    EmptyLava,
+    EmptyWater,
+    EmptySnow,
+    FillWater,
+    FillLava,
+    FillSnow,
+    EmptyPotion,
+    FillBottle,
+    TopUpPotion,
+    CleanBanner,
+    CleanShulker,
+}
+
+/// Vanilla's per-cauldron item dispatch, built once and shared by all views.
+fn interactions() -> &'static [std::collections::HashMap<String, Action>; 4] {
+    use Action::*;
+    use std::sync::OnceLock;
+    static TABLE: OnceLock<[std::collections::HashMap<String, Action>; 4]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut maps = std::array::from_fn::<_, 4, _>(|_| std::collections::HashMap::new());
+        for map in &mut maps {
+            for (item, action) in [
+                ("lava_bucket", EmptyLava),
+                ("water_bucket", EmptyWater),
+                ("powder_snow_bucket", EmptySnow),
+            ] {
+                map.insert(format!("minecraft:{item}"), action);
+            }
+        }
+        for (kind, item, action) in [
+            (0, "potion", EmptyPotion),
+            (1, "bucket", FillWater),
+            (1, "glass_bottle", FillBottle),
+            (1, "potion", TopUpPotion),
+            (2, "bucket", FillLava),
+            (3, "bucket", FillSnow),
+        ] {
+            maps[kind].insert(format!("minecraft:{item}"), action);
+        }
+        for color in COLORS {
+            maps[1].insert(format!("minecraft:{color}_banner"), CleanBanner);
+            maps[1].insert(format!("minecraft:{color}_shulker_box"), CleanShulker);
+        }
+        maps
+    })
+}
+
 /// The cauldron interaction of the held item (`useItemOn`); the hand stack is
 /// changed through `player`. `removes_dye` is whether the held item is in the
 /// `cauldron_can_remove_dye` tag.
@@ -161,10 +249,10 @@ pub fn interact(
         return pass();
     };
     let kind = match cauldron.name.as_str() {
-        "minecraft:cauldron" => "empty",
-        "minecraft:water_cauldron" => "water",
-        "minecraft:lava_cauldron" => "lava",
-        "minecraft:powder_snow_cauldron" => "powder_snow",
+        "minecraft:cauldron" => 0,
+        "minecraft:water_cauldron" => 1,
+        "minecraft:lava_cauldron" => 2,
+        "minecraft:powder_snow_cauldron" => 3,
         _ => return pass(),
     };
     let level: u8 = cauldron
@@ -175,7 +263,7 @@ pub fn interact(
     let item = &*held.item;
     let water_potion = held.data().and_then(|d| d.potion.as_deref()) == Some("minecraft:water");
     // Dispatcher.get: tags first, then the item map.
-    if kind == "water" && removes_dye {
+    if kind == 1 && removes_dye {
         if held.data().and_then(|d| d.dyed_color).is_none() {
             return pass();
         }
@@ -183,112 +271,95 @@ pub fn interact(
             stack.data_mut().dyed_color = None;
             stack.tidy();
         }
-        return changed(lowered(cauldron), None, "clean_armor");
+        return changed_lowered(cauldron, None, "clean_armor");
     }
     let fill_bucket = |player: &mut dyn Player, new: &str, can_fill: bool, sound| {
         if !can_fill {
             return pass();
         }
-        filled(player, ItemStack::new(new, 1), true);
+        create_filled_result(player, ItemStack::new(new, 1), true);
         changed(
             state("minecraft:cauldron", None),
             Some(sound),
             "use_cauldron",
         )
+        .with_event("minecraft:fluid_pickup")
     };
     let empty_bucket = |player: &mut dyn Player, block: BlockState, sound| {
-        filled(player, ItemStack::new("minecraft:bucket", 1), true);
-        changed(block, Some(sound), "fill_cauldron")
+        create_filled_result(player, ItemStack::new("minecraft:bucket", 1), true);
+        changed(block, Some(sound), "fill_cauldron").with_event("minecraft:fluid_place")
     };
-    match item {
-        "minecraft:lava_bucket" => {
-            return if under_water {
-                Interaction {
-                    outcome: Outcome::Consume,
-                    block: None,
-                    sound: None,
-                    stat: None,
-                }
+    let Some(action) = interactions()[kind].get(item) else {
+        return pass();
+    };
+    match action {
+        Action::EmptyLava => {
+            if under_water {
+                consume()
             } else {
                 empty_bucket(
                     player,
                     state("minecraft:lava_cauldron", None),
                     "minecraft:item.bucket.empty_lava",
                 )
-            };
+            }
         }
-        "minecraft:water_bucket" => {
-            return empty_bucket(
-                player,
-                state("minecraft:water_cauldron", Some(3)),
-                "minecraft:item.bucket.empty",
-            );
-        }
-        "minecraft:powder_snow_bucket" => {
-            return if under_water {
-                Interaction {
-                    outcome: Outcome::Consume,
-                    block: None,
-                    sound: None,
-                    stat: None,
-                }
+        Action::EmptyWater => empty_bucket(
+            player,
+            state("minecraft:water_cauldron", Some(3)),
+            "minecraft:item.bucket.empty",
+        ),
+        Action::EmptySnow => {
+            if under_water {
+                consume()
             } else {
                 empty_bucket(
                     player,
                     state("minecraft:powder_snow_cauldron", Some(3)),
                     "minecraft:item.bucket.empty_powder_snow",
                 )
-            };
+            }
         }
-        _ => {}
-    }
-    match (kind, item) {
-        ("empty", "minecraft:potion") => {
+        Action::EmptyPotion => {
             if !water_potion {
                 return pass();
             }
-            filled(player, ItemStack::new("minecraft:glass_bottle", 1), true);
+            create_filled_result(player, ItemStack::new("minecraft:glass_bottle", 1), true);
             changed(
                 state("minecraft:water_cauldron", Some(1)),
                 Some("minecraft:item.bottle.empty"),
                 "use_cauldron",
             )
+            .with_event("minecraft:fluid_place")
         }
-        ("water", "minecraft:bucket") => fill_bucket(
+        Action::FillWater => fill_bucket(
             player,
             "minecraft:water_bucket",
             level == 3,
             "minecraft:item.bucket.fill",
         ),
-        ("water", "minecraft:glass_bottle") => {
-            filled(
+        Action::FillBottle => {
+            create_filled_result(
                 player,
                 ItemStack::new("minecraft:potion", 1).with_potion("minecraft:water"),
                 true,
             );
-            changed(
-                lowered(cauldron),
-                Some("minecraft:item.bottle.fill"),
-                "use_cauldron",
-            )
+            changed_lowered(cauldron, Some("minecraft:item.bottle.fill"), "use_cauldron")
+                .with_event("minecraft:fluid_pickup")
         }
-        ("water", "minecraft:potion") => {
+        Action::TopUpPotion => {
             if level == 3 || !water_potion {
                 return pass();
             }
-            filled(player, ItemStack::new("minecraft:glass_bottle", 1), true);
+            create_filled_result(player, ItemStack::new("minecraft:glass_bottle", 1), true);
             let mut next = cauldron.clone();
             // BlockState.cycle on a 1..=3 property
             next.properties
                 .insert("level".into(), (level % 3 + 1).to_string());
             changed(next, Some("minecraft:item.bottle.empty"), "use_cauldron")
+                .with_event("minecraft:fluid_place")
         }
-        ("water", name)
-            if name
-                .strip_prefix("minecraft:")
-                .and_then(|n| n.strip_suffix("_banner"))
-                .is_some_and(|c| COLORS.contains(&c)) =>
-        {
+        Action::CleanBanner => {
             let layers = held.data().map_or(0, |d| d.banner_patterns.len());
             if layers == 0 {
                 return pass();
@@ -297,31 +368,25 @@ pub fn interact(
             cleaned.count = 1;
             cleaned.data_mut().banner_patterns.pop();
             cleaned.tidy();
-            filled(player, cleaned, false);
-            changed(lowered(cauldron), None, "clean_banner")
+            create_filled_result(player, cleaned, false);
+            changed_lowered(cauldron, None, "clean_banner")
         }
-        ("water", name)
-            if name
-                .strip_prefix("minecraft:")
-                .and_then(|n| n.strip_suffix("_shulker_box"))
-                .is_some_and(|c| COLORS.contains(&c)) =>
-        {
-            filled(player, held.transmute("minecraft:shulker_box", 1), false);
-            changed(lowered(cauldron), None, "clean_shulker_box")
+        Action::CleanShulker => {
+            create_filled_result(player, held.transmute("minecraft:shulker_box", 1), false);
+            changed_lowered(cauldron, None, "clean_shulker_box")
         }
-        ("lava", "minecraft:bucket") => fill_bucket(
+        Action::FillLava => fill_bucket(
             player,
             "minecraft:lava_bucket",
             true,
             "minecraft:item.bucket.fill_lava",
         ),
-        ("powder_snow", "minecraft:bucket") => fill_bucket(
+        Action::FillSnow => fill_bucket(
             player,
             "minecraft:powder_snow_bucket",
             level == 3,
             "minecraft:item.bucket.fill_powder_snow",
         ),
-        _ => pass(),
     }
 }
 
@@ -363,6 +428,68 @@ pub fn outcome(
 mod tests {
     use super::*;
 
+    /// A player whose inventory is full: `Inventory.add` takes nothing, and in creative clears
+    /// what it can't place, as vanilla's does.
+    struct Full {
+        creative: bool,
+        hand: Option<ItemStack>,
+        dropped: Vec<ItemStack>,
+    }
+    impl Player for Full {
+        fn creative(&self) -> bool {
+            self.creative
+        }
+        fn hand(&mut self) -> &mut Option<ItemStack> {
+            &mut self.hand
+        }
+        fn add(&mut self, stack: &mut ItemStack) -> bool {
+            if self.creative {
+                stack.count = 0;
+                return true;
+            }
+            false
+        }
+        fn contains(&self, _: &ItemStack) -> bool {
+            false
+        }
+        fn drop_stack(&mut self, stack: ItemStack) {
+            self.dropped.push(stack);
+        }
+    }
+
+    #[test]
+    fn a_filled_result_with_a_full_inventory_drops_only_in_survival() {
+        let buckets = |count| Some(ItemStack::new("minecraft:bucket", count));
+        for filled in ["minecraft:water_bucket", "minecraft:lava_bucket"] {
+            let new = ItemStack::new(filled, 1);
+            // Creative: the hand is kept, and the filled bucket the inventory can't take is
+            // discarded, not dropped.
+            let mut p = Full {
+                creative: true,
+                hand: buckets(2),
+                dropped: Vec::new(),
+            };
+            create_filled_result(&mut p, new.clone(), true);
+            assert_eq!((p.hand, p.dropped), (buckets(2), vec![]));
+            // Survival: one bucket is used up, and the filled one is dropped.
+            let mut p = Full {
+                creative: false,
+                hand: buckets(2),
+                dropped: Vec::new(),
+            };
+            create_filled_result(&mut p, new.clone(), true);
+            assert_eq!((p.hand, p.dropped), (buckets(1), vec![new.clone()]));
+            // The last bucket becomes the filled one in the hand.
+            let mut p = Full {
+                creative: false,
+                hand: buckets(1),
+                dropped: Vec::new(),
+            };
+            create_filled_result(&mut p, new.clone(), true);
+            assert_eq!((p.hand, p.dropped), (Some(new), vec![]));
+        }
+    }
+
     #[test]
     fn a_client_sees_the_bucket_taken_without_acting() {
         let empty = state("minecraft:cauldron", None);
@@ -390,6 +517,53 @@ mod tests {
         assert_eq!(outcome(&water(2), false, "minecraft:bucket"), Outcome::Pass);
         assert_eq!(outcome(&empty, false, "minecraft:bucket"), Outcome::Pass);
         assert_eq!(outcome(&empty, false, "minecraft:stone"), Outcome::Pass);
+    }
+
+    #[test]
+    fn table_preserves_tag_priority_and_cauldron_guards() {
+        let water = state("minecraft:water_cauldron", Some(3));
+        let lava = state("minecraft:lava_cauldron", None);
+        let bucket = ItemStack::new("minecraft:water_bucket", 1);
+        // A matching dye tag is terminal even when the item is also in the item table.
+        assert_eq!(outcome(&water, false, true, &bucket), Outcome::Pass);
+        assert_eq!(outcome(&water, false, false, &bucket), Outcome::Success);
+        assert_eq!(outcome(&lava, false, true, &bucket), Outcome::Success);
+        assert_eq!(
+            outcome(
+                &lava,
+                true,
+                false,
+                &ItemStack::new("minecraft:lava_bucket", 1)
+            ),
+            Outcome::Consume
+        );
+        assert_eq!(
+            outcome(
+                &water,
+                false,
+                false,
+                &ItemStack::new("minecraft:red_banner", 1)
+            ),
+            Outcome::Pass
+        );
+        assert_eq!(
+            outcome(
+                &water,
+                false,
+                false,
+                &ItemStack::new("minecraft:red_shulker_box", 1)
+            ),
+            Outcome::Success
+        );
+        assert_eq!(
+            outcome(
+                &water,
+                false,
+                false,
+                &ItemStack::new("example:red_shulker_box", 1)
+            ),
+            Outcome::Pass
+        );
     }
 
     #[test]

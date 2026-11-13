@@ -28,5 +28,5 @@ SpectatorMenu.getItems	inline	crates/horizon-client/src/spectator_menu.rs::Spect
 SpectatorPage.getItem	inline	crates/horizon-client/src/spectator_menu.rs::SpectatorMenu::item	the page bounds check and the empty-slot fallback are folded into item
 TeleportToPlayerMenuCategory.extractIcon	port	crates/horizon-client/src/spectator_menu.rs::icon	Item::TeleportToPlayer arm: teleport_to_player sprite at 16x16 with brightness and alpha tint
 TeleportToTeamMenuCategory.extractIcon	port	crates/horizon-client/src/spectator_menu.rs::icon	Item::TeleportToTeam arm: teleport_to_team sprite at 16x16 with brightness and alpha tint
-TeleportToTeamMenuCategory.TeamSelectionItem.create	port	crates/horizon-client/src/game/spectator.rs::Game::new_spectator_menu	team members come from the tab list, non-spectators only; no members means no entry; the icon is a random member's skin
+TeleportToTeamMenuCategory.TeamSelectionItem.create	port	crates/horizon-client/src/game/interface/spectator.rs::Game::new_spectator_menu	team members come from the tab list, non-spectators only; no members means no entry; the icon is a random member's skin
 TeleportToTeamMenuCategory.TeamSelectionItem.extractIcon	port	crates/horizon-client/src/spectator_menu.rs::icon	Item::Team arm: team colour fill at 1,1 to 15,15 scaled by brightness, then the face

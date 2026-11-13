@@ -106,12 +106,27 @@ fn quads(scene: &Scene) -> Vec<u8> {
     vertices
 }
 
+/// Where a draw reads its vertices, as the renderer's pipelines do.
+#[derive(Clone, Copy, Debug)]
+enum Source {
+    /// The vertex buffer, then the origin's (`vs_terrain`).
+    Buffers,
+    /// Flat draws over the vertex buffer (`vs_terrain_flat`).
+    Flat,
+    /// The arena page, read by the shader, and the origin's buffer (`vs_section`).
+    Page,
+    /// Flat draws over the arena page (`vs_section_flat`).
+    FlatPage,
+}
+
 struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     bindings: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     flat_bindings: Option<wgpu::BindGroupLayout>,
+    /// The flat draws' group with the arena page (`Flat::draw_layout`).
+    page_bindings: Option<wgpu::BindGroupLayout>,
     shader: wgpu::ShaderModule,
     globals: naga::Module,
     reuse: Reuse,
@@ -180,11 +195,23 @@ impl Gpu {
                 entries: &[storage(0), storage(1)],
             })
         });
-        let source = terrain_source::terrain_shader(false);
+        let page_bindings = flat.then(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    storage(0),
+                    storage(1),
+                    storage(crate::gfx::flat::ARENA_BINDING),
+                ],
+            })
+        });
+        // As the renderer builds it: the HDR prelude (`HDR_WRITE_LIGHT`) in front.
+        let source = include_str!("../../hdr_light.wgsl").to_owned()
+            + &terrain_source::terrain_shader(false);
         let globals = naga::front::wgsl::parse_str(&source).unwrap();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Solid paths"),
-            source: wgpu::ShaderSource::Wgsl(source),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         Some(Self {
             device,
@@ -192,6 +219,7 @@ impl Gpu {
             bindings,
             layout,
             flat_bindings,
+            page_bindings,
             shader,
             globals,
             reuse: Reuse::default(),
@@ -259,6 +287,16 @@ impl Gpu {
     }
 
     fn render(&self, passes: &[&wgpu::RenderPipeline], scene: &Scene, flat: bool) -> Vec<u8> {
+        let source = if flat { Source::Flat } else { Source::Buffers };
+        self.render_from(passes, scene, source)
+    }
+
+    fn render_from(
+        &self,
+        passes: &[&wgpu::RenderPipeline],
+        scene: &Scene,
+        source: Source,
+    ) -> Vec<u8> {
         let (device, queue) = (&self.device, &self.queue);
         let texture = |edge: u32, texels: &[u8]| {
             device.create_texture_with_data(
@@ -324,10 +362,11 @@ impl Gpu {
             entries: &entries,
         });
         let origin = [0.0f32, 0.0, 0.0, scene.w];
+        // A page holds a section's vertices as the vertex buffer does (`arena_vertex`).
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: &quads(scene),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
         });
         let instance = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
@@ -340,22 +379,35 @@ impl Gpu {
             contents: bytemuck::cast_slice(&[0u32; 4]),
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let flat_group = flat.then(|| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let slot_entries = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: slots.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: instance.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: crate::gfx::flat::ARENA_BINDING,
+                resource: vertices.as_entire_binding(),
+            },
+        ];
+        let flat_group = match source {
+            Source::Buffers => None,
+            Source::Flat => Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout: self.flat_bindings.as_ref().unwrap(),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: slots.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: instance.as_entire_binding(),
-                    },
-                ],
-            })
-        });
+                entries: &slot_entries[..2],
+            })),
+            Source::Page | Source::FlatPage => {
+                Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: self.page_bindings.as_ref().unwrap(),
+                    entries: &slot_entries,
+                }))
+            }
+        };
         let size = wgpu::Extent3d {
             width: SIZE[0],
             height: SIZE[1],
@@ -448,6 +500,17 @@ struct Pipelines<'a> {
     paths: SolidPaths,
     solid: wgpu::RenderPipeline,
     opaque: [Option<wgpu::RenderPipeline>; 2],
+    /// The same over the arena's pages, where the test GPU has flat draws.
+    pulled: Option<Pulled>,
+}
+
+/// The usual pipelines once flat draws exist (`Renderer::new`'s pulled ones, `Flat::new`'s), and
+/// this module's for them.
+struct Pulled {
+    paths: SolidPaths,
+    solid: wgpu::RenderPipeline,
+    /// Per-section, then flat.
+    opaque: [wgpu::RenderPipeline; 2],
 }
 
 impl<'a> Pipelines<'a> {
@@ -481,6 +544,7 @@ impl<'a> Pipelines<'a> {
             &gpu.layout,
             gpu.flat_bindings.as_ref(),
             &buffers,
+            false,
         )
         .expect("the test GPU takes these pipelines");
         let back = Some(wgpu::Face::Back);
@@ -520,11 +584,52 @@ impl<'a> Pipelines<'a> {
                 )
                 .unwrap()
         });
+        let pulled = gpu.page_bindings.as_ref().map(|pages| {
+            let page_layout = gpu
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: None,
+                    bind_group_layouts: &[Some(&gpu.bindings), Some(pages)],
+                    ..Default::default()
+                });
+            let origins = [None, buffers[1].clone()];
+            let page = |vertex, fragment, buffers: &[Option<wgpu::VertexBufferLayout<'_>>]| {
+                terrain
+                    .pipeline(
+                        &page_layout,
+                        "Usual pulled",
+                        vertex,
+                        fragment,
+                        buffers,
+                        back,
+                        true,
+                        None,
+                    )
+                    .unwrap()
+            };
+            Pulled {
+                paths: SolidPaths::new(
+                    &terrain,
+                    &gpu.bindings,
+                    &gpu.layout,
+                    Some(pages),
+                    &buffers,
+                    true,
+                )
+                .expect("the test GPU takes the pulled pipelines"),
+                solid: page("vs_section", "fs_solid", &origins),
+                opaque: [
+                    page("vs_section_opaque", "fs_opaque", &origins),
+                    page("vs_section_flat_opaque", "fs_opaque", &[]),
+                ],
+            }
+        });
         Self {
             gpu,
             paths,
             solid: usual("vs_terrain", "fs_solid"),
             opaque: [Some(usual("vs_terrain_opaque", "fs_opaque")), flat_opaque],
+            pulled,
         }
     }
     /// The usual opaque pass, then `cutout`.
@@ -584,6 +689,41 @@ fn settled_terrain_draws_the_usual_pixels() {
         assert!(usual == pipelines.settled(&scene, false), "{scene:?}");
         if gpu.flat_bindings.is_some() {
             assert!(usual == pipelines.settled(&scene, true), "{scene:?} (flat)");
+        }
+    }
+}
+
+/// Once flat draws exist the solid draws read the arena's pages (`vs_section*`): these passes
+/// read them as the usual pipelines do. (Built over the vertex buffer's layout they read a
+/// page's words as vertices that aren't there: Adreno lost its leaves and grass, then whole
+/// fields under white sheets.)
+#[test]
+fn over_the_pages_these_passes_draw_the_usual_pixels() {
+    let Some(gpu) = Gpu::new() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    let pipelines = Pipelines::new(&gpu);
+    let Some(pulled) = &pipelines.pulled else {
+        eprintln!("no flat draws: skipped");
+        return;
+    };
+    for w in [WHOLE, FADING_IN] {
+        for scene in scenes(w) {
+            let usual = gpu.render_from(&[&pulled.solid], &scene, Source::Page);
+            assert_drawn(&usual, &scene);
+            for (flat, source) in [(false, Source::Page), (true, Source::FlatPage)] {
+                let opaque = &pulled.opaque[usize::from(flat)];
+                let cutout = pulled.paths.static_cutout.get(flat).unwrap();
+                let split = gpu.render_from(&[opaque, cutout], &scene, source);
+                assert!(usual == split, "{scene:?} ({source:?})");
+                if w == WHOLE {
+                    let [opaque, cutout] = pulled.paths.settled.as_ref().unwrap();
+                    let passes = [opaque.get(flat).unwrap(), cutout.get(flat).unwrap()];
+                    let settled = gpu.render_from(&passes, &scene, source);
+                    assert!(usual == settled, "{scene:?} (settled, {source:?})");
+                }
+            }
         }
     }
 }

@@ -1,13 +1,13 @@
 //! Repository tasks, run with `cargo run -p xtask -- TASK`.
 //!
 //! `package BINARY OUTDIR`: a playable Horizon folder with the game binary, horizon-ctl,
-//! horizon-prepare and horizon-server (built beside it: cargo build --release -p horizon-client -p horizon-client-lib
+//! horizon-prepare and horizon-server (built beside it: cargo build --release -p horizon-game -p horizon-client-lib
 //! --bins -p horizon-prepare -p horizon-server), the exporters horizon-prepare compiles, its sources (the launcher compares
 //! them to its own), and PLAY.txt. It holds none of Minecraft's files: players prepare those
 //! from their own copy. .github/workflows/release.yml makes the release folders with it.
 //!
 //! `package-server ENGINE OUTDIR`: a server folder (docs/server.md): the server build of the game
-//! (`cargo build --release -p horizon-client --no-default-features`, without sound or controllers)
+//! (`cargo build --release -p horizon-game --no-default-features`, without sound or controllers)
 //! as horizon-engine, with horizon-prepare and horizon-server from beside it and the same sources.
 //!
 //! `tokens`: writes `crates/horizon-theme/tokens.css`, the design tokens of `crates/horizon-theme` as CSS
@@ -23,7 +23,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR | package-server ENGINE OUTDIR | tokens | icons";
+const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR | package-server ENGINE OUTDIR | mod-api [notes|coverage] | tokens | icons";
 
 /// What the release folder takes from the repository at HEAD, as `git archive` writes it.
 const ARCHIVED: [&str; 5] = [
@@ -50,8 +50,9 @@ fn main() -> ExitCode {
         [task, engine, out] if task == "package-server" => {
             package_server(Path::new(engine), Path::new(out))
         }
-        [task] if task == "mod-api" => mod_api::run(false),
-        [task, check] if task == "mod-api" && check == "--check" => mod_api::run(true),
+        [task] if task == "mod-api" => mod_api::run(),
+        [task, notes] if task == "mod-api" && notes == "notes" => mod_api::notes(),
+        [task, coverage] if task == "mod-api" && coverage == "coverage" => mod_api::coverage(),
         [task] if task == "tokens" => tokens(),
         [task] if task == "icons" => icons(),
         _ => Err(USAGE.to_string()),
@@ -63,6 +64,22 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The checkout xtask acts on: the nearest folder at or above the current directory that holds
+/// `xtask/Cargo.toml`. It is read when xtask runs, not when it is built, so a binary that
+/// worktrees share through one `CARGO_TARGET_DIR` writes to the checkout it is run from.
+fn repo_root() -> Result<PathBuf, String> {
+    let here = std::env::current_dir().map_err(|e| format!("current directory: {e}"))?;
+    checkout_above(&here)
+        .ok_or_else(|| format!("{}: not inside a Horizon checkout", here.display()))
+}
+
+fn checkout_above(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| dir.join("xtask/Cargo.toml").is_file())
+        .map(Path::to_path_buf)
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -83,7 +100,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
 }
 
 fn tokens() -> Result<(), String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/horizon-theme/tokens.css");
+    let path = repo_root()?.join("crates/horizon-theme/tokens.css");
     fs::write(&path, horizon_theme::css()).map_err(|e| format!("{}: {e}", path.display()))?;
     println!("wrote crates/horizon-theme/tokens.css");
     Ok(())
@@ -168,7 +185,7 @@ fn icns(entries: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
 }
 
 fn icons() -> Result<(), String> {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let repo = repo_root()?;
     let brand = repo.join("docs/media/brand");
     let square = brand.join("icon.svg");
     let packaging = repo.join("packaging/icons");
@@ -262,11 +279,7 @@ fn copy_exporter_tree(from: &Path, to: &Path) -> Result<(), String> {
 
 /// `OUT`, emptied, with the sources the release folders take (`ARCHIVED`); the repository's path.
 fn new_folder(out: &Path) -> Result<PathBuf, String> {
-    let top = git(
-        Path::new(env!("CARGO_MANIFEST_DIR")),
-        &["rev-parse", "--show-toplevel"],
-    )?;
-    let repo = PathBuf::from(String::from_utf8_lossy(&top).trim());
+    let repo = repo_root()?;
     match fs::remove_dir_all(out) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
             return Err(format!("{}: {e}", out.display()));
@@ -298,7 +311,7 @@ fn copy_beside(program: &Path, tools: &[&str], out: &Path) -> Result<(), String>
             .join(program_name(program, tool));
         if !path.is_file() {
             return Err(format!(
-                "{} is missing; build it too: cargo build --release -p horizon-client -p horizon-client-lib --bins -p horizon-prepare -p horizon-server",
+                "{} is missing; build it too: cargo build --release -p horizon-game -p horizon-client-lib --bins -p horizon-prepare -p horizon-server",
                 path.display()
             ));
         }
@@ -475,6 +488,25 @@ mod tests {
         tar.extend(header(name, mode, data.len(), kind));
         tar.extend(data);
         tar.resize(tar.len().div_ceil(512) * 512, 0);
+    }
+
+    #[test]
+    fn each_worktree_finds_its_own_checkout() {
+        let base = std::env::temp_dir().join(format!("xtask-root-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let [one, two] = ["one", "two"].map(|name| base.join(name));
+        for checkout in [&one, &two] {
+            fs::create_dir_all(checkout.join("xtask")).unwrap();
+            fs::write(checkout.join("xtask/Cargo.toml"), "").unwrap();
+            fs::create_dir_all(checkout.join("crates/horizon-client/src")).unwrap();
+        }
+        assert_eq!(checkout_above(&one), Some(one.clone()));
+        assert_eq!(
+            checkout_above(&two.join("crates/horizon-client/src")),
+            Some(two.clone())
+        );
+        assert_eq!(checkout_above(&base), None);
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

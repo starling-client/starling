@@ -214,6 +214,8 @@ pub struct TouchControls {
     tap_aim: Option<[f32; 2]>,
     pending_tap: Option<bool>,
     aspect: f32,
+    /// The camera cutout's strips as fractions of the surface: left, top, right, bottom.
+    safe: [f32; 4],
     pub chat_requested: bool,
     pub settings_requested: bool,
     pub debug_requested: bool,
@@ -261,6 +263,7 @@ impl Default for TouchControls {
             tap_aim: None,
             pending_tap: None,
             aspect: 0.0,
+            safe: [0.0; 4],
             chat_requested: false,
             settings_requested: false,
             debug_requested: false,
@@ -335,6 +338,12 @@ impl TouchControls {
     /// assign them from the player's saved layout, so this never touches disk.
     pub fn viewport(&mut self, width: u32, height: u32) {
         self.aspect = width.max(1) as f32 / height.max(1) as f32;
+    }
+    /// How far the camera cutout reaches into the `width` x `height` surface from each edge, in
+    /// pixels (left, top, right, bottom): the controls keep out of it (#166). All 0 leaves
+    /// every control where it was.
+    pub fn safe_insets(&mut self, width: u32, height: u32, insets: [u32; 4]) {
+        self.safe = layout::safe_area(width, height, insets);
     }
     pub fn aspect(&self) -> f32 {
         if self.aspect > 0.0 {
@@ -562,6 +571,7 @@ impl TouchControls {
                 + direction * ((inventory.size + p.size) * 0.5 + 0.015) / self.aspect();
             let half = p.size / self.aspect() * 0.5;
             p.center[0] = p.center[0].clamp(half, 1.0 - half);
+            p = self.keep_clear(p);
         }
         p
     }
@@ -2417,6 +2427,49 @@ mod tests {
         touch.settings.button_scale = f32::NAN;
         touch.settings.sanitize();
         assert_eq!(touch.settings.button_scale, 1.0);
+    }
+
+    #[test]
+    fn controls_keep_out_of_the_camera_cutout_and_stay_put_without_one() {
+        let mut touch = TouchControls::default();
+        touch.viewport(2400, 1080);
+        let rects = |t: &TouchControls| -> Vec<[f32; 4]> {
+            Control::ALL
+                .iter()
+                .map(|c| t.placement(*c).rect(t.aspect()))
+                .collect()
+        };
+        let before = rects(&touch);
+        // No cutout: every control where it was.
+        touch.safe_insets(2400, 1080, [0; 4]);
+        assert_eq!(rects(&touch), before);
+        // A 200 pixel strip on the left: the joystick moves out to its edge, Jump stays.
+        let strip = 200.0 / 2400.0;
+        touch.safe_insets(2400, 1080, [200, 0, 0, 0]);
+        let joystick = touch.placement(Control::Move).rect(touch.aspect());
+        assert!((joystick[0] - strip).abs() < 1e-5, "{joystick:?}");
+        assert_eq!(
+            touch.placement(Control::Jump).rect(touch.aspect()),
+            before[Control::Jump as usize]
+        );
+        // The player's own buttons too.
+        let mut button = CustomButton::new("key.keyboard.unknown".into(), 0);
+        button.layouts = [layout::Placement::new(0.02, 0.5, 0.105); 3];
+        touch.settings.custom_buttons.push(button);
+        let custom = touch.custom_placement(0).rect(touch.aspect());
+        assert!((custom[0] - strip).abs() < 1e-5, "{custom:?}");
+        // The phone turned over, the strip on the right: Jump moves in, the joystick goes back.
+        touch.safe_insets(2400, 1080, [0, 0, 200, 0]);
+        let jump = touch.placement(Control::Jump).rect(touch.aspect());
+        assert!((jump[0] + jump[2] - (1.0 - strip)).abs() < 1e-5, "{jump:?}");
+        assert_eq!(
+            touch.placement(Control::Move).rect(touch.aspect()),
+            before[Control::Move as usize]
+        );
+        // With the setting off nothing moves.
+        touch.settings.avoid_cutout = false;
+        touch.settings.custom_buttons.clear();
+        assert_eq!(rects(&touch), before);
     }
 
     #[test]

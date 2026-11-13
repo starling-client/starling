@@ -1,7 +1,7 @@
 # Horizon Rust rewrite status
 
 The behavior target is the repository's pinned **Minecraft Java Edition 26.3**.
-One-to-one vanilla gameplay parity is the acceptance criterion. It has **not**
+One-to-one parity with vanilla gameplay is the acceptance criterion. It has **not**
 been reached, but the Rust game is now playable: the [native client](native-client.md)
 has a title screen and world management. It generates vanilla terrain with
 decoration and streams, lights and renders it. Survival play works: mining,
@@ -1455,7 +1455,7 @@ through the `HOTBAR` data fixers (`EmptyItemInHotbarFix`, every item stack
 fixer): `tools/test_hotbar_parity.py` loads generated files of 34 versions with
 the real `HotbarManager`. The creative screen's Saved Hotbars tab shows its
 rows, and the save and load keys write and read it
-(`game/creative_hotbar.rs`).
+(`game/items/creative_hotbar.rs`).
 
 ## Player list and world border rendering
 

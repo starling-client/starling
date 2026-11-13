@@ -1,0 +1,726 @@
+//! Host method declarations; access defaults and game forwarders are generated.
+#![allow(unused_variables)]
+use crate::*;
+/// The host's methods both sides share of the `players` area, implemented by the game and reached through [`Host`].
+#[horizon_mod_api_macros::host_area]
+pub trait PlayersHost {
+    /// Side: both.
+    /// `ItemCooldowns.getCooldownGroup(stack)`: the group `stack`'s
+    /// cooldown is filed under, the group its `use_cooldown` component names
+    /// (its own, else its item's default), else its item id.
+    #[access(Metadata)]
+    fn item_cooldown_group(&self, stack: &ItemStack) -> String;
+    /// Side: both.
+    /// Resolve a real online player by UUID, never a fake. A fake is reached
+    /// through the handle returned by its factory. During a nested player swap,
+    /// outer players whose records are displaced return None.
+    #[access(WorldOnly)]
+    fn player(&self, uuid: u128) -> Option<PlayerRef>;
+}
+/// The server host's methods of the `players` area, implemented by the game and reached through [`ServerHost`].
+#[horizon_mod_api_macros::host_area]
+pub trait PlayersServerHost {
+    /// Side: server.
+    /// Create or retrieve a connectionless player for the level currently in place.
+    #[access(WorldOnly)]
+    fn fake_player(&mut self, level: LevelRef, uuid: u128, name: &str) -> Option<PlayerRef>;
+}
+/// The client host's methods of the `players` area, implemented by the game and reached through [`crate::ClientHost`].
+#[horizon_mod_api_macros::host_area]
+pub trait PlayersClientHost {
+    /// Side: client.
+    /// For a client mod: a push added to the local player's velocity, in blocks a tick, as an
+    /// explosion's knockback is (the window's player moves itself, as vanilla's client does). Each component is
+    /// clamped to -4..4; a spectator, or a value that is not a number, is left alone.
+    #[access(WorldOnly)]
+    fn push_player(&mut self, kick: [f32; 3]);
+}
+/// The handles' reads of the `players` area, implemented by the game and reached through [`Backend`].
+// hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
+#[doc(hidden)]
+#[horizon_mod_api_macros::host_area]
+pub trait PlayersBackend {
+    /// Side: server.
+    /// Read one registered custom book's authoritative flags. A fresh book
+    /// returns the default pair; an unavailable player or unregistered key
+    /// returns None. This never reads a vanilla ordinal or pending client intent.
+    #[access(WorldOnly)]
+    fn player_recipe_book_settings(
+        &self,
+        player: PlayerRef,
+        book: &RecipeBookTypeKey,
+    ) -> Option<RecipeBookSettings>;
+    /// Side: server.
+    /// The IP address the player connects from, without the port (behind a
+    /// Velocity proxy, the address the proxy forwards). Displaced connected
+    /// players keep their address; an acting player with no known connection
+    /// has an empty address. None for a stale or unavailable player.
+    #[access(WorldOnly)]
+    fn player_address(&self, player: PlayerRef) -> Option<String>;
+    /// Side: server.
+    /// The stable name of a connected or acting player. None for a stale or
+    /// unavailable player; displaced online players retain their identity.
+    #[access(WorldOnly)]
+    fn player_name(&self, player: PlayerRef) -> Option<String>;
+    /// Side: both.
+    /// The level the online player is in (`ServerPlayer.level`): on an integrated
+    /// server or dedicated server, the player's current dimension; on a client,
+    /// the client's level. None for a stale or unavailable player.
+    #[access(WorldOnly)]
+    fn player_level(&self, player: PlayerRef) -> Option<LevelRef>;
+    /// Side: both.
+    /// The dimension the online player is in (`ServerPlayer.level().dimension()`):
+    /// `minecraft:overworld`, `minecraft:the_nether`, ... None for a stale
+    /// or unavailable player.
+    #[access(WorldOnly)]
+    fn player_dimension(&self, player: PlayerRef) -> Option<Identifier>;
+    /// Side: both.
+    /// `Inventory.getSelectedSlot`: the hotbar slot the player holds, 0..9.
+    #[access(WorldOnly)]
+    fn player_selected_slot(&self, player: PlayerRef) -> Option<usize>;
+    /// Side: both.
+    /// A player's current supported menu. Refuses crafting tables, merchants,
+    /// workstations, lecterns, mounts and menus with hidden slots; also refuses
+    /// clients, stale players and players whose state is swapped out.
+    #[access(WorldOnly)]
+    fn player_container_menu(&self, player: PlayerRef) -> Option<MenuRef>;
+    /// Side: server.
+    /// Every group the player waits on and its ticks left, ordered by
+    /// group.
+    #[access(WorldOnly)]
+    fn player_item_cooldowns(&self, player: PlayerRef) -> Option<Vec<ItemCooldown>>;
+    /// Side: server.
+    /// `ItemCooldowns.isOnCooldown`: whether `group` still has time to run.
+    #[access(WorldOnly)]
+    fn player_has_item_cooldown(&self, player: PlayerRef, group: &str) -> Option<bool>;
+    /// Side: server.
+    /// `ItemCooldowns.getCooldownPercent(group, 0)`: what is left of the
+    /// group's cooldown, from 1 (just started) to 0 (none).
+    #[access(WorldOnly)]
+    fn player_item_cooldown_percent(&self, player: PlayerRef, group: &str) -> Option<f32>;
+    /// Side: server.
+    /// `Player.getAttackStrengthScale(partial)`: the charge the player's next
+    /// `Player.attack` reads, from 0 (just swung) to 1 (full), where `partial`
+    /// (vanilla reads 0.5) is how far between ticks the read is. It is
+    /// `(attackStrengthTicker + partial) / getCurrentItemAttackStrengthDelay()`,
+    /// the delay from the attack speed attribute and the main-hand item.
+    /// Inside `attack_entity` it reads the charge that blow uses: the hook
+    /// runs before `Player.attack` resets the ticker. 1.0 under 1.8.9 rules,
+    /// which have no cooldown. None for a stale or unavailable player.
+    #[access(WorldOnly)]
+    /// Non-finite partial ticks return `None`; finite partials are not restricted.
+    fn player_attack_strength_scale(&self, player: PlayerRef, partial: f32) -> Option<f32>;
+    /// Side: server.
+    /// `Player.takeXpDelay`: the ticks before the player can take the next
+    /// experience orb.
+    #[access(WorldOnly)]
+    fn player_exp_cooldown(&self, player: PlayerRef) -> Option<u32>;
+    /// Side: both.
+    /// The dimension and block of the player's last death
+    /// (`Player.getLastDeathLocation`).
+    #[access(WorldOnly)]
+    fn player_last_death_location(&self, player: PlayerRef) -> Option<GlobalPos>;
+    /// Side: both.
+    /// `FoodData.needsFood`: the food level is below 20.
+    #[access(WorldOnly)]
+    fn player_needs_food(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: both.
+    /// `FoodData.hasEnoughFood`: the food level is above 6, enough to
+    /// sprint.
+    #[access(WorldOnly)]
+    fn player_has_enough_food(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: both.
+    /// `Player.canEat(always)`: an invulnerable player (creative), `always`
+    /// (food that can always be eaten) or a food level below 20.
+    #[access(WorldOnly)]
+    fn player_can_eat(&self, player: PlayerRef, always: bool) -> Option<bool>;
+    /// Side: both.
+    /// `Player.experienceLevel`, `experienceProgress` and `totalExperience`.
+    #[access(WorldOnly)]
+    fn player_experience(&self, player: PlayerRef) -> Option<PlayerExperience>;
+    /// Side: both.
+    /// `Player.getXpNeededForNextLevel`: the points the current level needs
+    /// to fill.
+    #[access(WorldOnly)]
+    fn player_xp_needed_for_next_level(&self, player: PlayerRef) -> Option<i32>;
+    /// Side: server.
+    /// The player's permission level, 0 to 4 (`Player.permissions()`,
+    /// `PlayerList.getProfilePermissions`): an op's level, the
+    /// single-player owner's 4 with commands allowed. A displaced connected
+    /// player keeps their permission level even while their body is unavailable.
+    /// None for a stale or unavailable player.
+    #[access(WorldOnly)]
+    fn player_permission_level(&self, player: PlayerRef) -> Option<u8>;
+    /// Side: server.
+    /// `Player.hasInfiniteMaterials`: the `instabuild` ability, which
+    /// creative mode gives.
+    #[access(WorldOnly)]
+    fn player_has_infinite_materials(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: server.
+    /// `Player.canUseGameMasterBlocks`: creative and a permission level of
+    /// at least 2, as command blocks, structure blocks and jigsaws ask.
+    #[access(WorldOnly)]
+    fn player_can_use_game_master_blocks(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: server.
+    /// `ServerPlayerGameMode.getPreviousGameModeForPlayer`: the mode the
+    /// player last left (`previousPlayerGameType`, saved with the player), or
+    /// `Some(None)` when they never changed mode. None for a stale or
+    /// unavailable player.
+    #[access(WorldOnly)]
+    fn player_previous_game_mode(&self, player: PlayerRef) -> Option<Option<GameMode>>;
+    /// Side: both.
+    /// `Player.isSecondaryUseActive`: whether the player uses items and
+    /// blocks as with sneak held, as vanilla reads it from the shift-key
+    /// flag (the same read as `EntityRef::is_shift_key_down`). None for a
+    /// stale or unavailable player.
+    #[access(WorldOnly)]
+    fn player_is_secondary_use_active(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: server.
+    /// Whether a live player handle names a connectionless actor.
+    #[access(WorldOnly)]
+    fn player_is_fake(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: server.
+    /// `Player.mayUseItemAt(pos, face, stack)`: whether the player may use `stack` at `pos`, the
+    /// block it would be placed in when clicked on its `face`. A player who may build (survival,
+    /// creative) always may; an adventure or spectator player only with a stack whose
+    /// `can_place_on` component matches the clicked block, the one `pos` lies against. The game's
+    /// own use runs the same check (`ItemStack.useOn`, buckets). None for a stale or unavailable
+    /// player, and for one in another level than the one in place.
+    #[access(WorldOnly)]
+    fn player_may_use_item_at(
+        &self,
+        player: PlayerRef,
+        pos: [i32; 3],
+        face: BlockFace,
+        stack: &ItemStack,
+    ) -> Option<bool>;
+    /// Side: server.
+    /// `ServerPlayer.canHarmPlayer(other)`: whether `player` may hurt `other`: the `pvp` game
+    /// rule is on, and their teams allow it (allies on a team without friendly fire cannot,
+    /// `Player.canHarmPlayer`). Attacks, arrows and tridents ask the same. None when either
+    /// handle is stale or unavailable.
+    #[access(WorldOnly)]
+    fn player_can_harm(&self, player: PlayerRef, other: PlayerRef) -> Option<bool>;
+    /// Side: server.
+    /// `ServerPlayer.getRespawnConfig`: where the player comes back after dying: a bed, a
+    /// respawn anchor or a `/spawnpoint`, with the yaw they face and whether it is forced.
+    /// `Some(None)` when they have none and respawn at the world spawn. None for a stale or
+    /// unavailable player.
+    #[access(WorldOnly)]
+    fn player_respawn_config(&self, player: PlayerRef) -> Option<Option<PlayerRespawnConfig>>;
+    /// Side: server.
+    /// `ServerPlayer.isTextFilteringEnabled`: the text-filtering option the player's client
+    /// announced (`ClientInformation.textFilteringEnabled`). False for the player running the
+    /// server and for an acting player with no connection, as for a client that sent none. None
+    /// for a stale or unavailable player.
+    #[access(WorldOnly)]
+    fn player_text_filtering(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: server.
+    /// Whether `player_set_sleep_ignored` left the player out of the night's sleep count. False
+    /// for a player never ignored. None for a stale handle or a player who isn't online.
+    #[access(WorldOnly)]
+    fn player_sleep_ignored(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: server.
+    /// Whether the player counts in the night's sleep count (`SleepStatus.update`): not a
+    /// spectator, not a fake player, and not left out through `player_set_sleep_ignored` while
+    /// out of bed. None for a stale or unavailable player.
+    #[access(WorldOnly)]
+    fn player_counts_for_sleep(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: server.
+    /// `Player.getSleepTimer` (`sleepCounter`): the ticks the player has been in bed, 100 once
+    /// asleep long enough (`isSleepingLongEnough`, what the night skip waits for), then
+    /// counting up 101 to 109 and back to 0 once they are up. None for a stale or unavailable
+    /// player.
+    #[access(WorldOnly)]
+    fn player_sleep_timer(&self, player: PlayerRef) -> Option<u32>;
+    /// Side: both.
+    /// `Inventory.items`: the non-empty main inventory stacks in slot order, including
+    /// their components. None for a stale or unavailable player; on clients only the
+    /// local player's inventory is available.
+    #[access(WorldOnly)]
+    fn player_inventory(&self, player: PlayerRef) -> Option<Vec<ItemStack>>;
+    /// Side: both.
+    /// `ServerPlayerGameMode.getGameModeForPlayer`; Paper `HumanEntity#getGameMode`.
+    /// None for stale, offline or unavailable players (including displaced outer players).
+    #[access(WorldOnly)]
+    fn player_game_mode(&self, player: PlayerRef) -> Option<GameMode>;
+    /// Side: both.
+    /// `Player.isCreative`; Paper `HumanEntity#getGameMode`.
+    #[access(WorldOnly)]
+    fn player_is_creative(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: both.
+    /// `Player.isSpectator`; Paper `HumanEntity#getGameMode`.
+    #[access(WorldOnly)]
+    fn player_is_spectator(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: both.
+    /// `Player.mayBuild`; Paper `HumanEntity#getGameMode`.
+    #[access(WorldOnly)]
+    fn player_may_build(&self, player: PlayerRef) -> Option<bool>;
+    /// Side: both.
+    /// `FoodData.getFoodLevel/getSaturationLevel/getExhaustionLevel`; Paper
+    /// `HumanEntity#getFoodLevel/getSaturation/getExhaustion`. None until the
+    /// guest's body exists, as well as for stale or unavailable players.
+    #[access(WorldOnly)]
+    fn player_food(&self, player: PlayerRef) -> Option<PlayerFood>;
+    /// Side: both.
+    /// `Player.getAbilities`; Paper `Player#getAllowFlight/isFlying/getFlySpeed/getWalkSpeed`.
+    #[access(WorldOnly)]
+    fn player_abilities(&self, player: PlayerRef) -> Option<PlayerAbilities>;
+    /// Side: server.
+    /// The value of statistic `stat_type` for `key` (`minecraft:stone`,
+    /// `minecraft:jump`...), as `ServerStatsCounter.getValue`: 0 when never
+    /// counted.
+    #[access(WorldOnly)]
+    fn player_stat(&self, player: PlayerRef, stat_type: StatType, key: &str) -> Option<i32>;
+    /// Side: server.
+    /// Whether the player's recipe book knows `recipe`
+    /// (`ServerRecipeBook.contains`).
+    #[access(WorldOnly)]
+    fn player_has_discovered_recipe(&self, player: PlayerRef, recipe: &str) -> Option<bool>;
+    /// Side: both.
+    /// The recipes in the player's recipe book (`ServerRecipeBook.recipes`), as qualified ids in
+    /// order (`minecraft:oak_planks`). None for a player it can't reach.
+    #[access(WorldOnly)]
+    fn player_discovered_recipes(&self, player: PlayerRef) -> Option<Vec<String>>;
+    /// Side: both.
+    /// The brand the player's client announced when it connected (`ServerPlayer.clientBrand`),
+    /// empty when it sent none. Displaced connected players keep theirs; an acting player with
+    /// no known connection has an empty one. None for a stale or unavailable player.
+    #[access(WorldOnly)]
+    fn player_client_brand(&self, player: PlayerRef) -> Option<String>;
+}
+/// The handles' client reads of the `players` area, implemented by the game and reached through [`Backend`].
+// hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
+#[doc(hidden)]
+#[horizon_mod_api_macros::host_area]
+pub trait PlayersClientBackend {
+    /// Side: client.
+    /// The local player's last authoritative custom-book pair. None before
+    /// negotiation, while resynchronizing, or for a nonlocal/stale handle.
+    #[access(WorldOnly)]
+    fn player_synced_recipe_book_settings(
+        &self,
+        player: PlayerRef,
+        book: &RecipeBookTypeKey,
+    ) -> Option<RecipeBookSettings>;
+    /// Side: client.
+    /// The local player's predicted breaking state, including Idle. None for
+    /// stale, nonlocal or fake handles and outside a logged-in client world.
+    #[access(WorldOnly)]
+    fn player_block_breaking(&self, player: PlayerRef) -> Option<BlockBreakingState>;
+    /// Side: client.
+    /// The local player's existing cave ambience mood, normally 0 through 1.
+    /// None for stale, nonlocal or fake handles and outside a client world.
+    #[access(WorldOnly)]
+    fn player_ambient_mood(&self, player: PlayerRef) -> Option<f32>;
+}
+/// Client-only custom book intent, reached through player handles.
+// hidden: mods call PlayerRef methods, never the generated backend trait
+#[doc(hidden)]
+#[horizon_mod_api_macros::host_area]
+pub trait PlayersClientBackendMut {
+    /// Side: client.
+    /// Request a new pair for the local player's negotiated book. True means
+    /// queued, not accepted; only an authoritative reply changes saved state.
+    #[access(WorldOnly)]
+    fn player_request_recipe_book_settings(
+        &mut self,
+        player: PlayerRef,
+        book: &RecipeBookTypeKey,
+        settings: RecipeBookSettings,
+    ) -> bool;
+}
+/// The handles' writes of the `players` area, implemented by the game and reached through [`BackendMut`].
+// hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
+#[doc(hidden)]
+#[horizon_mod_api_macros::host_area]
+pub trait PlayersBackendMut {
+    /// Side: server.
+    /// Set a registered custom book's authoritative pair and synchronize an
+    /// accepted change. Returns false for an unavailable player, unknown key
+    /// or exhausted storage. An unchanged pair succeeds without notification.
+    #[access(WorldOnly)]
+    fn player_set_recipe_book_settings(
+        &mut self,
+        player: PlayerRef,
+        book: &RecipeBookTypeKey,
+        settings: RecipeBookSettings,
+    ) -> bool;
+    /// Side: server.
+    /// A system line in that player's chat, also inside a player's hook for
+    /// the acting player; false when they aren't on.
+    #[access(WorldOnly)]
+    /// Refuses text deeper than 512 component nodes before applying any changes.
+    fn player_tell(&mut self, player: PlayerRef, line: Text) -> Result<bool, TextFormError>;
+    /// Side: server.
+    /// A line over that player's hotbar (the action bar), also inside a
+    /// player's hook for the acting player; false when they aren't on.
+    #[access(WorldOnly)]
+    /// Refuses text deeper than 512 component nodes before applying any changes.
+    fn player_action_bar(&mut self, player: PlayerRef, line: Text) -> Result<bool, TextFormError>;
+    /// Side: server.
+    /// The lines over and under that player's list of players (Tab):
+    /// `ClientboundTabListPacket`, an empty text for none. False when they
+    /// aren't on.
+    #[access(WorldOnly)]
+    /// Refuses text deeper than 512 component nodes before applying any changes.
+    fn player_tab_list(
+        &mut self,
+        player: PlayerRef,
+        header: &Text,
+        footer: &Text,
+    ) -> Result<bool, TextFormError>;
+    /// Side: server.
+    /// Whether that player counts for `players_sleeping_percentage`: an
+    /// ignored player who isn't in bed is left out of the players the night
+    /// needs asleep, as a spectator is (an away-from-keyboard mod). Kept
+    /// until a mod sets it back or the server stops, also if they leave and
+    /// come back. False when the server list is unavailable, the handle is
+    /// stale or the player isn't online.
+    #[access(WorldOnly)]
+    fn player_set_sleep_ignored(&mut self, player: PlayerRef, ignored: bool) -> bool;
+    /// Side: server.
+    /// `ServerPlayer.setRespawnPosition`, as `/spawnpoint` sets it: the player's respawn point
+    /// becomes `config`, or is forgotten for None (they then respawn at the world spawn). The
+    /// yaw wraps to -180..180 (`RespawnData.of`) and the `player_set_spawn` hook may cancel the
+    /// change, which refuses it. Kept with the player's record. False for a stale or unavailable
+    /// player, a dead one, a dimension the game doesn't have, a yaw that is not finite and a
+    /// canceled change.
+    #[access(WorldOnly)]
+    fn player_set_respawn_config(
+        &mut self,
+        player: PlayerRef,
+        config: Option<PlayerRespawnConfig>,
+    ) -> bool;
+    /// Side: server.
+    /// Sets the player's `sleepCounter`: 0 to 109, the values the game reaches (see
+    /// `player_sleep_timer`). A player in bed at 100 counts as slept long enough for the night
+    /// skip. False for a value past 109, a stale or unavailable player, a fake player and a
+    /// player in another level than the one in place.
+    #[access(WorldOnly)]
+    fn player_set_sleep_timer(&mut self, player: PlayerRef, ticks: u32) -> bool;
+    /// Side: server.
+    /// Shows `nickname` in place of that player's name in chat (their
+    /// messages, `/me`, `/msg`) and in the Tab list; None shows their name
+    /// again. Hovering the shown name gives the real one, which stays in the
+    /// log, commands, selectors and the server's events. Kept until a mod
+    /// sets it again or the server stops (also if they leave and come back).
+    /// Plain text: the mod checks it (`Messages::text_allowed`, its length,
+    /// other players' names). False when the server list is unavailable,
+    /// the handle is stale or the player isn't online.
+    #[access(WorldOnly)]
+    fn player_set_nickname(&mut self, player: PlayerRef, nickname: Option<&str>) -> bool;
+    /// Side: server.
+    /// Hides that player (a vanish) from the players below permission
+    /// `level`, or shows them again (None): from the next tick those players
+    /// lose them from the Tab list and the world (their client stops
+    /// tracking the player, as it does a spectator), and don't read their
+    /// joining or leaving; players of `level` or more still see them, and
+    /// a player made an operator meanwhile sees them again. Kept by UUID, even
+    /// after this handle disconnects (the player rejoins hidden), until a mod sets it again
+    /// or the server stops. Works inside a player's hook too; false for a stale
+    /// world epoch, on a client and in a world nobody else can join.
+    #[access(WorldOnly)]
+    fn player_hide(&mut self, player: PlayerRef, level: Option<u8>) -> bool;
+    /// Side: server.
+    /// Opens a block entity's menu for a connected player (`ServerPlayer.openMenu`).
+    /// Returns Stale for an invalidated entity; Ok(false) for a wrong-level player,
+    /// non-provider, cancelled open, or an unconnected player such as a fake player.
+    #[access(WorldOnly)]
+    fn player_open_menu(
+        &mut self,
+        player: PlayerRef,
+        entity: BlockEntityRef,
+    ) -> Result<bool, BlockEntityError>;
+    /// Side: server.
+    /// Sends the player `uuid` the whole picture of map `map_id`: 128 x 128
+    /// colours (`MapColor` ids times 4 plus the shade, row by row), scale 0,
+    /// locked, no decorations, as `ClientboundMapItemDataPacket`. A filled
+    /// map the mod gives with that `minecraft:map_id` then shows it in hand
+    /// and in item frames; the server keeps nothing (a map id with no saved
+    /// map is never sent again by the game), so send it again after the
+    /// player joins. Use ids far from the world's own (they count up from 0).
+    /// False for a player not here, or `colors` not 16384 long.
+    #[access(WorldOnly)]
+    fn player_send_map(&mut self, player: PlayerRef, map_id: i32, colors: &[u8]) -> bool;
+    /// Side: server.
+    /// Stores a server player's `Abilities` and tells their client
+    /// (`ServerPlayer.onUpdateAbilities`). They stay as written until the
+    /// player's game mode changes (`GameType.updatePlayerAbilities`), and are
+    /// saved with the player. A speed that is not finite refuses the write
+    /// (vanilla's setters take any float). Returns false for a
+    /// stale or unavailable player, a displaced outer player, and a speed
+    /// that is not finite.
+    #[access(WorldOnly)]
+    fn player_set_abilities(&mut self, player: PlayerRef, abilities: PlayerAbilities) -> bool;
+    /// Side: server.
+    /// A fake player acts as a player does, through the game's own path for the action
+    /// (`ServerGamePacketListenerImpl.handleUseItemOn` / `handleUseItem` / `handleInteract`'s
+    /// ATTACK, and `ServerPlayerGameMode.destroyBlock`), as its packet would run it: reach,
+    /// protection and the border, then the action. Once it runs, an effect a fake can't take
+    /// part in (a menu, sleep, a ride, another dimension) is stopped where it would start, and
+    /// the answer says which; the action's own side effects (the swing, the hooks before it,
+    /// vanilla's result) have still happened then. The fake is found once, and its turn
+    /// starts at that place in the list.
+    #[access(WorldOnly)]
+    fn player_perform_action(
+        &mut self,
+        player: PlayerRef,
+        action: PlayerAction,
+    ) -> Result<ActionOutcome, ActionRefused>;
+    /// Side: server.
+    /// A machine's one use on the persistent actor, with its private state put back even
+    /// when the action refuses. Only the existing guest turn runs gameplay and its hooks.
+    #[access(WorldOnly)]
+    fn player_perform_action_scoped(
+        &mut self,
+        player: PlayerRef,
+        action: PlayerAction,
+        setup: PlayerActionSetup,
+    ) -> Result<ScopedActionResult, ActionRefused>;
+    /// Side: server.
+    /// `ItemCooldowns.addCooldown(group, ticks)`: starts (or restarts) the
+    /// group's cooldown, and the player's client draws it on every item of the
+    /// group (`ServerItemCooldowns.onCooldownStarted`).
+    #[access(WorldOnly)]
+    fn player_set_item_cooldown(&mut self, player: PlayerRef, group: &str, ticks: i32) -> bool;
+    /// Side: server.
+    /// `ItemCooldowns.removeCooldown(group)`: ends the group's cooldown now,
+    /// on the client too (`ServerItemCooldowns.onCooldownEnded`).
+    #[access(WorldOnly)]
+    fn player_remove_item_cooldown(&mut self, player: PlayerRef, group: &str) -> bool;
+    /// Side: server.
+    /// Sets `Player.takeXpDelay`: no orb is taken for `ticks` ticks. The
+    /// change is not reported to `player_exp_cooldown_change`.
+    #[access(WorldOnly)]
+    fn player_set_exp_cooldown(&mut self, player: PlayerRef, ticks: u32) -> bool;
+    /// Side: server.
+    /// Sets the player's `WardenSpawnTracker.cooldownTicks`: sculk shriekers
+    /// they set off don't warn for `ticks` ticks. The level's players share
+    /// one tracker here, the integrated server owner's (the shriekers read it
+    /// for whoever sets them off), so this is every player's.
+    /// False, changing nothing, for anyone but the tracker's owner until each player has their own.
+    #[access(WorldOnly)]
+    fn player_set_warden_warning_cooldown(&mut self, player: PlayerRef, ticks: u32) -> bool;
+    /// Side: server.
+    /// Fires the mod's criteria trigger `trigger` (`mymod:pipe_connected`)
+    /// for `player`: vanilla's
+    /// `SimpleCriterionTrigger.trigger`. Each criterion of theirs with that
+    /// trigger, not yet granted, of an advancement not yet done, is tested
+    /// by `test` and then by its `player` predicate; those that pass are
+    /// granted, and an advancement they complete is awarded with its toast,
+    /// chat line and rewards, as the game's own triggers award.
+    ///
+    /// The acting player is reached inside their hook; another live player
+    /// is reached in their own level, including during a guest's turn. An
+    /// outer player displaced by a nested turn is unavailable. `Ok(())`
+    /// means the player was reached, whether or not anything was granted.
+    /// A stale/offline/displaced handle, a remote client, or a `minecraft:`
+    /// trigger or empty id is refused with a typed reason.
+    ///
+    /// `test` is lent to this call only. A failed test stops further testing
+    /// and reports `Test`; earlier matching criteria may already be granted.
+    /// Wasm predicates run synchronously, including callbacks into the group
+    /// firing the trigger, within that call's remaining execution and memory limits.
+    #[access(WorldOnly)]
+    fn player_trigger_criterion(
+        &mut self,
+        player: PlayerRef,
+        trigger: &Identifier,
+        test: Arc<dyn CriterionTest>,
+    ) -> Result<(), TriggerCriterionError>;
+    /// Side: server. Fires `default_block_use`, then `any_block_use`, without a tool.
+    /// Evaluates vanilla predicates and rewards in the player's own level; never reads inventory.
+    /// `Ok(())` means reached, even if no criterion matched. Refuses remote clients
+    /// (`NotServer`), stale/offline/displaced players (`PlayerUnavailable`), and
+    /// unloaded positions (`UnloadedChunk`).
+    #[access(WorldOnly)]
+    fn player_trigger_block_use(
+        &mut self,
+        player: PlayerRef,
+        pos: [i32; 3],
+    ) -> Result<(), TriggerCriterionError>;
+    /// Side: server. Fires `item_used_on_block` with `original`, then `any_block_use`
+    /// with `after`, in vanilla order. `original` is copied after a before-block
+    /// PASS and before block/item effects; `after` is that original hand stack
+    /// mutated in place, never a replacement swapped into the hand.
+    /// Neither stack is read from inventory. Consuming right-click/before-block
+    /// cancellation already fires automatic `any_block_use` only; do not call
+    /// this pair helper for it, which would duplicate any and add an inner trigger.
+    /// Invalid stacks return `Stack(StackWriteError)` before either trigger fires.
+    /// Evaluates vanilla predicates and rewards in the player's own level.
+    /// `Ok(())` means reached, even if nothing matched. Refuses remote clients
+    /// (`NotServer`), stale/offline/displaced players (`PlayerUnavailable`), and
+    /// unloaded positions (`UnloadedChunk`).
+    #[access(WorldOnly)]
+    fn player_trigger_item_used_on_block(
+        &mut self,
+        player: PlayerRef,
+        pos: [i32; 3],
+        original: &ItemStack,
+        after: &ItemStack,
+    ) -> Result<(), TriggerCriterionError>;
+    /// Side: server.
+    /// `Player.setLastDeathLocation`: stores where the player died, or
+    /// forgets it for None. The client hears of it with the player's next
+    /// respawn, as in vanilla. False in the cases a read gives None.
+    #[access(WorldOnly)]
+    fn player_set_last_death_location(
+        &mut self,
+        player: PlayerRef,
+        location: Option<GlobalPos>,
+    ) -> bool;
+    /// Side: server.
+    /// `FoodData.eat(nutrition, saturationModifier)`: adds `nutrition` to
+    /// the food level (0 to 20) and `nutrition * modifier * 2` to the
+    /// saturation, which stays at most the food level.
+    #[access(WorldOnly)]
+    fn player_feed(&mut self, player: PlayerRef, nutrition: i32, saturation_modifier: f32) -> bool;
+    /// Side: server.
+    /// `Player.causeFoodExhaustion`: adds exhaustion (at most 40), as
+    /// sprinting or jumping does. An invulnerable player (creative) or a
+    /// spectator gets none, and the call still returns true.
+    #[access(WorldOnly)]
+    fn player_add_exhaustion(&mut self, player: PlayerRef, amount: f32) -> bool;
+    /// Side: server.
+    /// `FoodData.setFoodLevel`: sets the food level as it is, unclamped,
+    /// as vanilla does.
+    #[access(WorldOnly)]
+    fn player_set_food_level(&mut self, player: PlayerRef, level: i32) -> bool;
+    /// Side: server.
+    /// `FoodData.setSaturation`: sets the saturation as it is, unclamped.
+    #[access(WorldOnly)]
+    fn player_set_saturation(&mut self, player: PlayerRef, saturation: f32) -> bool;
+    /// Side: server.
+    /// Sets the exhaustion as it is (Paper's `HumanEntity#setExhaustion`;
+    /// vanilla's `FoodData` only adds to it).
+    #[access(WorldOnly)]
+    fn player_set_exhaustion(&mut self, player: PlayerRef, exhaustion: f32) -> bool;
+    /// Side: server.
+    /// `ServerPlayer.setExperiencePoints`: sets the progress toward the next
+    /// level to `points` of the points it needs, kept below a full bar. The
+    /// level and the total are kept.
+    #[access(WorldOnly)]
+    fn player_set_experience_points(&mut self, player: PlayerRef, points: i32) -> bool;
+    /// Side: server.
+    /// `ServerPlayer.setExperienceLevels`: sets the level, keeping the
+    /// progress and the total.
+    #[access(WorldOnly)]
+    fn player_set_experience_levels(&mut self, player: PlayerRef, levels: i32) -> bool;
+    /// Side: server.
+    /// Changes a player's game mode as `ServerPlayer.setGameMode` and
+    /// `/gamemode` do, including the cancellable change hook and ability
+    /// updates. Returns false for a stale or unavailable player, an active
+    /// outer guest, no change, or a canceled change.
+    #[access(WorldOnly)]
+    fn player_set_game_mode(&mut self, player: PlayerRef, mode: GameMode) -> bool;
+    /// Side: server.
+    /// `Inventory.setSelectedSlot`: makes `slot` (0 to 8) the hotbar slot the player holds and
+    /// tells their client (`ClientboundSetHeldSlot`), as `/clear`-style server code does. A new
+    /// slot ends a main-hand use in progress, as the client's own switch does, and asks no
+    /// `player_switch_hotbar_slot_pre`: that hook is for the player's own input. Returns false for
+    /// a slot past 8, a stale or unavailable player, and a dead one; true when the player already
+    /// held `slot`.
+    #[access(WorldOnly)]
+    fn player_set_selected_slot(&mut self, player: PlayerRef, slot: usize) -> bool;
+    /// Side: server.
+    /// `Player.drop(stack, false, thrown_by_player)`: `stack` is thrown from the player's eyes
+    /// along their view as an item entity, with the main hand swinging and `item_toss` asked
+    /// first. Nothing is taken from an inventory: the stack is the caller's, taken out through
+    /// the item places first, which is what separates it from giving or dropping into the
+    /// inventory. `thrown_by_player` names the player as the item's thrower, as the drop key
+    /// does. `Ok(None)` when the stack is in the world; otherwise `Ok(Some(stack))` comes back, untouched, for
+    /// the caller to put back: an empty stack, a stale or dead player, or a toss a mod canceled
+    /// (`item_toss`), so a refused drop never loses items. Invalid API stack conversion returns
+    /// `StackWriteError`, as other checked stack writes do.
+    #[access(WorldOnly)]
+    fn player_drop_stack(
+        &mut self,
+        player: PlayerRef,
+        stack: ItemStack,
+        thrown_by_player: bool,
+    ) -> Result<Option<ItemStack>, StackWriteError>;
+    /// Side: server.
+    /// Remove a fake without treating it as a disconnect or saving it.
+    #[access(WorldOnly)]
+    fn player_remove_fake(&mut self, player: PlayerRef) -> bool;
+    /// Side: server.
+    /// `Player.awardStat(stat, amount)`: adds `amount`, as the game does
+    /// for its own counts, so `player_stat_award` hears it and may cancel
+    /// it, and scoreboard criteria follow. False for a player it can't
+    /// reach.
+    #[access(WorldOnly)]
+    fn player_award_stat(
+        &mut self,
+        player: PlayerRef,
+        stat_type: StatType,
+        key: &str,
+        amount: i32,
+    ) -> bool;
+    /// Side: server.
+    /// `Player.resetStat`: sets the statistic back to 0, which scoreboard
+    /// criteria follow. False for a player it can't reach.
+    #[access(WorldOnly)]
+    fn player_reset_stat(&mut self, player: PlayerRef, stat_type: StatType, key: &str) -> bool;
+    /// Side: server.
+    /// `ServerPlayer.awardRecipes`, as `/recipe give` does: the recipes
+    /// unlock in the player's book, with their toasts and the
+    /// `player_recipe_discovered` hook, and the client hears of them.
+    /// Unknown ids are skipped. The number of recipe displays added, None
+    /// for a player it can't reach.
+    #[access(WorldOnly)]
+    fn player_award_recipes(&mut self, player: PlayerRef, recipes: &[&str]) -> Option<i32>;
+    /// Side: server.
+    /// `ServerPlayer.resetRecipes`, as `/recipe take` does. The number of
+    /// recipe displays taken out, None for a player it can't reach.
+    #[access(WorldOnly)]
+    fn player_reset_recipes(&mut self, player: PlayerRef, recipes: &[&str]) -> Option<i32>;
+    /// Side: server.
+    /// `ExperienceOrb.playerTouch`: Mending repairs the player's damaged
+    /// items with `points` first (`ExperienceOrb.repairPlayerItems`), then
+    /// only the rest goes to their experience
+    /// (`Player.giveExperiencePoints`), with the level-up sound. No orb
+    /// pickup sound. False, and nothing given, as the other writes; `points`
+    /// above `i32::MAX` is refused before Mending repairs anything.
+    #[access(WorldOnly)]
+    fn player_give_experience_points(&mut self, player: PlayerRef, points: u32) -> bool;
+    /// Side: server.
+    /// `Player.giveExperienceLevels`: adds `levels`, or takes them off when
+    /// negative, as the anvil and the enchanting table charge with. Below 0
+    /// the level, the total and the progress toward the next level are all 0.
+    #[access(WorldOnly)]
+    fn player_give_levels(&mut self, player: PlayerRef, levels: i32) -> bool;
+    /// Side: server.
+    /// `StopSoundCommand` for one player: their client stops the playing
+    /// sounds that match `sound` (an event id) and `source`; `None` matches
+    /// any. True means sent.
+    #[access(WorldOnly)]
+    fn player_stop_sound(
+        &mut self,
+        player: PlayerRef,
+        sound: Option<&str>,
+        source: Option<SoundSource>,
+    ) -> bool;
+    /// Side: server.
+    /// `PlaySoundCommand` for one player: plays sound event `sound` at the
+    /// player, for them only, under `source`'s volume slider. The seed is the
+    /// level random's `nextLong`, drawn once per call. True means sent, not
+    /// heard.
+    #[access(WorldOnly)]
+    fn player_play_sound(
+        &mut self,
+        player: PlayerRef,
+        sound: &str,
+        source: SoundSource,
+        volume: f32,
+        pitch: f32,
+    ) -> bool;
+    /// Side: both.
+    /// Simulate one client movement tick for this server player without changing the player. Refuses stale, absent, dead, spectator or riding players and invalid input.
+    #[access(WorldOnly)]
+    fn player_simulate_move(
+        &mut self,
+        player: PlayerRef,
+        input: PlayerInput,
+    ) -> Option<SimulatedMove>;
+}

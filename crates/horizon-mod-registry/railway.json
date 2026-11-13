@@ -4,7 +4,7 @@
     "builder": "DOCKERFILE",
     "dockerfilePath": "crates/horizon-mod-registry/Dockerfile",
     "watchPatterns": [
-      "/crates/horizon-mods/**",
+      "/crates/horizon-mod-package/**",
       "/crates/horizon-mod-registry/**",
       "/Cargo.toml"
     ]

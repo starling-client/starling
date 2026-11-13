@@ -1,10 +1,10 @@
 //! Zombie villagers (`ZombieVillager`): the cure started by a golden apple on
 //! a weakened one, the conversion clock that iron bars and beds speed up, and
 //! the saved fields. Turning villagers into zombie villagers and back is done
-//! by the game (`game/zombie_villagers.rs`), which owns entity creation.
+//! by the game (`game/mobs/zombie_villagers.rs`), which owns entity creation.
 use super::{Mob, MobEvent, MobWorld, Species, goals::Cx, villager};
+use horizon_core::nbt::{Compound, Tag};
 use horizon_core::random::RandomSource;
-use horizon_world::nbt::{Compound, Tag};
 
 /// `VILLAGER_CONVERSION_WAIT_MIN` and the width of the random range.
 pub const WAIT_MIN: i32 = 3600;
@@ -23,6 +23,20 @@ pub struct Cure {
 
 pub fn cure(m: &Mob) -> Option<&Cure> {
     villager::ext(m).and_then(|e| e.cure.as_ref())
+}
+/// `ZombieVillager.handleEntityEvent(16)`: the client's cure sound.
+pub fn cure_sound(m: &mut Mob) -> Option<MobEvent> {
+    if m.species() != Species::ZombieVillager || m.silent {
+        return None;
+    }
+    let volume = 1.0 + m.random.next_float();
+    let pitch = m.random.next_float() * 0.7 + 0.3;
+    Some(MobEvent::Sound(
+        "entity.zombie_villager.cure",
+        [m.position.x, m.eye_y(), m.position.z],
+        volume,
+        pitch,
+    ))
 }
 /// `ZombieVillager.DATA_CONVERTING_ID` on a client: only `is_converting`
 /// (the cure's shaking) reads the cure, so its time does not matter.
@@ -50,17 +64,14 @@ pub fn start_converting(
     events: &mut Vec<MobEvent>,
 ) {
     villager::ext_mut(m).cure = Some(Cure { time, starter });
-    m.extra.effects.retain(|e| e.0 != "minecraft:weakness");
+    m.retain_effects(|e| e.id != "minecraft:weakness");
     // Strength amplifier: min(difficulty id - 1, 0), always 0 with monsters.
     m.add_effect("minecraft:strength", time, 0);
-    let pitch = m.random.next_float() * 0.7 + 0.3;
-    let volume = 1.0 + m.random.next_float();
-    events.push(MobEvent::Sound(
-        "entity.zombie_villager.cure",
-        [m.position.x, m.eye_y(), m.position.z],
-        volume,
-        pitch,
-    ));
+    events.push(MobEvent::EntityEvent {
+        mob: m.id,
+        event: 16,
+        at: [m.position.x, m.position.y, m.position.z],
+    });
 }
 
 /// `getConversionProgress`: 1 per tick, plus a chance per nearby iron bars or
@@ -129,8 +140,23 @@ fn parse_cure(tag: &Tag) -> Option<Cure> {
         starter: crate::save::uuid_from_tag(tag.get("ConversionPlayer")),
     })
 }
-/// The saved fields: the cure and the gossip.
+/// `ZombieVillager.initializeZombieVillagerData`: the constructor picks a
+/// profession (`VILLAGER_PROFESSION.getRandom`, 15 of them) from the fresh
+/// entity's random, before anything seeds it: an independent draw that
+/// leaves the mob's own random alone.
+pub fn constructor_profession(m: &Mob) -> u8 {
+    let mut fresh = horizon_core::random::LegacyRandom::new(
+        (m.random.state() as i64).wrapping_mul(0x5851_F42D_4C95_7F2D) ^ i64::from(m.id),
+    );
+    fresh.next_int_bound(15).unwrap_or(0) as u8
+}
+/// The saved fields: the finalized flag, the cure and the gossip.
 pub fn write_nbt(m: &Mob, map: &mut Compound) {
+    let finalized = villager::ext(m).is_some_and(|e| e.data_finalized);
+    map.insert(
+        "VillagerDataFinalized".into(),
+        Tag::Byte(i8::from(finalized)),
+    );
     put_cure(map, cure(m).copied());
     if let Some(e) = villager::ext(m)
         && !e.gossips.is_empty()
@@ -138,9 +164,19 @@ pub fn write_nbt(m: &Mob, map: &mut Compound) {
         map.insert("Gossips".into(), e.gossips.to_nbt());
     }
 }
+/// `ZombieVillager.readAdditionalSaveData`: a save with neither
+/// `VillagerDataFinalized` nor `VillagerData` keeps the constructor's random
+/// profession and stays unfinalized.
 pub fn read_nbt(m: &mut Mob, tag: &Tag) {
+    let saved = tag.get("VillagerData").is_some();
+    let finalized = saved || crate::entity_nbt::flag(tag, "VillagerDataFinalized");
+    if !saved {
+        m.extra.profession =
+            super::villager::ProfessionState::from_index(constructor_profession(m));
+    }
     let cure = parse_cure(tag);
     let e = villager::ext_mut(m);
+    e.data_finalized = finalized;
     e.cure = cure;
     e.gossips = tag
         .get("Gossips")
@@ -151,6 +187,18 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_core::{geometry::Vec3, random::LegacyRandom};
+
+    fn zombie_villager() -> Mob {
+        let mut kind = super::super::sensor_scan_tests::kind();
+        let data = std::sync::Arc::make_mut(&mut kind);
+        data.id = "minecraft:zombie_villager".into();
+        data.species = Species::ZombieVillager;
+        data.eye_height = 1.5;
+        let mut m = Mob::new(42, kind, Vec3::new(1.25, 2.0, 3.75), 0.0);
+        m.random = LegacyRandom::new(0);
+        m
+    }
 
     #[test]
     fn a_cure_round_trips_through_nbt() {
@@ -178,43 +226,65 @@ mod tests {
         let registry = assets.registry;
         let facts = crate::blocks::BlockFacts::load(&root, registry).unwrap();
         let motion = crate::motion::MotionResources::load(&root, &assets).unwrap();
-        let data = super::super::MobData::load(&root, &facts);
+        let data = super::super::MobData::load(
+            &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+            &facts,
+        );
         let types = super::super::MobTypes::load(&root).unwrap();
-        let biomes = crate::biome::Biomes::load(&root).unwrap();
+        let biomes = crate::biome::Biomes::load(
+            &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+        )
+        .unwrap();
+        let defaults = horizon_world::item_defaults::read(&root).unwrap();
         let items = crate::items::Items::load(
             &root,
             registry,
             &facts,
             &horizon_world::loot::PackOverlay::NONE,
+            &defaults,
         )
         .unwrap();
-        let collision = crate::collisions::load(&root, registry).unwrap();
+        let collision = std::sync::Arc::new(crate::collisions::load(&root, registry).unwrap());
+        let suffocation =
+            crate::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation).unwrap();
         let air = registry.default_state("minecraft:air").unwrap();
         let world = crate::world::World::new(air, 0);
         let lid_openers = std::collections::HashMap::new();
         let w = MobWorld {
+            goal_host: None,
+            live_mobs: None,
             teams: Default::default(),
+            loop_context: crate::test_resources::server_loop_context(),
             world: &world,
             registry,
             facts: &facts,
             fluid_tables: &motion.fluids,
+            attributes: &motion.attributes,
             movement: &motion.blocks,
             collision: &collision,
+            suffocation: &suffocation,
             data: &data,
             player: None,
+            player_identity: None,
+            player_selection: None,
+            controlling_player_movement: None,
             nearest_player: None,
             others: &[],
             dragon: None,
             leash_boats: &[],
+            who_lookup: None,
             others_grid: None,
             others_index: None,
+            passenger_objects: &[],
+            others_villagers: None,
+            others_solid: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,
             day_time: 18000,
             raining: false,
             thundering: false,
-            nether: false,
+            level: horizon_core::LevelKey::OVERWORLD,
             block_tags: &items.block_tags,
             landing: &motion.landing,
             biomes: &biomes,
@@ -223,12 +293,16 @@ mod tests {
             mob_drops: true,
             max_entity_cramming: 24,
             difficulty: super::super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
-            end: false,
+            dimension_type: horizon_world::dimension_type::DimensionFacts::overworld(),
             world_seed: 0,
             sea_level: 63,
             items: Some(&items),
             lid_openers: &lid_openers,
             mod_effects: None,
+            mob_hooks: None,
+            asks_animal_tame: false,
+            asks_living_destroy_block: false,
+            asks_baby_spawn: false,
             border: None,
         };
         for no_ai in [false, true] {
@@ -242,11 +316,12 @@ mod tests {
             m.persistent = true;
             m.no_ai = no_ai;
             start_converting(&mut m, None, 3, &mut Vec::new());
-            let mut level_random = horizon_core::random::LegacyRandom::new(0);
+            let mut test_level = crate::health::TestLevel::new(0);
+            let level = &mut test_level.level();
             let mut ticks = 0;
             while ticks < 10 {
                 let mut events = Vec::new();
-                m.tick(&w, &mut level_random, &mut events);
+                m.tick(&w, level, &mut events);
                 ticks += 1;
                 if events
                     .iter()
@@ -267,5 +342,65 @@ mod tests {
         put_cure(&mut map, None);
         assert_eq!(map.get(&"ConversionTime".into()), Some(&Tag::Int(-1)));
         assert_eq!(parse_cure(&Tag::Compound(map)), None);
+    }
+
+    #[test]
+    fn starting_a_cure_broadcasts_even_when_silent_without_drawing_sound_randomness() {
+        for silent in [false, true] {
+            let mut m = zombie_villager();
+            m.silent = silent;
+            m.add_effect("minecraft:weakness", 100, 0);
+            let mut random = m.random.clone();
+            let starter = Some([1, 2, 3, 4]);
+            let mut events = Vec::new();
+
+            start_converting(&mut m, starter, 4000, &mut events);
+
+            assert_eq!(
+                cure(&m),
+                Some(&Cure {
+                    time: 4000,
+                    starter
+                })
+            );
+            assert!(!m.has_effect("minecraft:weakness"));
+            assert!(m.extra.effects.contains(&crate::mobs::StoredEffect::new(
+                "minecraft:strength",
+                4000,
+                0
+            )));
+            assert_eq!(events.len(), 1);
+            let MobEvent::EntityEvent { mob, event, at } = events[0] else {
+                panic!("Starting a cure must broadcast an entity event");
+            };
+            assert_eq!((mob, event, at), (42, 16, [1.25, 2.0, 3.75]));
+            assert_eq!(m.random.next_long(), random.next_long());
+        }
+    }
+
+    #[test]
+    fn cure_sound_draws_volume_before_pitch_at_eye_height() {
+        let mut m = zombie_villager();
+        let Some(MobEvent::Sound(name, at, volume, pitch)) = cure_sound(&mut m) else {
+            panic!("A non-silent zombie villager must play the cure sound");
+        };
+        assert_eq!(name, "entity.zombie_villager.cure");
+        assert_eq!(at, [1.25, 3.5, 3.75]);
+        // The first two java.util.Random(0) floats, volume before pitch.
+        assert_eq!(volume.to_bits(), 0x3fdd_905a);
+        assert_eq!(pitch.to_bits(), 0x3f61_cb52);
+        assert_eq!(m.random.next_float().to_bits(), 0x3e76_4f2c);
+    }
+
+    #[test]
+    fn silent_or_other_mobs_do_not_play_the_cure_sound_or_draw_randomness() {
+        let mut silent = zombie_villager();
+        silent.silent = true;
+        let other = Mob::new(43, super::super::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+        for mut m in [silent, other] {
+            let mut random = m.random.clone();
+            assert!(cure_sound(&mut m).is_none());
+            assert_eq!(m.random.next_long(), random.next_long());
+        }
     }
 }

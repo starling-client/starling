@@ -1,10 +1,10 @@
 //! Ocean monuments (OceanMonumentStructure, OceanMonumentPieces).
-use super::{
-    BoundingBox,
-    legacy::{LegacyPiece, PieceContext, PieceFrame, Result, make_bounding_box},
-};
 use crate::registry::BlockStateId;
 use horizon_core::{geometry::Direction, random::RandomSource};
+use {
+    super::legacy::{LegacyPiece, PieceContext, PieceFrame, Result, make_bounding_box},
+    horizon_core::bounding_box::BoundingBox,
+};
 
 const DOWN: usize = 0;
 const UP: usize = 1;
@@ -465,7 +465,7 @@ impl LegacyPiece for MonumentBuilding {
     }
     /// `MonumentBuilding`: the base fields only; vanilla builds its rooms
     /// again after loading (`OceanMonumentStructure.regeneratePiecesAfterLoad`).
-    fn save(&self) -> Option<crate::nbt::Compound> {
+    fn save(&self) -> Option<horizon_core::nbt::Compound> {
         Some(super::legacy::piece_tag(
             "minecraft:omb",
             self.frame.bounding_box,

@@ -46,6 +46,7 @@
 //! use horizon_world::level::{self, Behaviours, LevelAccess, LevelEvent, PlaceContext, Ticks, flags};
 //!
 //! struct GameLevel { chunks: Chunks, random: LegacyRandom, time: i64, events: Vec<LevelEvent> }
+//! impl level::BlockEntityNeighbors for GameLevel {}
 //! impl LevelAccess for GameLevel {
 //!     fn block_state(&self, pos: BlockPos) -> BlockStateId { self.chunks.get(pos) }
 //!     fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
@@ -79,19 +80,26 @@
 //! // Player actions:
 //! behaviours.place_block(&mut level, &mut ticks, &PlaceContext { clicked_pos, face, hit, inside: false,
 //!     yaw, pitch, sneaking, item: "minecraft:oak_stairs".into(), can_use_game_master_blocks: false });
-//! behaviours.use_without_item(&mut level, &mut ticks, pos, face, hit, player_context);
-//! behaviours.player_destroy_block(&mut level, &mut ticks, pos, creative, correct_tool);
+//! let state = level.block_state(pos);
+//! let block_hit = horizon_core::geometry::BlockHit { block: pos, direction: face, location: hit, inside: false };
+//! behaviours.use_without_item(&mut level, &mut ticks, state, block_hit, player_context);
+//! behaviours.player_destroy_block(&mut level, &mut ticks, pos, creative, correct_tool, None);
 //! // Falling-block entity landed:
 //! behaviours.falling_block_landed(&mut level, &mut ticks, landing_pos, carried_state, false);
 //! ```
 use crate::{
+    dimension_type::DimensionFacts,
     fluid::{FluidBlockBindings, FluidKind, FluidState},
     registry::{BlockRegistry, BlockStateId},
 };
 use horizon_core::{
+    LevelKey,
     geometry::{Aabb, Direction, VoxelShape},
     position::{BlockPos, ChunkPos},
     random::LegacyRandom,
+};
+use horizon_core::{
+    connection_kind::ConnectionKind, dimension::Dimension, neighbour_update::NeighbourUpdate,
 };
 use std::{collections::HashMap, io, path::Path, sync::Arc, sync::RwLock};
 
@@ -111,7 +119,7 @@ mod hooks;
 mod interact;
 pub mod pistons;
 mod place;
-mod portal;
+pub mod portal;
 pub mod portal_travel;
 mod query;
 pub(crate) use query::data_2d;
@@ -122,6 +130,7 @@ pub mod removal;
 pub mod sculk;
 mod shapes;
 mod shelf;
+pub mod signal_access;
 mod signals;
 mod speleothem;
 mod survive;
@@ -133,15 +142,37 @@ mod weather;
 #[cfg(test)]
 mod growth_tests;
 #[cfg(test)]
+mod survive_tests;
+#[cfg(test)]
 mod tests;
 
-pub use bonemeal::TemplateSettings;
-pub use buckets::BucketContent;
+pub use bonemeal::{BonemealCheck, TemplateSettings};
+pub use buckets::{BucketContent, fluid_bucket, fluid_pickup_sound};
 pub use data::{BlockData, ItemBinding, ItemKind, Named, Props, PushReaction, StateFacts, Tags};
 pub use falling::Landing;
+pub use fluids::{
+    fluid_can_be_replaced_with, fluid_drip_particle, fluid_explosion_resistance,
+    fluid_randomly_ticks, fluid_tick_delay,
+};
+
+/// A write a block's part asks for when an entity lands on it (`Block.fallOn`'s own
+/// `setBlockAndUpdate` or `destroyBlock`), at the block the entity landed on. The level
+/// applies each once the entity's batch has ticked, in the order asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LandingWrite {
+    /// `Level.setBlockAndUpdate(pos, state)`: farmland turned to dirt.
+    SetBlock(BlockStateId),
+    /// `Level.destroyBlock(pos, drop)`: a turtle egg broken, with its drops or without.
+    DestroyBlock {
+        /// Whether the block drops its resources.
+        drop: bool,
+    },
+}
 pub use interact::{InteractionResult, PlayerContext, PlayerEffect, UseBranch, hit_slot};
 pub use pistons::{BlockEventData, MovingPiston};
-pub use place::{PlaceContext, PlaceOutcome, PlacementContext};
+pub use place::{PlaceContext, PlaceOutcome, PlacementContext, PlacementPreview};
+pub use portal::PortalShape;
 pub use states::{BlockId, PropKey, StateTable};
 pub use tick::{Precipitation, PrecipitationKind, RandomTickMask};
 pub use ticks::Ticks;
@@ -167,11 +198,48 @@ pub mod flags {
     pub const UPDATE_LIMIT: i32 = 512;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Dimension {
-    Overworld,
-    Nether,
-    End,
+/// The sea level of a built-in level (a custom level gets the Overworld's).
+pub fn vanilla_sea_level(level: LevelKey) -> i32 {
+    match level {
+        LevelKey::NETHER => 32,
+        LevelKey::END => 0,
+        _ => 63,
+    }
+}
+
+/// The sea levels of the levels a mod registered, from the noise settings their stems name, by
+/// level key: set at each world's load (`set_sea_levels`), as the dimension types' facts are.
+static SEA_LEVELS: std::sync::LazyLock<RwLock<HashMap<LevelKey, i32>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Replaces the registered levels' sea levels, at a world's load.
+pub fn set_sea_levels(levels: Vec<(LevelKey, i32)>) {
+    *SEA_LEVELS.write().unwrap_or_else(|e| e.into_inner()) = levels.into_iter().collect();
+}
+
+/// Registers one level's sea level, as a server told a client the level of a mod or a data pack
+/// has (`CommonPlayerSpawnInfo.seaLevel`); the levels of a world's own load are set by
+/// `set_sea_levels`.
+pub fn register_sea_level(level: LevelKey, sea_level: i32) {
+    SEA_LEVELS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(level, sea_level);
+}
+
+/// The sea level a mod's level was registered with, if it has one.
+pub fn registered_sea_level(level: LevelKey) -> Option<i32> {
+    SEA_LEVELS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&level)
+        .copied()
+}
+
+/// A level's sea level: the one its noise settings give (`registered_sea_level`), else the
+/// built-in level's (`vanilla_sea_level`).
+pub fn sea_level_of(level: LevelKey) -> i32 {
+    registered_sea_level(level).unwrap_or_else(|| vanilla_sea_level(level))
 }
 
 /// Game rules consulted by block behaviour (vanilla defaults).
@@ -220,6 +288,10 @@ pub enum EntityQuery {
     Arrows,
 }
 
+/// The UUID of a player excluded from a level event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LevelEventPlayer(pub u128);
+
 /// Side effects reported to the caller, in vanilla call order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LevelEvent {
@@ -227,13 +299,25 @@ pub enum LevelEvent {
     /// (e.g. 2001 block destroyed with `data` = state ID, 1501 lava
     /// extinguished, 1009 fire extinguished, 1502 redstone torch burnout,
     /// 2009 dripping water/sponge, 1033/1034 ... per `LevelEvent.java`).
-    LevelEvent { id: i32, pos: BlockPos, data: i32 },
+    LevelEvent {
+        id: i32,
+        pos: BlockPos,
+        data: i32,
+        source: Option<LevelEventPlayer>,
+    },
     /// `Level.playSound(null, pos, sound, BLOCKS, volume, pitch)`.
     Sound {
         pos: BlockPos,
         sound: Arc<str>,
         volume: f32,
         pitch: f32,
+    },
+    /// A placed template's container whose data has a `LootTable`
+    /// (`RandomizableContainer.tryLoadLootTable`): the caller keeps the table
+    /// and rolls it, as for a container a command gives one.
+    ContainerLootTable {
+        pos: BlockPos,
+        tag: horizon_core::nbt::Tag,
     },
     /// `Block.dropResources(state, level, pos)`: the caller evaluates the
     /// block's loot table (no tool, no breaker) and pops the items.
@@ -316,8 +400,22 @@ pub enum Spread {
     Fire,
 }
 
+mod block_entity_neighbors;
+pub use block_entity_neighbors::BlockEntityNeighbors;
+
 /// The world as seen by block behaviour. Implemented by the game and tests.
-pub trait LevelAccess {
+pub trait LevelAccess: BlockEntityNeighbors {
+    /// `Player.canEat(false)` at the cake bite, after item-specific interactions
+    /// have passed. Defaults to the interacting player's vanilla hunger answer.
+    fn cake_can_eat(&self, vanilla: bool) -> bool {
+        vanilla
+    }
+
+    /// `WorldBorder.isWithinBounds(BlockPos)` for block movement.
+    fn within_world_border(&self, _pos: BlockPos) -> bool {
+        true
+    }
+
     /// Whether a hopper may pick up this dropped item stack. The default allows.
     fn allow_hopper_pickup_item(&self, _pos: BlockPos, _item: &str, _count: u32) -> bool {
         true
@@ -326,6 +424,21 @@ pub trait LevelAccess {
     /// (land claims), and the block at `to` stays as it is. Fire asks after
     /// its random draws, which a refusal doesn't change. The default allows.
     fn allow_spread(&self, _kind: Spread, _from: BlockPos, _to: BlockPos) -> bool {
+        true
+    }
+    /// Returns the state to place for a liquid conversion, or None to cancel.
+    fn fluid_place_block(
+        &self,
+        _pos: BlockPos,
+        _liquid_pos: BlockPos,
+        state: BlockStateId,
+    ) -> Option<BlockStateId> {
+        Some(state)
+    }
+    /// Whether the fluid at `pos` may run its scheduled tick (`FlowingFluid.tick`): a native mod
+    /// that simulates a fluid itself refuses, and the tick changes nothing and schedules nothing.
+    /// The default allows.
+    fn allow_fluid_tick(&self, _pos: BlockPos, _fluid: &'static str) -> bool {
         true
     }
     fn allow_fluid_level_change(
@@ -337,12 +450,44 @@ pub trait LevelAccess {
     ) -> bool {
         true
     }
+    /// Whether the fluid source at `pos` (`state`) counts towards making a new
+    /// source beside it (NeoForge's `CreateFluidSourceEvent`). `vanilla` is
+    /// the fluid's own rule (`water_source_conversion`, `lava_source_conversion`).
+    fn create_fluid_source(&self, _pos: BlockPos, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// What a mod's fluid does at `pos`, given what it registered (its `FluidPart`s).
+    fn mod_fluid_rules(
+        &self,
+        _pos: BlockPos,
+        _fluid: crate::fluid::ModFluid,
+        registered: crate::fluid::ModFluidRules,
+    ) -> crate::fluid::ModFluidRules {
+        registered
+    }
     fn allow_block_ignite(&self, _pos: BlockPos, _cause: &'static str) -> bool {
         true
     }
     fn allow_block_burn(&self, _pos: BlockPos) -> bool {
         true
     }
+    /// Select or cancel the feature a block is about to grow into; `None` when
+    /// vanilla has none to place.
+    fn block_grow_feature<'a>(
+        &mut self,
+        _pos: BlockPos,
+        feature: Option<&'a str>,
+    ) -> Option<std::borrow::Cow<'a, str>> {
+        feature.map(std::borrow::Cow::Borrowed)
+    }
+    /// Whether a crop-like block grows on this random tick (NeoForge's
+    /// `CommonHooks.canCropGrow`). `vanilla` is the game's own answer, its
+    /// random roll already drawn.
+    fn crop_grow_pre(&mut self, _pos: BlockPos, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// A crop-like block grew (NeoForge's `CommonHooks.fireCropGrowPost`).
+    fn crop_grow_post(&mut self, _pos: BlockPos, _original: BlockStateId) {}
     fn allow_leaves_decay(&self, _pos: BlockPos) -> bool {
         true
     }
@@ -356,7 +501,38 @@ pub trait LevelAccess {
     fn allow_block_form(&self, _pos: BlockPos, _from: BlockStateId, _to: BlockStateId) -> bool {
         true
     }
-    fn allow_note_play(&self, _pos: BlockPos, _instrument: &str, _note: i32) -> bool {
+    /// Returns the new note, or None to cancel tuning. `instrument` is the
+    /// block's index in `data::INSTRUMENTS`.
+    fn note_block_change(
+        &self,
+        _pos: BlockPos,
+        _instrument: u8,
+        _old: i32,
+        new: i32,
+    ) -> Option<i32> {
+        Some(new)
+    }
+    /// `NoteBlock.playNote`: the note block at `pos` is about to play
+    /// `instrument` (an index into `data::INSTRUMENTS`) at `note` (0 to 24).
+    /// `by_player` is false for redstone, whose `playNote` has no player.
+    /// The level may change either; false stops the note.
+    fn note_block_play(
+        &self,
+        _pos: BlockPos,
+        _by_player: bool,
+        _instrument: &mut u8,
+        _note: &mut i32,
+    ) -> bool {
+        true
+    }
+    /// `BaseFireBlock.onPlace` found the empty frame `shape` around the fire
+    /// `state` at `pos`: whether the portal may fill it.
+    fn allow_portal_spawn(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _shape: &PortalShape,
+    ) -> bool {
         true
     }
     fn allow_bell_ring(&self, _pos: BlockPos) -> bool {
@@ -373,23 +549,48 @@ pub trait LevelAccess {
     }
     /// Whether the piston at `piston` may push the blocks `push` one step
     /// `direction` and destroy `destroy` (`PistonBaseBlock.moveBlocks`, once
-    /// the structure resolved). Refused, it moves nothing, as a structure
-    /// that can't move. The default allows.
+    /// the structure resolved; `extending` is the piston's move type).
+    /// Refused, it moves nothing, as a structure that can't move. The default
+    /// allows.
     fn allow_piston_move(
         &self,
         _piston: BlockPos,
         _direction: Direction,
+        _extending: bool,
         _push: &[BlockPos],
         _destroy: &[BlockPos],
     ) -> bool {
         true
     }
+    /// Observe the piston at `piston` having pushed the blocks `push` one step
+    /// `direction` and destroyed `destroy`, at the end of
+    /// `PistonBaseBlock.moveBlocks`, after the neighbour updates. The default
+    /// does nothing.
+    fn observe_piston_moved(
+        &self,
+        _piston: BlockPos,
+        _direction: Direction,
+        _extending: bool,
+        _push: &[BlockPos],
+        _destroy: &[BlockPos],
+    ) {
+    }
     /// Observe a committed `Level.setBlock` state change, before its side effects.
     fn observe_block_changed(&self, _pos: BlockPos, _old: BlockStateId, _new: BlockStateId) {}
-    /// Observe `BlockState.handleNeighborChanged` before the block handles it.
-    /// The default does nothing; implementations must not alter the update queue.
+    /// NeoForge's `NeighborNotifyEvent`: the block at `pos` is about to tell
+    /// its neighbours it changed (`ServerLevel.updateNeighborsAt`, or
+    /// `updateNeighborsAtExceptFromFacing` with the side it skips). True
+    /// cancels it: no neighbour hears. Must not alter the update queue.
+    fn neighbor_notify(&self, _pos: BlockPos, _skipped: Option<Direction>) -> bool {
+        false
+    }
+    /// Observe `BlockState.handleNeighborChanged` before the block handles it,
+    /// with the level's `ticks`, as vanilla's `neighborChanged` gets the level
+    /// itself (a diode schedules its tick there). The default does nothing;
+    /// implementations must not alter the update queue.
     fn observe_neighbor_changed(
         &self,
+        _ticks: &mut Ticks,
         _pos: BlockPos,
         _state: BlockStateId,
         _changed: BlockId,
@@ -449,6 +650,18 @@ pub trait LevelAccess {
     /// the growth schedules, as `before_update_shape` hands them. The default
     /// does nothing.
     fn perform_bonemeal(&mut self, _ticks: &mut Ticks, _pos: BlockPos, _state: BlockStateId) {}
+    /// `Block.affectNeighborsAfterRemoval` of a mod's part for the block `state` that stood
+    /// at `pos` (`moved`: pushed by a piston), after the block's own class ran: the updates it
+    /// asks for go in `updates` in order, and the level runs them. It is inside the level's
+    /// write, so it cannot write. The default asks for nothing.
+    fn affect_neighbors_after_removal(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _moved: bool,
+        _updates: &mut Vec<NeighbourUpdate>,
+    ) {
+    }
     /// `BlockState.updateShape` for `state` at `pos` after its neighbour in
     /// `direction` became `neighbour`, before the block computes it. `state`
     /// may not be in the level yet (a piston landing it). A state put in
@@ -499,6 +712,17 @@ pub trait LevelAccess {
         _survives: &mut Option<bool>,
     ) {
     }
+    /// `IBlockExtension.canSustainPlant` for the soil `ground` at `ground_pos`
+    /// and the plant `state` above it, before the plant answers `mayPlaceOn`.
+    /// An answer put in `sustains` is the result. The default does nothing.
+    fn before_can_sustain_plant(
+        &self,
+        _state: BlockStateId,
+        _ground: BlockStateId,
+        _ground_pos: BlockPos,
+        _sustains: &mut Option<bool>,
+    ) {
+    }
     /// `VegetationBlock.mayPlaceOn(ground, level, groundPos)` for the plant
     /// `state`, before the plant answers it: the blocks a plant can stand on,
     /// which its `canSurvive` asks. An answer put in `may` is the result. The
@@ -532,6 +756,8 @@ pub trait LevelAccess {
     /// Storage write (`LevelChunkSection.setBlockState`). Returns the previous
     /// state, or None when nothing could be stored (unloaded chunk).
     fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId>;
+    /// Notify clients of a completed block write, when `UPDATE_CLIENTS` is set.
+    fn send_block_updated(&mut self, _pos: BlockPos) {}
     fn is_loaded(&self, pos: BlockPos) -> bool;
     /// Whether the block at `pos` may take a random tick (a randomly ticking
     /// state, or lava's fluid): false only when it surely doesn't, so a
@@ -585,6 +811,19 @@ pub trait LevelAccess {
     fn dimension(&self) -> Dimension {
         Dimension::Overworld
     }
+    /// The level's key.
+    fn level_key(&self) -> LevelKey {
+        self.dimension().key()
+    }
+    /// The level's sea level (`Level.getSeaLevel`): a mod level's own, from its noise settings,
+    /// else the built-in level's.
+    fn sea_level(&self) -> i32 {
+        sea_level_of(self.level_key())
+    }
+    /// The level's dimension type.
+    fn dimension_type(&self) -> &DimensionFacts {
+        DimensionFacts::of_level(self.level_key())
+    }
     fn game_rules(&self) -> GameRules {
         GameRules::default()
     }
@@ -623,6 +862,12 @@ pub trait LevelAccess {
     fn item_frame_analog_output(&self, _pos: BlockPos, _facing: Direction) -> Option<i32> {
         None
     }
+    /// `ContainerOpenersCounter.getEntitiesWithContainerOpen` is not empty for
+    /// the container at `pos`: someone has it open (a double chest's menu
+    /// counts for both halves; a copper golem's open chest too).
+    fn container_open(&self, _pos: BlockPos) -> bool {
+        false
+    }
     /// `ContainerOpenersCounter.recheckOpenCount` for the chest or ender chest
     /// block entity at `pos`: recounts its openers and returns the previous
     /// and new counts (the caller plays open/close effects when they change),
@@ -646,6 +891,67 @@ pub trait LevelAccess {
     /// `BlockState.isSignalSource` once the library answered `vanilla`: the
     /// answer to use. The default keeps it.
     fn adjust_signal_source(&self, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// Whether a signal query needs the weak-power block hook.
+    fn has_weak_power_hook(&self) -> bool {
+        false
+    }
+    /// Override `SignalGetter.getSignal`'s conductor check for a block.
+    fn adjust_should_check_weak_power(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _direction: Direction,
+        vanilla: bool,
+    ) -> bool {
+        vanilla
+    }
+    /// Whether redstone wire connection queries need the level hook.
+    fn has_redstone_wire_connection_hook(&self) -> bool {
+        false
+    }
+    /// `BlockBehaviour.shouldRedstoneWireConnectTo` once the library answered
+    /// `vanilla` for the block `state` at `pos`, `direction` pointing from the
+    /// wire toward its neighbour (None for a block above or below):
+    /// whether redstone wire connects. The default keeps it.
+    fn adjust_should_redstone_wire_connect_to(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _direction: Option<Direction>,
+        vanilla: bool,
+    ) -> bool {
+        vanilla
+    }
+    /// Replacement for `Level.removeBlock`; the default keeps the fluid block.
+    fn adjust_remove_block(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _moved_by_piston: bool,
+        vanilla: BlockStateId,
+    ) -> BlockStateId {
+        vanilla
+    }
+    /// Whether connection queries (fences, walls, bars and panes) need the level hook.
+    fn has_connection_hook(&self) -> bool {
+        false
+    }
+    /// The `kind` rule's connection once the library answered `vanilla` for
+    /// the block `state` at `pos` and the `neighbour` state beside it,
+    /// `direction` pointing from the block toward it and `face_solid` its
+    /// face's sturdiness: whether the block connects that side. The default keeps it.
+    fn adjust_connects_to(
+        &self,
+        _kind: ConnectionKind,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _neighbour: BlockStateId,
+        _direction: Direction,
+        _face_solid: bool,
+        vanilla: bool,
+    ) -> bool {
         vanilla
     }
     /// `BlockState.hasAnalogOutputSignal` once the library answered `vanilla`:
@@ -697,6 +1003,10 @@ pub trait LevelAccess {
     fn count_entities(&self, _area: Aabb, _query: EntityQuery) -> usize {
         0
     }
+    /// `ServerLevel.shouldTickBlocksAt`: ticket range, independent of chunk ticking readiness.
+    fn should_tick_blocks_at(&self, _chunk: ChunkPos) -> bool {
+        true
+    }
     /// `ServerLevel.isPositionTickingWithEntitiesLoaded` for scheduled ticks.
     fn is_ticking_chunk(&self, _chunk: ChunkPos) -> bool {
         true
@@ -717,16 +1027,32 @@ pub trait LevelAccess {
     ) -> u8 {
         0
     }
+    /// Ensure a new block's optional entity after its onPlace completed, as
+    /// LevelChunk.setBlockState does. The actual state is supplied; an existing
+    /// valid same-block instance must survive. Defaults to no additional factory.
+    fn ensure_block_entity(&mut self, _pos: BlockPos, _state: BlockStateId) {}
+    /// EntityBlock class identity, independent of whether this particular
+    /// state's factory creates an instance (e.g. an empty machine cage).
+    fn has_native_block_entity(&self, _state: BlockStateId) -> bool {
+        false
+    }
     /// Whether a block entity a mod made lives at `pos` (`native_block_entity`),
     /// whatever its block's template: it is removed with its block and no piston
     /// moves it, as for a template that has one.
     fn has_mod_block_entity(&self, _pos: BlockPos) -> bool {
         false
     }
+    /// `ShulkerBoxBlockEntity.isClosed` at `pos`: whether the box's lid is
+    /// still shut. None when no shulker box block entity lives there, or the
+    /// level keeps none: vanilla then reads the box as closed, a full cube.
+    fn shulker_is_closed(&self, _pos: BlockPos) -> Option<bool> {
+        None
+    }
     /// Load saved block-entity data into the block entity of the block just
     /// placed at `pos` (`BlockEntity.loadWithComponents`): a bee nest a grown
     /// tree placed gets its bees. Levels without block entities drop it.
-    fn load_block_entity(&mut self, _pos: BlockPos, _nbt: crate::nbt::Compound) {}
+    fn load_block_entity(&mut self, _pos: BlockPos, _nbt: horizon_core::nbt::Compound) {}
+    fn create_feature_spawner(&mut self, _pos: BlockPos, _nbt: horizon_core::nbt::Compound) {}
     /// Biome identifier at `pos` (`minecraft:plains`), for features placed by
     /// block behaviour (bone meal flowers). None when unknown.
     fn biome_name(&self, _pos: BlockPos) -> Option<&str> {
@@ -770,6 +1096,7 @@ pub struct Behaviours {
     shapes: Vec<VoxelShape>,
     shape_info: Vec<data::ShapeInfo>,
     pub fluid_tags: data::FluidTags,
+    fluid_definitions: HashMap<String, crate::fluid_definitions::FluidDefinition>,
     blocks: Vec<BlockData>,
     items: HashMap<String, ItemBinding>,
     potted_by_content: HashMap<BlockId, BlockId>,
@@ -781,6 +1108,11 @@ pub struct Behaviours {
 }
 
 impl Behaviours {
+    /// Registered fluid state definitions from the prepared behavior data.
+    pub fn fluid_definitions(&self) -> &HashMap<String, crate::fluid_definitions::FluidDefinition> {
+        &self.fluid_definitions
+    }
+
     /// Load from a prepared client resource directory (`.local/horizon-client/<version>`).
     pub fn load(registry: &BlockRegistry, resources_dir: &Path) -> io::Result<Self> {
         data::load(registry, resources_dir)
@@ -879,6 +1211,10 @@ impl Behaviours {
                 FluidKind::Lava | FluidKind::FlowingLava
             )
     }
+    /// Whether the exported vanilla support cache can answer for this state.
+    pub fn has_cached_support(&self, state: BlockStateId) -> bool {
+        !self.data(state).dynamic_shape && self.facts(state).sturdy & (1 << 30) == 0
+    }
     /// `isFaceSturdy(level, pos, direction, FULL)` from the empty-level cache.
     pub fn is_face_sturdy(&self, state: BlockStateId, direction: Direction) -> bool {
         self.facts(state).sturdy & (1 << direction as u32) != 0
@@ -954,9 +1290,10 @@ impl Behaviours {
         pos: BlockPos,
         creative: bool,
         correct_tool: bool,
+        source: Option<LevelEventPlayer>,
     ) -> bool {
         self.sim(level, ticks)
-            .player_destroy(pos, creative, correct_tool)
+            .player_destroy(pos, creative, correct_tool, source)
     }
     /// `IceBlock.playerDestroy` after the drops: mined ice melts into water
     /// unless the tool prevents ice melting (silk touch). `destroyed` is the
@@ -1004,6 +1341,37 @@ impl Behaviours {
     ) -> bool {
         self.sim(level, ticks).fire_can_be_placed_at(pos, forward)
     }
+    /// `PortalShape.findAnyShape`: the frame rectangle around `pos` on one
+    /// axis, valid or not.
+    pub fn portal_shape<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        x_axis: bool,
+    ) -> portal::PortalShape {
+        self.sim(level, ticks).find_portal_shape(pos, x_axis)
+    }
+    /// `PortalShape.findEmptyPortalShape`: a valid frame with no portal block,
+    /// trying the preferred axis first.
+    pub fn empty_portal_shape<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        x_axis: bool,
+    ) -> Option<portal::PortalShape> {
+        self.sim(level, ticks).find_empty_portal_shape(pos, x_axis)
+    }
+    /// `PortalShape.createPortalBlocks`: fill the frame with portal blocks.
+    pub fn create_portal_blocks<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        shape: &portal::PortalShape,
+    ) {
+        self.sim(level, ticks).create_portal_blocks(shape);
+    }
     /// `BlockState.canSurvive(level, pos)`.
     pub fn can_survive<L: LevelAccess + ?Sized>(
         &self,
@@ -1041,6 +1409,29 @@ impl Behaviours {
     ) -> BlockStateId {
         self.sim(level, ticks)
             .update_from_neighbour_shapes(state, pos)
+    }
+    /// `ServerLevel.updateNeighboursOnBlockSet`: what `/setblock` and `/fill` do for a block once it is in
+    /// and its shape updates are done. They place it with `UPDATE_CLIENTS` and not `UPDATE_NEIGHBORS`, so
+    /// `setBlock` notified no one: the replaced block's `affectNeighborsAfterRemoval` (when the block
+    /// changed), then the neighbours' notice with the new block as its source, then the comparators' of a
+    /// block with an analog output.
+    pub fn update_neighbours_on_block_set<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        old: BlockStateId,
+    ) {
+        let mut sim = self.sim(level, ticks);
+        let state = sim.state(pos);
+        let block = sim.block_of(state);
+        if sim.block_of(old) != block {
+            sim.affect_neighbors_after_removal(old, pos, false);
+        }
+        sim.update_neighbors_at(pos, block);
+        if sim.has_analog_output(state) {
+            sim.update_neighbour_for_output_signal(pos, block);
+        }
     }
     /// `Level.updateNeighborsAt(pos, block)`: notify the six neighbours.
     pub fn update_neighbors_at<L: LevelAccess + ?Sized>(
@@ -1097,6 +1488,29 @@ impl Behaviours {
         let block = self.block(sim.state(pos));
         sim.update_neighbour_for_output_signal(pos, block);
     }
+    /// `update` from `pos` (`Level.updateNeighborsAt`, `updateNeighborsAtExceptFromFacing` or
+    /// `updateNeighbourForOutputSignal`), `block` the block that changed there.
+    pub fn neighbour_update<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        block: BlockId,
+        update: NeighbourUpdate,
+    ) {
+        self.sim(level, ticks).neighbour_update(pos, block, update);
+    }
+    /// `Level.neighborChanged(pos, block)`: the block at `pos` hears that `block` beside it
+    /// changed, as a diode tells the block in front of it.
+    pub fn neighbor_changed_at<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        block: BlockId,
+    ) {
+        self.sim(level, ticks).neighbor_changed_at(pos, block);
+    }
     /// `Level.scheduleTick(pos, block, delay)` for the block at `pos`.
     pub fn schedule_tick<L: LevelAccess + ?Sized>(
         &self,
@@ -1133,6 +1547,16 @@ impl Behaviours {
     ) {
         self.sim(level, ticks).entity_inside(pos);
     }
+    /// Whether [`Self::entity_inside`] may do anything at a block of `state`:
+    /// the entity-sensing blocks' classes it looks for. At any other block it
+    /// only reads the state.
+    pub fn senses_entities(&self, state: BlockStateId) -> bool {
+        let data = self.data(state);
+        data.is(classes::Class::BasePressurePlate)
+            || data.is(classes::Class::DetectorRail)
+            || data.is(classes::Class::Button)
+            || data.is(classes::Class::TripWire)
+    }
     /// `LilyPadBlock.entityInside` for a boat whose box is inside `pos`.
     pub fn boat_inside<L: LevelAccess + ?Sized>(
         &self,
@@ -1151,7 +1575,7 @@ impl Behaviours {
         ticks: &mut Ticks,
         pos: BlockPos,
     ) {
-        if level.dimension() == Dimension::Nether || level.game_time() % 20 != 0 {
+        if !level.dimension_type().height.has_skylight || level.game_time() % 20 != 0 {
             return;
         }
         let mut sim = self.sim(level, ticks);
@@ -1172,6 +1596,16 @@ impl Behaviours {
     ) {
         self.sim(level, ticks)
             .big_dripleaf_entity_inside(pos, on_ground, feet_y);
+    }
+    /// `BigDripleafBlock.onProjectileHit`: true when a projectile hit a leaf.
+    /// Unlike entityInside, this tilts powered leaves too.
+    pub fn big_dripleaf_projectile_hit<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+    ) -> bool {
+        self.sim(level, ticks).big_dripleaf_projectile_hit(pos)
     }
     /// `BellBlock.onProjectileHit` for a projectile that hit `face` of the
     /// block at `pos` at height `hit_y`. False when the block is not a bell
@@ -1250,7 +1684,43 @@ pub(crate) struct Sim<'a, L: LevelAccess + ?Sized> {
     /// neighbours (`getBlockSignal`).
     pub wire_signal_off: std::cell::Cell<bool>,
 }
+/// A read-only view of a level for the queries that change nothing: `SignalGetter`,
+/// and the block, shape and moving-piston reads its wire connections ask. `Sim`
+/// reads through one (`Sim::signals`), so a caller that holds the level shared, such
+/// as a mod's read, gets the game's own answer.
+pub struct Signals<'a, L: signal_access::SignalAccess + ?Sized> {
+    pub(crate) b: &'a Behaviours,
+    pub(crate) level: &'a L,
+    pub(crate) ticks: &'a Ticks,
+    /// `RedstoneWireBlock.shouldSignal` is false while a wire samples its
+    /// neighbours (`getBlockSignal`).
+    pub(crate) wire_signal_off: bool,
+}
+impl<'a, L: LevelAccess + ?Sized> Sim<'a, L> {
+    /// This simulation's level, read-only.
+    pub(crate) fn signals(&self) -> Signals<'_, L> {
+        Signals {
+            b: self.b,
+            level: &*self.level,
+            ticks: &*self.ticks,
+            wire_signal_off: self.wire_signal_off.get(),
+        }
+    }
+}
 impl Behaviours {
+    /// `level` read through the game's `SignalGetter`, for a caller holding it shared.
+    pub fn signals<'a, L: signal_access::SignalAccess + ?Sized>(
+        &'a self,
+        level: &'a L,
+        ticks: &'a Ticks,
+    ) -> Signals<'a, L> {
+        Signals {
+            b: self,
+            level,
+            ticks,
+            wire_signal_off: false,
+        }
+    }
     pub(crate) fn sim<'a, L: LevelAccess + ?Sized>(
         &'a self,
         level: &'a mut L,
@@ -1264,3 +1734,83 @@ impl Behaviours {
         }
     }
 }
+
+#[cfg(test)]
+mod dimension_key_tests {
+    use super::*;
+
+    static SEA_LEVEL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct SeaLevelTestGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: HashMap<LevelKey, i32>,
+    }
+
+    impl SeaLevelTestGuard {
+        fn new() -> Self {
+            let lock = SEA_LEVEL_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let previous =
+                std::mem::take(&mut *SEA_LEVELS.write().unwrap_or_else(|e| e.into_inner()));
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for SeaLevelTestGuard {
+        fn drop(&mut self) {
+            *SEA_LEVELS.write().unwrap_or_else(|e| e.into_inner()) =
+                std::mem::take(&mut self.previous);
+        }
+    }
+
+    /// A registered level has its own sea level; any other has its built-in level's, and the
+    /// table clears.
+    #[test]
+    fn a_registered_level_has_its_own_sea_level() {
+        let _guard = SeaLevelTestGuard::new();
+        let pocket = LevelKey::parse("test:sea_pocket").unwrap();
+        assert_eq!(sea_level_of(pocket), 63);
+        assert_eq!(registered_sea_level(pocket), None);
+        set_sea_levels(vec![(pocket, 120)]);
+        assert_eq!(sea_level_of(pocket), 120);
+        assert_eq!(registered_sea_level(pocket), Some(120));
+        assert_eq!(sea_level_of(LevelKey::NETHER), 32);
+        set_sea_levels(Vec::new());
+        assert_eq!(sea_level_of(pocket), 63);
+    }
+
+    #[test]
+    fn a_built_in_level_keeps_the_sea_level_its_generator_registered() {
+        let _guard = SeaLevelTestGuard::new();
+        // A superflat Overworld builds with -63, not the Overworld's 63.
+        register_sea_level(LevelKey::OVERWORLD, -63);
+        assert_eq!(sea_level_of(LevelKey::OVERWORLD), -63);
+        assert_eq!(sea_level_of(LevelKey::NETHER), 32);
+        set_sea_levels(Vec::new());
+        assert_eq!(sea_level_of(LevelKey::OVERWORLD), 63);
+    }
+
+    #[test]
+    fn dimension_and_key_round_trip_and_sea_levels() {
+        for (dim, key, sea) in [
+            (Dimension::Overworld, LevelKey::OVERWORLD, 63),
+            (Dimension::Nether, LevelKey::NETHER, 32),
+            (Dimension::End, LevelKey::END, 0),
+        ] {
+            assert_eq!(dim.key(), key);
+            assert_eq!(Dimension::of_level(key), dim);
+            assert_eq!(vanilla_sea_level(key), sea);
+        }
+        let custom = LevelKey::parse("example:sky").unwrap();
+        assert_eq!(Dimension::of_level(custom), Dimension::Custom(custom));
+        assert_eq!(Dimension::Custom(custom).key(), custom);
+        assert_eq!(vanilla_sea_level(custom), 63);
+    }
+}
+
+#[cfg(test)]
+mod block_entity_neighbor_tests;

@@ -372,6 +372,8 @@ mod backend {
 
     /// What the browser's requests say they are.
     pub const VERSION: &str = "android";
+    /// Whose app the requests come from (their user agent).
+    pub const REPO: &str = "starling-client/starling";
     static HOME: OnceLock<PathBuf> = OnceLock::new();
 
     pub fn game_home() -> PathBuf {
@@ -380,10 +382,6 @@ mod backend {
 
     pub(super) fn set_game_home(home: PathBuf) {
         let _ = HOME.set(home);
-    }
-
-    pub fn game_mod_api_level() -> Option<u32> {
-        Some(horizon_mods::api_level::LEVEL)
     }
 }
 
@@ -395,6 +393,45 @@ pub fn set_game_home(home: std::path::PathBuf) {
 /// Where a native mod's file goes (`mod_list::NATIVE_DIR`).
 mod native_mods {
     pub const INSTALLED: &str = "horizon-native-mods";
+}
+
+/// The launcher's languages: the catalog's texts stay in English, the game's own pages translate.
+mod i18n {
+    pub fn tr(en: &str) -> &str {
+        en
+    }
+
+    /// `en` with its `{name}` holes filled.
+    pub fn trf(en: &str, args: &[(&str, &str)]) -> String {
+        let mut out = en.to_string();
+        for (name, value) in args {
+            out = out.replace(&format!("{{{name}}}"), value);
+        }
+        out
+    }
+}
+
+/// The launcher's instances: the phone has one game, and the browser is asked with none.
+mod instances {
+    pub struct Instance;
+}
+
+/// How a native mod fits an instance's build: no instance, nothing to say.
+mod native_fit {
+    pub fn line(_instance: &super::instances::Instance, _id: &str, _pin: &str) -> Option<String> {
+        None
+    }
+}
+
+/// Which installed files are native mods (the launcher's `native_status::is_native_file`).
+mod native_status {
+    pub fn is_native_file(file: &str) -> bool {
+        // Starling's `.hnmod` (what the catalog installs), or Horizon's `.hmod`.
+        file.strip_prefix(super::native_mods::INSTALLED)
+            .is_some_and(|rest| {
+                rest.starts_with('/') && (rest.ends_with(".hnmod") || rest.ends_with(".hmod"))
+            })
+    }
 }
 
 /// The launcher's proxy setting: the phone's own network settings apply instead.

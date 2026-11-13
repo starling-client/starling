@@ -94,6 +94,124 @@ fn suggestions(input: &str) -> Vec<String> {
 }
 
 #[test]
+fn execution_requirement_keeps_public_children_reachable() {
+    let mut dispatcher = Dispatcher::new();
+    let root = dispatcher.literal(0, "foo");
+    dispatcher.executes(root, "admin");
+    dispatcher.requires_execution(root, 4);
+    let child = dispatcher.literal(root, "bar");
+    dispatcher.executes(child, "public");
+    let registries = Registries::default();
+    let denied = dispatcher.parse("foo", &registries);
+    assert!(!denied.is_valid());
+    assert!(denied.executable().is_err());
+    assert_eq!(
+        dispatcher
+            .parse("foo bar", &registries)
+            .executable()
+            .unwrap()
+            .1,
+        "public"
+    );
+    let operator = Registries {
+        permission: 4,
+        ..registries
+    };
+    assert_eq!(
+        dispatcher.parse("foo", &operator).executable().unwrap().1,
+        "admin"
+    );
+    dispatcher.requires(root, 4);
+    assert!(
+        dispatcher
+            .parse("foo bar", &Registries::default())
+            .executable()
+            .is_err()
+    );
+}
+
+#[test]
+fn authorized_argument_alternatives_win_only_complete_ties() {
+    for reverse in [false, true] {
+        let mut dispatcher = Dispatcher::new();
+        let root = dispatcher.literal(0, "foo");
+        let first_word = reverse.then(|| dispatcher.argument(root, "b", ArgType::Word));
+        let integer = dispatcher.argument(root, "a", integer(i32::MIN));
+        dispatcher.executes(integer, "admin");
+        dispatcher.requires_execution(integer, 4);
+        let bar = dispatcher.literal(integer, "bar");
+        dispatcher.executes(bar, "child");
+        let word = first_word.unwrap_or_else(|| dispatcher.argument(root, "b", ArgType::Word));
+        dispatcher.executes(word, "public");
+        for permission in 0..=4 {
+            let registries = Registries {
+                permission,
+                ..Registries::default()
+            };
+            let parsed = dispatcher.parse("foo 7", &registries);
+            let (context, command) = parsed.executable().unwrap();
+            let admin = permission == 4 && !reverse;
+            assert_eq!(command, if admin { "admin" } else { "public" });
+            assert_eq!(context.get("a").is_some(), admin);
+            assert_eq!(
+                dispatcher
+                    .parse("foo 7 bar", &registries)
+                    .executable()
+                    .unwrap()
+                    .1,
+                "child"
+            );
+            assert!(dispatcher.parse("foo", &registries).executable().is_err());
+        }
+        let registries = Registries::default();
+        // A nonmatching literal is not tried; use failing argument parsers to
+        // exercise error ordering independently of the complete-tie case.
+        let tail = dispatcher.argument(integer, "tail", ArgType::Bool);
+        dispatcher.executes(tail, "integer_child");
+        let unread = dispatcher.parse("foo 7 nope", &registries);
+        assert!(unread.can_read());
+        assert!(unread.errors.is_empty());
+        assert!(
+            unread.context.get("b").is_some(),
+            "the error-free peer wins"
+        );
+        let tail = dispatcher.argument(word, "tail", ArgType::Bool);
+        dispatcher.executes(tail, "word_child");
+        let failed = dispatcher.parse("foo 7 nope", &registries);
+        assert!(failed.can_read() && !failed.errors.is_empty());
+        assert_eq!(
+            failed.context.get("b").is_some(),
+            reverse,
+            "invalid ties stay stable"
+        );
+        let literal = dispatcher.literal(root, "7");
+        dispatcher.executes(literal, "literal");
+        assert_eq!(
+            dispatcher
+                .parse("foo 7", &registries)
+                .executable()
+                .unwrap()
+                .1,
+            "literal"
+        );
+    }
+    let mut dispatcher = Dispatcher::new();
+    let root = dispatcher.literal(0, "foo");
+    let integer = dispatcher.argument(root, "a", integer(i32::MIN));
+    dispatcher.executes(integer, "admin");
+    dispatcher.requires_execution(integer, 4);
+    let bar = dispatcher.literal(integer, "bar");
+    dispatcher.executes(bar, "public");
+    assert!(
+        dispatcher
+            .parse("foo 7", &Registries::default())
+            .executable()
+            .is_err(),
+        "no authorized alternative must still refuse"
+    );
+}
+
+#[test]
 fn reader_matches_brigadier() {
     let mut r = Reader::new("12 -3.5 abc \"q\\\"x\" true");
     assert_eq!(r.read_int().unwrap(), 12);
@@ -109,6 +227,107 @@ fn reader_matches_brigadier() {
     assert_eq!(e.message.plain(), "parsing.int.invalid");
     assert_eq!(e.context().unwrap(), "<--[HERE]");
 }
+
+#[test]
+fn resource_selector_wildcards_preserve_unicode_and_backtracking() {
+    let cases = [
+        ("minecraft:stone", "minecraft:*", true),
+        ("minecraft:stone", "minecraft:s?one", true),
+        ("minecraft:stone", "minecraft:s?on", false),
+        ("éclair", "?clair", true),
+        ("éclair", "??clair", false),
+        ("abc", "a**c", true),
+        ("abc", "*b*", true),
+        ("", "*", true),
+        ("", "?", false),
+    ];
+    for (text, pattern, expected) in cases {
+        assert_eq!(
+            wildcard_match(text, pattern),
+            expected,
+            "{text:?} vs {pattern:?}"
+        );
+    }
+}
+
+#[test]
+fn resource_selector_scans_normalized_ids() {
+    let ids = [
+        "minecraft:stone".to_owned(),
+        "minecraft:oak_stairs".to_owned(),
+        "example:stone".to_owned(),
+        "minecraft:éclair".to_owned(),
+    ];
+    assert_eq!(
+        select_resources(&ids, "stone")
+            .into_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["minecraft:stone"]
+    );
+    assert_eq!(
+        select_resources(&ids, "minecraft:*stairs")
+            .into_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["minecraft:oak_stairs"]
+    );
+    assert_eq!(
+        select_resources(&ids, "minecraft:?clair")
+            .into_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["minecraft:éclair"]
+    );
+}
+
+#[test]
+fn modprofile_session_command_requires_admin_permission() {
+    let rules = horizon_client_core::gamerules::RuleRegistry::vanilla();
+    let session = vanilla::session_dispatcher(&rules, &[]);
+    assert!(vanilla::dispatcher().find("modprofile").is_none());
+    for permission in 0..=4 {
+        let mut registry = reg();
+        registry.permission = permission;
+        for (action, expected) in [
+            ("start", "modprofile.start"),
+            ("stop", "modprofile.stop"),
+            ("report", "modprofile.report"),
+        ] {
+            let line = format!("modprofile {action}");
+            let parse = session.parse(&line, &registry);
+            if permission < 3 {
+                assert!(parse.executable().is_err());
+            } else {
+                assert_eq!(parse.executable().unwrap().1, expected);
+            }
+        }
+    }
+}
+#[test]
+fn session_dispatchers_respect_feature_flags() {
+    let first = horizon_client_core::gamerules::RuleRegistry::vanilla();
+    let second = horizon_client_core::gamerules::RuleRegistry::vanilla();
+    let plain = vanilla::session_dispatcher(&first, &[]);
+    let enabled = vanilla::session_dispatcher(
+        &second,
+        &[horizon_client_core::gamerules::MINECART_IMPROVEMENTS.to_owned()],
+    );
+    let registries = reg();
+    assert!(
+        plain
+            .parse("gamerule max_minecart_speed 8", &registries)
+            .executable()
+            .is_err()
+    );
+    assert!(
+        enabled
+            .parse("gamerule max_minecart_speed 8", &registries)
+            .executable()
+            .is_ok()
+    );
+}
+
 #[test]
 fn parses_vanilla_commands() {
     assert_eq!(run("gamemode creative").unwrap().0, "gamemode");
@@ -162,6 +381,31 @@ fn parses_vanilla_commands() {
     let (ctx, _) = parse.executable().unwrap();
     assert!(ctx.has("strict") && ctx.has("filtered") && ctx.has("force") && !ctx.has("move"));
 }
+#[test]
+fn gamemode_parses_the_shared_game_type() {
+    use horizon_core::game_mode::GameMode;
+
+    let dispatcher = vanilla::dispatcher();
+    let registry = reg();
+    for (name, expected) in [
+        ("survival", GameMode::Survival),
+        ("creative", GameMode::Creative),
+        ("adventure", GameMode::Adventure),
+        ("spectator", GameMode::Spectator),
+    ] {
+        let parse = dispatcher.parse(&format!("gamemode {name}"), &registry);
+        let (ctx, _) = parse.executable().unwrap();
+        assert_eq!(ctx.get("gamemode"), Some(&Arg::GameMode(expected)));
+    }
+    for name in ["Creative", "1", "unknown"] {
+        let parse = dispatcher.parse(&format!("gamemode {name}"), &registry);
+        assert_eq!(
+            parse.executable().unwrap_err().message.plain(),
+            "argument.gamemode.invalid"
+        );
+    }
+}
+
 #[test]
 fn vanilla_error_messages() {
     let e = run("foo").unwrap_err();
@@ -337,6 +581,44 @@ fn entity_arguments_suggest_the_selected_entity() {
             "{players_only}"
         );
     }
+}
+#[test]
+fn whitespace_is_what_java_character_is_whitespace_says() {
+    let java: Vec<u32> = [
+        0x09..=0x0D,
+        0x1C..=0x20,
+        0x1680..=0x1680,
+        0x2000..=0x2006,
+        0x2008..=0x200A,
+        0x2028..=0x2029,
+        0x205F..=0x205F,
+        0x3000..=0x3000,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let ours: Vec<u32> = (0..=0x10FFFF)
+        .filter_map(char::from_u32)
+        .filter(|c| Reader::is_java_whitespace(*c))
+        .map(u32::from)
+        .collect();
+    assert_eq!(ours, java);
+
+    let mut r = Reader::new("\u{1F}\u{3000} x");
+    r.skip_whitespace();
+    assert_eq!(r.peek(), 'x');
+    for nbsp in ["\u{A0}", "\u{2007}", "\u{202F}", "\u{85}"] {
+        let text = format!("{nbsp}x");
+        let mut r = Reader::new(&text);
+        r.skip_whitespace();
+        assert_eq!(r.remaining(), text, "{:?} is not whitespace", nbsp);
+    }
+
+    let reg = reg();
+    let parse = |text: &str| selector::parse(&mut Reader::new(text), &reg, true).is_ok();
+    assert!(parse("@e[ type=minecraft:pig]"));
+    assert!(parse("@e[\u{1F}type=minecraft:pig]"));
+    assert!(!parse("@e[\u{A0}type=minecraft:pig]"));
 }
 #[test]
 fn a_uuid_selects_by_entity_uuid() {
@@ -791,7 +1073,8 @@ fn the_dedicated_commands_complete_from_the_servers_lists() {
 fn only_a_dedicated_server_has_the_dedicated_commands() {
     // Commands.CommandSelection: an integrated server (single player, a LAN
     // world) registers no /op, /ban, /ban-ip, /banlist, /pardon, /pardon-ip,
-    // /deop or /whitelist, so /help and Tab don't offer them.
+    // /deop, /setidletimeout, /transfer, /whitelist, /save-all, /save-off, /save-on or /stop,
+    // so /help and Tab don't offer them.
     let dedicated = [
         "ban",
         "ban-ip",
@@ -800,6 +1083,12 @@ fn only_a_dedicated_server_has_the_dedicated_commands() {
         "op",
         "pardon",
         "pardon-ip",
+        "save-all",
+        "save-off",
+        "save-on",
+        "setidletimeout",
+        "stop",
+        "transfer",
         "whitelist",
     ];
     for dev in [false, true] {
@@ -824,6 +1113,58 @@ fn only_a_dedicated_server_has_the_dedicated_commands() {
     }
     assert!(vanilla::game_dispatcher().find("ban").is_none());
     assert!(vanilla::release_dispatcher().find("ban").is_none());
+}
+#[test]
+fn a_dedicated_servers_admins_send_players_to_another_server() {
+    // TransferCommand.register: LEVEL_ADMINS, `<hostname> [<port> [<players>]]`
+    // with IntegerArgumentType.integer(1, 65535) for the port.
+    let server = vanilla::game_tree(false, false, true);
+    assert!(
+        vanilla::game_tree(false, false, false)
+            .find("transfer")
+            .is_none()
+    );
+    let at = |level: u8| Registries {
+        permission: level,
+        ..reg()
+    };
+    for line in [
+        "transfer example.net",
+        "transfer example.net 25566",
+        "transfer example.net 25566 Alex",
+    ] {
+        assert_eq!(
+            server.parse(line, &at(3)).executable().unwrap().1,
+            "transfer",
+            "{line}"
+        );
+    }
+    // The hostname is required.
+    let e = server.parse("transfer", &at(3)).executable().unwrap_err();
+    assert_eq!(e.message.plain(), "command.unknown.command");
+    // Below LEVEL_ADMINS the node is not there at all.
+    for level in [0, 1, 2] {
+        let e = server
+            .parse("transfer example.net", &at(level))
+            .executable()
+            .unwrap_err();
+        assert_eq!(
+            e.message.plain(),
+            "command.unknown.command",
+            "level {level}"
+        );
+    }
+    // IntegerArgumentType.integer(1, 65535): port 0 is low, 65536 big.
+    let e = server
+        .parse("transfer example.net 0", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "argument.integer.low");
+    let e = server
+        .parse("transfer example.net 65536", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "argument.integer.big");
 }
 /// The root literals a player at `level` is offered (the chat's, client tree).
 fn root_commands(d: &Dispatcher, level: u8) -> Vec<String> {
@@ -878,4 +1219,324 @@ fn a_dedicated_server_keeps_seed_and_version_for_game_masters() {
             }
         }
     }
+}
+#[test]
+fn a_dedicated_servers_admins_set_the_idle_timeout() {
+    // SetPlayerIdleTimeoutCommand.register: LEVEL_ADMINS, and
+    // IntegerArgumentType.integer(0) — zero turns the timeout off, and a
+    // negative count of minutes is out of range.
+    let server = vanilla::game_tree(false, false, true);
+    let integrated = vanilla::game_tree(false, false, false);
+    assert!(integrated.find("setidletimeout").is_none());
+    let at = |level: u8| Registries {
+        permission: level,
+        ..reg()
+    };
+    // Below LEVEL_ADMINS the node is not there at all.
+    for level in [0, 1, 2] {
+        let e = server
+            .parse("setidletimeout 5", &at(level))
+            .executable()
+            .unwrap_err();
+        assert_eq!(
+            e.message.plain(),
+            "command.unknown.command",
+            "level {level}"
+        );
+    }
+    // The minutes are required: an incomplete command.
+    let e = server
+        .parse("setidletimeout", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "command.unknown.command");
+    for line in ["setidletimeout 0", "setidletimeout 5"] {
+        assert_eq!(
+            server.parse(line, &at(3)).executable().unwrap().1,
+            "setidletimeout"
+        );
+    }
+    // IntegerArgumentType.integer(0): argument.integer.low for -1 below 0.
+    let e = server
+        .parse("setidletimeout -1", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "argument.integer.low");
+    // Past i32 the number itself is unreadable.
+    let e = server
+        .parse("setidletimeout 2147483648", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "parsing.int.invalid");
+}
+
+#[test]
+fn time_argument_rounds_like_math_round_float() {
+    let ticks = |input: &str| {
+        let reg = reg();
+        let parse = vanilla::dispatcher().parse(input, &reg);
+        let (ctx, _) = parse.executable().unwrap();
+        match ctx.args.iter().find(|a| a.name == "time").unwrap().value {
+            Arg::Int(t) => t,
+            ref other => panic!("{other:?}"),
+        }
+    };
+    // 0.49999997 + 0.5 rounds up to 1.0 in f32, but Math.round is exact.
+    assert_eq!(ticks("time set 0.49999997t"), 0);
+    assert_eq!(ticks("time set 0.5t"), 1);
+    assert_eq!(ticks("time add -2.5t"), -2);
+}
+
+#[test]
+fn a_dedicated_servers_owners_can_stop_and_save_it() {
+    // StopCommand, SaveAllCommand, SaveOffCommand and SaveOnCommand:
+    // Commands.hasPermission(LEVEL_OWNERS), an admin (3) gets none of them.
+    let server = vanilla::game_tree(false, false, true);
+    let at = |permission| Registries {
+        permission,
+        ..reg()
+    };
+    for (line, id) in [
+        ("stop", "stop"),
+        ("save-all", "save-all"),
+        ("save-all flush", "save-all"),
+        ("save-off", "save-off"),
+        ("save-on", "save-on"),
+    ] {
+        assert_eq!(
+            server.parse(line, &at(4)).executable().unwrap().1,
+            id,
+            "{line}"
+        );
+        assert!(server.parse(line, &at(3)).executable().is_err(), "{line}");
+    }
+}
+
+#[test]
+fn local_coordinate_missing_after_space_expects_a_coordinate() {
+    // LocalCoordinates.readDouble: nothing left to read is ERROR_EXPECTED_DOUBLE,
+    // with the cursor where it stopped; only a non-'^' character is "mixed".
+    let reg = reg();
+    let parse = |text: &str| {
+        let mut r = Reader::new(text);
+        let e = ArgType::Vec3 { center: true }
+            .parse(&mut r, &reg)
+            .map(|_| ())
+            .unwrap_err();
+        (e.key, e.cursor)
+    };
+    assert_eq!(parse("^1 "), ("argument.pos.missing.double".into(), 3));
+    assert_eq!(parse("^1 ^2 "), ("argument.pos.missing.double".into(), 6));
+    assert_eq!(parse("^1 ~"), ("argument.pos.mixed".into(), 0));
+}
+
+/// `execute … run` redirects back to the root, so a crafted deeply nested chain
+/// recurses `parse_nodes` once per level. It must be rejected by the depth guard,
+/// never overflow the parsing thread's stack (a stack overflow would abort this
+/// test binary rather than let it pass).
+#[test]
+fn deeply_nested_execute_run_is_rejected_not_overflowed() {
+    let mut deep = String::from("say hi");
+    for _ in 0..400 {
+        deep = format!("execute if entity @s run {deep}");
+    }
+    assert!(run(&deep).is_err());
+}
+
+/// The guard is high enough that real command chains still parse.
+#[test]
+fn shallow_execute_run_still_parses() {
+    assert!(run("execute if entity @s run say hi").is_ok());
+    assert!(run("execute as @a at @s run tp @s 0 0 0").is_ok());
+}
+
+#[test]
+fn h149_cardinal_local_positions_use_exact_table_values() {
+    let mut failures = Vec::new();
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [0.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x4022800000000000u64,
+        0x4069580000000000u64,
+        0x4023800000000000u64,
+    ];
+    if got != want {
+        failures.push(("south", got, want));
+    }
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [90.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x401d000000000000u64,
+        0x4069580000000000u64,
+        0x4022800000000000u64,
+    ];
+    if got != want {
+        failures.push(("west", got, want));
+    }
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [180.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x401f000000000000u64,
+        0x4069580000000000u64,
+        0x401d000000000000u64,
+    ];
+    if got != want {
+        failures.push(("north", got, want));
+    }
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [270.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x4023800000000000u64,
+        0x4069580000000000u64,
+        0x401f000000000000u64,
+    ];
+    if got != want {
+        failures.push(("east", got, want));
+    }
+    assert!(
+        failures.is_empty(),
+        "exact cardinal local-coordinate bit mismatches: {failures:#?}"
+    );
+}
+
+#[test]
+fn h149_oblique_local_offsets_are_grouped_before_the_origin() {
+    let world = Coordinates::World([
+        Coord {
+            relative: true,
+            value: 0.75,
+        },
+        Coord {
+            relative: true,
+            value: 0.5,
+        },
+        Coord {
+            relative: true,
+            value: 1.25,
+        },
+    ]);
+    assert_eq!(
+        world
+            .position([8.5, 202.25, 8.5], [37.5, -22.25])
+            .map(f64::to_bits),
+        [9.25f64, 202.75, 9.75].map(f64::to_bits),
+        "unchanged world/relative control before local failures"
+    );
+    let mut failures = Vec::new();
+    let got = Coordinates::Local([0.1, 0.1, 0.1])
+        .position([8.5, 202.25, 8.5], [37.5f32, -22.25f32])
+        .map(f64::to_bits);
+    let want = [
+        0x402117934a6314b9u64,
+        0x40694c2c5ee98f58u64,
+        0x40213562572e889au64,
+    ];
+    if got != want {
+        failures.push(("oblique", got, want));
+    }
+    let got = Coordinates::Local([0.1, 0.1, 0.1])
+        .position([8.5, 202.25, 8.5], [123.75f32, 47.125f32])
+        .map(f64::to_bits);
+    let want = [
+        0x4020a7648c7aa86bu64,
+        0x406947d514129374u64,
+        0x4021025e8b180036u64,
+    ];
+    if got != want {
+        failures.push(("positioned_oblique", got, want));
+    }
+    assert!(
+        failures.is_empty(),
+        "exact oblique local-coordinate bit mismatches: {failures:#?}"
+    );
+}
+
+#[test]
+fn a_custom_argument_parses_completes_and_keeps_its_id() {
+    let argument = ArgType::Custom(CustomArgument::new(
+        "example:machine",
+        CustomArgumentKind::Word,
+        |input| {
+            if input == "press" {
+                Ok(input.to_owned())
+            } else {
+                Err(Text::literal(format!("unknown machine `{input}`")))
+            }
+        },
+        |prefix| {
+            ["press", "furnace"]
+                .into_iter()
+                .filter(|machine| machine.starts_with(prefix))
+                .map(|text| CustomSuggestion {
+                    text: text.to_owned(),
+                    tooltip: None,
+                })
+                .collect()
+        },
+    ));
+    let mut dispatcher = Dispatcher::new();
+    let command = dispatcher.literal(0, "machine");
+    let use_node = dispatcher.literal(command, "use");
+    let machine = dispatcher.argument(use_node, "machine", argument);
+    dispatcher.executes(machine, "test");
+
+    let registries = reg();
+    let parsed = dispatcher.parse("machine use press", &registries);
+    let (context, _) = parsed.executable().unwrap();
+    assert_eq!(
+        context.get("machine"),
+        Some(&Arg::Custom {
+            kind: "example:machine".into(),
+            value: "press".into(),
+        })
+    );
+    let error = dispatcher
+        .parse("machine use banana", &registries)
+        .executable()
+        .unwrap_err();
+    assert_eq!(error.message, Text::literal("unknown machine `banana`"));
+
+    let typed = "machine use pr";
+    let (_, suggestions) = dispatcher.suggestions(
+        &dispatcher.parse(typed, &registries),
+        typed.len(),
+        &registries,
+    );
+    assert_eq!(
+        suggestions
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>(),
+        ["press"]
+    );
+}
+
+#[test]
+fn a_greedy_custom_argument_takes_the_rest_of_the_line() {
+    let argument = ArgType::Custom(CustomArgument::new(
+        "example:note",
+        CustomArgumentKind::Greedy,
+        |input| Ok(input.trim().to_owned()),
+        |_| Vec::new(),
+    ));
+    let mut dispatcher = Dispatcher::new();
+    let note = dispatcher.literal(0, "note");
+    let set = dispatcher.literal(note, "set");
+    let text = dispatcher.argument(set, "text", argument);
+    dispatcher.executes(text, "test");
+
+    let registries = reg();
+    let parsed = dispatcher.parse("note set hello there", &registries);
+    let (context, _) = parsed.executable().unwrap();
+    assert_eq!(
+        context.get("text"),
+        Some(&Arg::Custom {
+            kind: "example:note".into(),
+            value: "hello there".into(),
+        })
+    );
 }

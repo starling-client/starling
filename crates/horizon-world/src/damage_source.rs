@@ -11,6 +11,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
+mod resources;
+pub use resources::{resource_files, resource_tags};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DamageTypeId(usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,7 +30,7 @@ impl Scaling {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Definition {
     pub name: String,
     pub message_id: String,
@@ -37,7 +39,7 @@ pub struct Definition {
     pub effects: String,
     pub death_message_type: String,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Catalog {
     definitions: Vec<Definition>,
     ids: BTreeMap<String, DamageTypeId>,
@@ -129,13 +131,14 @@ impl Catalog {
         self.ids.get(name).copied()
     }
     pub fn definition(&self, id: DamageTypeId) -> Option<&Definition> {
-        self.definitions.get(id.0)
+        let definition = self.definitions.get(id.0)?;
+        (self.ids.get(&definition.name) == Some(&id)).then_some(definition)
     }
     pub fn entries(&self) -> impl Iterator<Item = (DamageTypeId, &Definition)> {
-        self.definitions
-            .iter()
-            .enumerate()
-            .map(|(i, d)| (DamageTypeId(i), d))
+        self.definitions.iter().enumerate().filter_map(|(i, d)| {
+            let id = DamageTypeId(i);
+            (self.ids.get(&d.name) == Some(&id)).then_some((id, d))
+        })
     }
     pub fn tags(&self) -> impl Iterator<Item = &str> {
         self.tags.keys().map(String::as_str)

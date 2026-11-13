@@ -1,7 +1,10 @@
 //! The `MobEffects` and `Potions` registries (code in vanilla, ported as
 //! tables): each effect's colour and category, each potion's effects, and the
 //! potion colour mix. horizon-client re-exports them from `brewing`.
-use std::{collections::HashMap, sync::OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{OnceLock, RwLock},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
@@ -14,12 +17,31 @@ pub enum Category {
 #[derive(Clone, Copy, Debug)]
 pub struct EffectDef {
     pub id: &'static str,
+    /// Position in the process-owned effect registry, resolved when an instance is created.
+    pub index: usize,
     pub color: u32,
     pub category: Category,
     pub instant: bool,
 }
-const fn fx(id: &'static str, color: u32, category: Category) -> EffectDef {
+/// The colours resource packs give effects (Polytone's `effect.<id>`), by the table's id.
+static PACK_COLORS: RwLock<Option<HashMap<String, u32>>> = RwLock::new(None);
+/// Takes the packs' effect colours (none: vanilla's).
+pub fn set_pack_colors(colors: Vec<(String, u32)>) {
+    let colors = (!colors.is_empty()).then(|| colors.into_iter().collect());
+    *PACK_COLORS.write().unwrap_or_else(|e| e.into_inner()) = colors;
+}
+impl EffectDef {
+    /// `MobEffect.getColor` as the packs show it: potions, tipped arrows and effect particles.
+    pub fn shown_color(&self) -> u32 {
+        let pack = PACK_COLORS.read().unwrap_or_else(|e| e.into_inner());
+        pack.as_ref()
+            .and_then(|colors| colors.get(self.id))
+            .map_or(self.color, |c| c & 0xFF_FFFF)
+    }
+}
+const fn fx(index: usize, id: &'static str, color: u32, category: Category) -> EffectDef {
     EffectDef {
+        index,
         id,
         color,
         category,
@@ -29,61 +51,64 @@ const fn fx(id: &'static str, color: u32, category: Category) -> EffectDef {
 use Category::{Beneficial as B, Harmful as H, Neutral as N};
 /// `MobEffects` in registration order.
 pub const EFFECTS: &[EffectDef] = &[
-    fx("speed", 3402751, B),
-    fx("slowness", 9154528, H),
-    fx("haste", 14270531, B),
-    fx("mining_fatigue", 4866583, H),
-    fx("strength", 16762624, B),
+    fx(0, "speed", 3402751, B),
+    fx(1, "slowness", 9154528, H),
+    fx(2, "haste", 14270531, B),
+    fx(3, "mining_fatigue", 4866583, H),
+    fx(4, "strength", 16762624, B),
     EffectDef {
+        index: 5,
         id: "instant_health",
         color: 16262179,
         category: B,
         instant: true,
     },
     EffectDef {
+        index: 6,
         id: "instant_damage",
         color: 11101546,
         category: H,
         instant: true,
     },
-    fx("jump_boost", 16646020, B),
-    fx("nausea", 5578058, H),
-    fx("regeneration", 13458603, B),
-    fx("resistance", 9520880, B),
-    fx("fire_resistance", 16750848, B),
-    fx("water_breathing", 10017472, B),
-    fx("invisibility", 16185078, B),
-    fx("blindness", 2039587, H),
-    fx("night_vision", 12779366, B),
-    fx("hunger", 5797459, H),
-    fx("weakness", 4738376, H),
-    fx("poison", 8889187, H),
-    fx("wither", 7561558, H),
-    fx("health_boost", 16284963, B),
-    fx("absorption", 2445989, B),
+    fx(7, "jump_boost", 16646020, B),
+    fx(8, "nausea", 5578058, H),
+    fx(9, "regeneration", 13458603, B),
+    fx(10, "resistance", 9520880, B),
+    fx(11, "fire_resistance", 16750848, B),
+    fx(12, "water_breathing", 10017472, B),
+    fx(13, "invisibility", 16185078, B),
+    fx(14, "blindness", 2039587, H),
+    fx(15, "night_vision", 12779366, B),
+    fx(16, "hunger", 5797459, H),
+    fx(17, "weakness", 4738376, H),
+    fx(18, "poison", 8889187, H),
+    fx(19, "wither", 7561558, H),
+    fx(20, "health_boost", 16284963, B),
+    fx(21, "absorption", 2445989, B),
     EffectDef {
+        index: 22,
         id: "saturation",
         color: 16262179,
         category: B,
         instant: true,
     },
-    fx("glowing", 9740385, N),
-    fx("levitation", 13565951, H),
-    fx("luck", 5882118, B),
-    fx("unluck", 12624973, H),
-    fx("slow_falling", 15978425, B),
-    fx("conduit_power", 1950417, B),
-    fx("dolphins_grace", 8954814, B),
-    fx("bad_omen", 745784, N),
-    fx("hero_of_the_village", 4521796, B),
-    fx("darkness", 2696993, H),
-    fx("trial_omen", 1484454, N),
-    fx("raid_omen", 14565464, N),
-    fx("wind_charged", 12438015, H),
-    fx("weaving", 7891290, H),
-    fx("oozing", 10092451, H),
-    fx("infested", 9214860, H),
-    fx("breath_of_the_nautilus", 65518, B),
+    fx(23, "glowing", 9740385, N),
+    fx(24, "levitation", 13565951, H),
+    fx(25, "luck", 5882118, B),
+    fx(26, "unluck", 12624973, H),
+    fx(27, "slow_falling", 15978425, B),
+    fx(28, "conduit_power", 1950417, B),
+    fx(29, "dolphins_grace", 8954814, B),
+    fx(30, "bad_omen", 745784, N),
+    fx(31, "hero_of_the_village", 4521796, B),
+    fx(32, "darkness", 2696993, H),
+    fx(33, "trial_omen", 1484454, N),
+    fx(34, "raid_omen", 14565464, N),
+    fx(35, "wind_charged", 12438015, H),
+    fx(36, "weaving", 7891290, H),
+    fx(37, "oozing", 10092451, H),
+    fx(38, "infested", 9214860, H),
+    fx(39, "breath_of_the_nautilus", 65518, B),
 ];
 /// The effects content mods declare, registered after vanilla's.
 static MOD_EFFECTS: OnceLock<Vec<EffectDef>> = OnceLock::new();
@@ -96,9 +121,15 @@ pub fn register_mod_effects(effects: impl IntoIterator<Item = (String, u32, Cate
     }
     let defs: Vec<EffectDef> = effects
         .into_iter()
-        .map(|(id, color, category)| {
+        .enumerate()
+        .map(|(index, (id, color, category))| {
             debug_assert!(id.contains(':'), "{id} has no namespace");
-            fx(Box::leak(id.into_boxed_str()), color, category)
+            fx(
+                EFFECTS.len() + index,
+                Box::leak(id.into_boxed_str()),
+                color,
+                category,
+            )
         })
         .collect();
     MOD_EFFECTS.set(defs).is_ok()
@@ -309,9 +340,10 @@ pub fn effects_color<'a>(effects: impl Iterator<Item = (&'a str, i32)>) -> u32 {
     for (e, amp) in effects {
         let Some(e) = effect(e) else { continue };
         let w = amp as u32 + 1;
-        r += w * (e.color >> 16 & 255);
-        g += w * (e.color >> 8 & 255);
-        b += w * (e.color & 255);
+        let color = e.shown_color();
+        r += w * (color >> 16 & 255);
+        g += w * (color >> 8 & 255);
+        b += w * (color & 255);
         total += w;
     }
     match (
@@ -321,6 +353,14 @@ pub fn effects_color<'a>(effects: impl Iterator<Item = (&'a str, i32)>) -> u32 {
     ) {
         (Some(r), Some(g), Some(b)) => (r << 16) | (g << 8) | b,
         _ => BASE_POTION_COLOR,
+    }
+}
+/// Borrow an effect by its completed engine registry index.
+pub fn effect_by_index(index: usize) -> Option<&'static EffectDef> {
+    if index < EFFECTS.len() {
+        EFFECTS.get(index)
+    } else {
+        mod_effects().get(index - EFFECTS.len())
     }
 }
 #[cfg(test)]

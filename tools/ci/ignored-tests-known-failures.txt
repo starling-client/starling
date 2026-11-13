@@ -1,0 +1,57 @@
+# The #[ignore]d library tests tools/ci/ignored_tests.py expects to fail on main, one per line:
+#   PACKAGE TEST REFERENCE [flaky|harness|gpu] [# note]
+# REFERENCE is the issue or PR that tracks it. A listed test that passes fails the job until its line is
+# removed, so this list only shrinks; `flaky` lets one pass. `harness` marks a parity harness's own step:
+# its harness runs it with the environment it needs, and the job skips it. `gpu` marks a test that needs a
+# graphics adapter: it runs, and must pass, only where the runner has a Vulkan driver.
+
+# Parity harness steps.
+horizon-client-lib mobs::villager_brain::poi_classification_tests::vanilla_bed_poi_states tools/test_bed_poi_parity.py harness
+horizon-client-lib arrows::client_tests::client_arrow_parity_fixture tools/test_client_arrow_parity.py harness
+horizon-client-lib mobs::shulker::space_tests::shulker_space_parity_fixture tools/test_shulker_space_parity.py harness
+horizon-client-lib save::loot_tests::opened_loot_parity_fixture tools/test_opened_loot_parity.py harness
+horizon-client-lib mobs::leash::tests::happy_ghast_leash_dispatch_matches_vanilla tools/test_happy_ghast_leash_parity.py harness
+horizon-client game::dragon::tests::dragon_render_parity_fixture tools/test_dragon_render_parity.py harness
+horizon-client game::entity_model_loading_tests::entity_model_document_benchmark ENTITY_MODEL_BENCH_DOCUMENT harness
+horizon-client-lib entity_nbt::equipment_tests::write_fixtures HORIZON_WRITE_FIXTURES harness
+horizon-client-lib save::far_census::far_floating_cells_per_level HORIZON_FAR_SAVE harness
+horizon-client game::maps::save_tests::saved_map_codec_fixture tools/test_map_saved_data_parity.py harness
+horizon-client game::fishing::tests::breeze_hook_parity_fixture tools/test_breeze_hook_parity.py harness
+horizon-client game::remote_mob_data::tests::mob_air_parity_fixture tools/test_mob_air_parity.py harness
+horizon-client game::remote_mob_data::tests::raider_celebration_parity_fixture tools/test_raider_celebration_parity.py harness
+horizon-client-lib item_render::glint_tests::external_item_atlas_oracle HORIZON_GLINT_ROOT harness
+horizon-client-lib mobs::dragon_contacts::parity::contact_transcript tools/test_dragon_contacts_parity.py harness
+horizon-client-lib mobs::villager_brain::farming_tests::vanilla_farming_classification_matches_the_oracle tools/test_villager_farming_parity.py harness
+horizon-client-render packs::cache::tests::benchmark_real_resource_root HORIZON_OVERLAY_BENCH_VANILLA harness
+
+# Tests that need a graphics adapter (REFERENCE is the ignore reason's word).
+horizon-client-render gfx::crumbling_tests::crack_samples_stay_aligned_between_stages adapter gpu
+horizon-client-render gfx::pack_uniforms::initial_history_tests::core_matrix_inputs_render_provider_values adapter gpu
+horizon-client-render gfx::weather::tests::weather_shader_uvs_match_legacy_bits adapter gpu
+
+# Known failures on main.
+horizon-client-render gfx::frame_gen::optical_flow::tests::finds_a_shift_and_a_scene_change horizon-rust/horizon#8627 flaky # llvmpipe/lavapipe scene-change threshold; horizon-rust/horizon#9138 fixes the race
+# The clear-budget fixture writes colortexNFormat in the one-line comment form Iris ignores
+# (fixture bug, one-line fix tracked in the issue); red where the runner has an adapter, a skip-pass where it has none.
+horizon-client-render gfx::pack_post::destination_tests::clear_budget_tests::fullsize_hdr_clear_respects_attachment_count horizon-rust/horizon#9303 flaky
+horizon-client-render gfx::pack_post::destination_tests::clear_budget_tests::fullsize_hdr_clear_respects_byte_budget horizon-rust/horizon#9303 flaky
+horizon-client-render gfx::pack_post::destination_tests::clear_budget_tests::sized_hdr_clear_respects_attachment_count horizon-rust/horizon#9303 flaky
+horizon-client-render gfx::pack_post::destination_tests::clear_budget_tests::sized_hdr_clear_respects_byte_budget horizon-rust/horizon#9303 flaky
+
+# Client failures exposed after enforcing target completion (#2137).
+horizon-client game::persist::summon_uuid_conflict_tests::summon_skips_a_uuid_taken_earlier_in_the_same_tree #2175
+horizon-client game::explosion::tests::explosion_items_parity_fixture #2177 harness
+horizon-client game::native_live_holder_tests::thousand_live_block_entity_ticks #2177 harness
+horizon-client game::remote_vehicles::tests::steering_mount_control_matches_vanilla #2177 harness
+
+# Additional failures in the current-main honest run (42497697222).
+
+# #2474 dependency: external constructed 1.20.4 save with its partial ring removed; no committed recipe or CI provisioning.
+horizon-client game::levels::tests::features_write_a_full_neighbour_only_through_its_sections #2474
+# #2474 dependency: external constructed 1.20.4 save with its partial ring removed; no committed recipe or CI provisioning.
+horizon-client game::levels::tests::an_old_chunk_saves_the_heights_its_new_neighbour_calculated #2474
+# #2474 dependency: external constructed 1.20.4 save with its partial ring removed; no committed recipe or CI provisioning.
+horizon-client game::levels::tests::the_overworld_cache_holds_the_edge_chunks_calculated_heights #2474
+
+# #2505 dependency: canonical ignored-test runner lacks HORIZON_FISHING_RESOURCES and HORIZON_FISHING_REFERENCE; remove when real oracle inputs are provisioned there.
+horizon-client game::fishing::tests::fishing_retrieve_reference #2505

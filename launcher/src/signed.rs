@@ -5,11 +5,26 @@
 //! with a message saying why.
 
 use crate::backend::REPO;
-use horizon_release_sign::{PublicKey, SIGNATURE, SUMS};
+use horizon_release_sign::{PublicKey, SIGNATURE, SIGNATURE_V2, SUMS};
 
 /// Where a release's attached file downloads from (GitHub's fixed address for it).
 pub fn asset_url(tag: &str, name: &str) -> String {
-    format!("https://github.com/{REPO}/releases/download/{tag}/{name}")
+    // Metadata supplies path components, never URL syntax or another repository.
+    let component = |text: &str| -> String {
+        text.bytes()
+            .map(|b| match b {
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'@' | b'+' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    };
+    format!(
+        "https://github.com/{REPO}/releases/download/{}/{}",
+        component(tag),
+        component(name)
+    )
 }
 
 /// The signed SHA-256 of `asset` in release `tag`, fetching its SHA256SUMS and SHA256SUMS.sig
@@ -21,7 +36,7 @@ pub fn digest(
     keys: &[PublicKey],
     fetch: impl Fn(&str) -> Result<Option<Vec<u8>>, String>,
 ) -> Result<String, String> {
-    if let Some(hex) = horizon_release_sign::legacy_digest(tag, asset) {
+    if let Some(hex) = horizon_release_sign::legacy_digest_for(REPO, tag, asset) {
         return Ok(hex.to_owned());
     }
     let sums = fetch(&asset_url(tag, SUMS))?;
@@ -31,18 +46,27 @@ pub fn digest(
 }
 
 /// The signed SHA-256 of `asset` in the Nightly published under `tag` (`nightly`, or a dated
-/// `nightly-<date>`): its checksums must be signed for the nightly channel
-/// (`horizon_release_sign::nightly_digest`), whatever tag serves them.
+/// `nightly-<date>`) that installs as `version` (`nightly-<date>-<commit>`, parsed strictly from its
+/// title by `horizon_release_sign::nightly_title_version`): its SHA256SUMS.v2.sig must sign the
+/// checksums for exactly that version, so an older Nightly can't be served as a newer one. The
+/// channel's SHA256SUMS.sig is for launchers from before and is not read.
 pub fn nightly_digest(
     tag: &str,
+    version: &str,
     asset: &str,
     keys: &[PublicKey],
     fetch: impl Fn(&str) -> Result<Option<Vec<u8>>, String>,
 ) -> Result<String, String> {
     let sums = fetch(&asset_url(tag, SUMS))?;
-    let signature = fetch(&asset_url(tag, SIGNATURE))?
+    let signature = fetch(&asset_url(tag, SIGNATURE_V2))?
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-    horizon_release_sign::nightly_digest(asset, sums.as_deref(), signature.as_deref(), keys)
+    horizon_release_sign::nightly_digest(
+        version,
+        asset,
+        sums.as_deref(),
+        signature.as_deref(),
+        keys,
+    )
 }
 
 #[cfg(test)]
@@ -51,7 +75,13 @@ mod tests {
     use horizon_release_sign::{sha256_hex, sums_file, SigningKey};
 
     #[test]
-    fn the_launcher_ships_with_a_release_key() {
+    fn metadata_cannot_escape_the_fork_download_path() {
+        assert_eq!(asset_url("v1/../../other?x#y", "a%b.zip"),
+            "https://github.com/arismoko/horizon/releases/download/v1%2F..%2F..%2Fother%3Fx%23y/a%25b.zip");
+    }
+
+    #[test]
+    fn upstream_retains_its_release_key() {
         // With no key in release-keys.txt every release after the pinned ones would be refused:
         // this fails until the release environment's public key is listed (docs/security.md).
         assert!(
@@ -61,16 +91,28 @@ mod tests {
     }
 
     #[test]
-    fn releases_from_before_signing_install_only_with_their_pinned_files() {
+    fn an_upstream_legacy_archive_offered_under_a_fork_tag_is_refused() {
         let tampered =
             |_: &str| -> Result<Option<Vec<u8>>, String> { Ok(Some(b"anything".to_vec())) };
-        let pinned =
-            horizon_release_sign::legacy_digest("v2026.10.12", "horizon-linux-x86_64.tar.gz")
-                .expect("v2026.10.12 is from before signing");
-        assert_eq!(
-            digest("v2026.10.12", "horizon-linux-x86_64.tar.gz", &[], tampered),
-            Ok(pinned.to_owned())
-        );
+        assert!(horizon_release_sign::legacy_digest_for(
+            "horizon-rust/horizon",
+            "v2026.10.12",
+            "horizon-linux-x86_64.tar.gz"
+        )
+        .is_some());
+        assert!(horizon_release_sign::legacy_digest_for(
+            "arismoko/horizon",
+            "v2026.10.12",
+            "horizon-linux-x86_64.tar.gz"
+        )
+        .is_none());
+        assert!(horizon_release_sign::legacy_digest_for(
+            "unknown/horizon",
+            "v2026.10.12",
+            "horizon-linux-x86_64.tar.gz"
+        )
+        .is_none());
+        assert!(digest("v2026.10.12", "horizon-linux-x86_64.tar.gz", &[], tampered).is_err());
     }
 
     #[test]
@@ -80,7 +122,7 @@ mod tests {
         let signature = key.sign("v2099.01.01", sums.as_bytes());
         // GitHub as it answers for a signed release (any tag: the files are what a replay would serve).
         let signed = |url: &str| -> Result<Option<Vec<u8>>, String> {
-            assert!(url.starts_with("https://github.com/horizon-rust/horizon/releases/download/"));
+            assert!(url.starts_with("https://github.com/arismoko/horizon/releases/download/"));
             Ok(Some(
                 if url.ends_with(".sig") {
                     signature.clone()
@@ -109,20 +151,28 @@ mod tests {
         assert!(digest("v2099.01.01", "horizon.zip", &keys, offline).is_err());
     }
 
-    /// The release channel never installs what was signed for the nightly channel, whatever tag it
-    /// is served under, and the nightly channel never installs a release's signed list.
+    /// The release channel never installs what was signed for a Nightly, whatever tag it is served
+    /// under; a Nightly installs only with its own version's signature (SHA256SUMS.v2.sig), never the
+    /// channel's, another Nightly's or a release's.
     #[test]
     fn the_release_channel_refuses_nightly_signatures() {
+        const VERSION: &str = "nightly-2026-10-28-0c02067";
         let (key, _) = SigningKey::generate().unwrap();
         let keys = [key.public()];
         let sums = sums_file(&[("horizon.zip".into(), sha256_hex(b"game"))]);
-        let serving = |signed_for: &'static str| {
-            let signature = key.sign(signed_for, sums.as_bytes());
+        // Serves SHA256SUMS, SHA256SUMS.sig signed for `channel` and SHA256SUMS.v2.sig for `v2`.
+        let serving = |channel: &'static str, v2: &'static str| {
+            let (one, two) = (
+                key.sign(channel, sums.as_bytes()),
+                key.sign(v2, sums.as_bytes()),
+            );
             let sums = sums.clone();
             move |url: &str| -> Result<Option<Vec<u8>>, String> {
                 Ok(Some(
-                    if url.ends_with(".sig") {
-                        signature.clone()
+                    if url.ends_with(SIGNATURE_V2) {
+                        two.clone()
+                    } else if url.ends_with(SIGNATURE) {
+                        one.clone()
                     } else {
                         sums.clone()
                     }
@@ -130,19 +180,38 @@ mod tests {
                 ))
             }
         };
-        let nightly = serving(horizon_release_sign::NIGHTLY);
+        let nightly = serving(horizon_release_sign::NIGHTLY, VERSION);
         assert_eq!(
-            nightly_digest("nightly", "horizon.zip", &keys, &nightly),
+            nightly_digest("nightly", VERSION, "horizon.zip", &keys, &nightly),
             Ok(sha256_hex(b"game"))
         );
+        // Another version than the one signed (an older Nightly served as tonight's, or the reverse).
+        assert!(nightly_digest(
+            "nightly",
+            "nightly-2026-10-29-1111111",
+            "horizon.zip",
+            &keys,
+            &nightly
+        )
+        .is_err());
         for tag in ["v0.2.81", "nightly", "nightly-2026-10-27"] {
             assert!(
                 digest(tag, "horizon.zip", &keys, &nightly).is_err(),
                 "{tag}"
             );
         }
-        let release = serving("v0.2.81");
+        // Only the channel's signature (a Nightly from before v2): refused by a current launcher.
+        let old = |url: &str| -> Result<Option<Vec<u8>>, String> {
+            if url.ends_with(SIGNATURE_V2) {
+                Ok(None)
+            } else {
+                nightly(url)
+            }
+        };
+        let refused = nightly_digest("nightly", VERSION, "horizon.zip", &keys, old).unwrap_err();
+        assert!(refused.contains("SHA256SUMS.v2.sig"), "{refused}");
+        let release = serving("v0.2.81", "v0.2.81");
         assert!(digest("v0.2.81", "horizon.zip", &keys, &release).is_ok());
-        assert!(nightly_digest("nightly", "horizon.zip", &keys, &release).is_err());
+        assert!(nightly_digest("nightly", VERSION, "horizon.zip", &keys, &release).is_err());
     }
 }

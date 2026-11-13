@@ -14,26 +14,46 @@ pub(super) struct Pass {
     flat: Option<wgpu::RenderPipeline>,
 }
 
+/// Where a pass reads its vertices, as `Renderer::new` builds the usual solid pipelines.
+struct Source<'a, 'b> {
+    /// The per-section draws', then the flat draws' (None without flat draws).
+    layouts: (&'a wgpu::PipelineLayout, Option<&'a wgpu::PipelineLayout>),
+    buffers: (
+        &'a [Option<wgpu::VertexBufferLayout<'b>>],
+        &'a [Option<wgpu::VertexBufferLayout<'b>>],
+    ),
+    /// The vertex entry points, `_opaque` or `_cutout` to come.
+    vertex: (&'static str, &'static str),
+}
+
 impl Pass {
     fn new(
         terrain: &TerrainModule<'_>,
-        (layout, flat_layout): (&wgpu::PipelineLayout, Option<&wgpu::PipelineLayout>),
-        buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+        source: &Source<'_, '_>,
         (label, flat_label): (&str, &str),
-        (vertex, flat_vertex): (&str, &str),
+        part: &str,
         fragment: &str,
     ) -> Option<Self> {
         let back = Some(wgpu::Face::Back);
-        let sections =
-            terrain.pipeline(layout, label, vertex, fragment, buffers, back, true, None)?;
-        let flat = match flat_layout {
+        let (vertex, flat_vertex) = source.vertex;
+        let (buffers, flat_buffers) = source.buffers;
+        let sections = terrain.pipeline(
+            source.layouts.0,
+            label,
+            &format!("{vertex}_{part}"),
+            fragment,
+            buffers,
+            back,
+            true,
+            None,
+        )?;
+        let flat = match source.layouts.1 {
             Some(layout) => Some(terrain.pipeline(
                 layout,
                 flat_label,
-                flat_vertex,
+                &format!("{flat_vertex}_{part}"),
                 fragment,
-                // Without the origin buffer.
-                &buffers[..1],
+                flat_buffers,
                 back,
                 true,
                 None,
@@ -79,13 +99,18 @@ pub(super) struct SolidPaths {
 }
 
 impl SolidPaths {
-    /// `flat_bindings`: the flat draws' bind group 1, where they exist.
+    /// `flat_bindings`: the flat draws' bind group 1, where they exist. `pulled`: the solid draws
+    /// read their quads from the arena's pages (`vs_section*`, in either layout of
+    /// `mesher::packed`) with only the origins a vertex buffer, at slot 1, and the flat draws
+    /// none, as the usual pipelines do once flat draws exist (`Renderer::new`, `Flat::new`).
+    /// Otherwise they take `buffers`, the vertices and the origins (`vs_terrain*`).
     pub fn new(
         terrain: &TerrainModule<'_>,
         bindings: &wgpu::BindGroupLayout,
         layout: &wgpu::PipelineLayout,
         flat_bindings: Option<&wgpu::BindGroupLayout>,
         buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+        pulled: bool,
     ) -> Option<Self> {
         let flat_layout = flat_bindings.map(|flat| {
             terrain
@@ -96,7 +121,20 @@ impl SolidPaths {
                     ..Default::default()
                 })
         });
-        let layouts = (layout, flat_layout.as_ref());
+        let origins = [None, buffers.get(1).cloned().flatten()];
+        let source = match &flat_layout {
+            Some(pages) if pulled => Source {
+                layouts: (pages, Some(pages)),
+                buffers: (&origins, &[]),
+                vertex: ("vs_section", "vs_section_flat"),
+            },
+            _ => Source {
+                layouts: (layout, flat_layout.as_ref()),
+                // The flat draws without the origin buffer.
+                buffers: (buffers, &buffers[..1]),
+                vertex: ("vs_terrain", "vs_terrain_flat"),
+            },
+        };
         let constants: Vec<_> = terrain
             .constants
             .iter()
@@ -109,18 +147,16 @@ impl SolidPaths {
         };
         let settled_opaque = Pass::new(
             &settled_module,
-            layouts,
-            buffers,
+            &source,
             ("Settled terrain opaque", "Settled terrain opaque (flat)"),
-            ("vs_terrain_opaque", "vs_terrain_flat_opaque"),
+            "opaque",
             "fs_opaque",
         );
         let settled_cutout = Pass::new(
             &settled_module,
-            layouts,
-            buffers,
+            &source,
             ("Settled terrain cutout", "Settled terrain cutout (flat)"),
-            ("vs_terrain_cutout", "vs_terrain_flat_cutout"),
+            "cutout",
             "fs_cutout_static",
         );
         Some(Self {
@@ -128,13 +164,12 @@ impl SolidPaths {
             settled_on: true,
             static_cutout: Pass::new(
                 terrain,
-                layouts,
-                buffers,
+                &source,
                 (
                     "Terrain cutout without fades",
                     "Terrain cutout without fades (flat)",
                 ),
-                ("vs_terrain_cutout", "vs_terrain_flat_cutout"),
+                "cutout",
                 "fs_cutout_static",
             )?,
             static_cutout_on: true,

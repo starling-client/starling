@@ -15,7 +15,8 @@ use crate::{
     engine,
     supervisor::note,
 };
-use horizon_server_files::properties::{ServerProperties, SystemEntropy};
+use horizon_platform::server_files::properties::{ServerProperties, SystemEntropy};
+use horizon_server_launch::config;
 use serde_json::Value;
 use std::{
     io::{self, Read, Write},
@@ -47,6 +48,10 @@ const CHUNK: usize = 4096;
 const LOGIN_WITHIN: Duration = Duration::from_secs(30);
 /// The connections open at once.
 const MAX_CLIENTS: usize = 16;
+/// How long a refused login waits before its connection closes: one guess per connection, and a
+/// connection's place stays taken meanwhile, so the most connections at once also bound how fast
+/// passwords can be tried.
+const REFUSED_PAUSE: Duration = Duration::from_secs(1);
 
 struct Settings {
     host: String,
@@ -64,7 +69,7 @@ enum Setup {
 }
 
 fn setup(dir: &Path) -> Result<Setup, String> {
-    let file = crate::config::read_properties(&dir.join(crate::config::PROPERTIES))?;
+    let file = config::read_properties(&dir.join(config::PROPERTIES))?;
     let p = ServerProperties::new(file, &mut SystemEntropy::default())?;
     if !p.enable_rcon {
         return Ok(Setup::Off);
@@ -95,7 +100,7 @@ fn setup(dir: &Path) -> Result<Setup, String> {
 /// not a server that doesn't start.
 pub fn start(shared: Arc<Shared>) -> Result<Option<SocketAddr>, String> {
     // The file the game reads, as server.toml makes it.
-    crate::config::Config::load(&shared.dir)?
+    config::Config::load(&shared.dir)?
         .write_properties(&shared.dir)
         .map_err(|e| format!("server.properties: {e}"))?;
     let settings = match setup(&shared.dir)? {
@@ -126,6 +131,7 @@ pub fn start(shared: Arc<Shared>) -> Result<Option<SocketAddr>, String> {
         Limits {
             clients: MAX_CLIENTS,
             login: LOGIN_WITHIN,
+            refused: REFUSED_PAUSE,
         },
         move |line| run_on_game(&game, line),
         move |message| note(&log, "WARN", message),
@@ -172,6 +178,8 @@ struct Limits {
     clients: usize,
     /// How long a connection may take to log in.
     login: Duration,
+    /// How long a refused login waits before its connection closes.
+    refused: Duration,
 }
 
 /// Frees a connection's place when its thread ends.
@@ -201,7 +209,7 @@ fn serve(
             }
             let place = Place(open.clone());
             let (password, run, warn) = (password.clone(), run.clone(), warn.clone());
-            let login = limits.login;
+            let (login, refused) = (limits.login, limits.refused);
             let _ = thread::Builder::new()
                 .name("rcon-client".into())
                 .spawn(move || {
@@ -212,7 +220,7 @@ fn serve(
                         .peer_addr()
                         .map_or_else(|_| "?".into(), |a| a.ip().to_string());
                     // The client going away, or sending what isn't RCON, ends its connection.
-                    let _ = client(&mut stream, &password, login, &*run, &|why| {
+                    let _ = client(&mut stream, &password, login, refused, &*run, &|why| {
                         warn(&format!("RCON {why} from {from}"));
                     });
                 });
@@ -222,10 +230,14 @@ fn serve(
 }
 
 /// One connection: login and commands until the client leaves, or sends what vanilla would close on.
+/// A refused login ends it (after `refused`): vanilla keeps the connection open for another guess,
+/// which made thousands of guesses a second possible with a few connections; standard RCON clients
+/// connect again after a refusal.
 fn client(
     stream: &mut TcpStream,
     password: &str,
     login: Duration,
+    refused: Duration,
     run: &dyn Fn(&str) -> Result<String, String>,
     warn: &dyn Fn(&str),
 ) -> io::Result<()> {
@@ -245,6 +257,9 @@ fn client(
                 } else {
                     warn("login refused");
                     send(stream, AUTH_FAILURE, AUTH_RESPONSE, "")?;
+                    // One guess per connection: another costs a new connection and its place.
+                    thread::sleep(refused);
+                    return Ok(());
                 }
             }
             EXEC if authed => {
@@ -394,11 +409,23 @@ mod tests {
         (address, warned)
     }
 
+    /// The test pause after a refused login.
+    const PAUSE: Duration = Duration::from_millis(200);
+
     fn limits() -> Limits {
         Limits {
             clients: MAX_CLIENTS,
             login: LOGIN_WITHIN,
+            refused: PAUSE,
         }
+    }
+
+    /// Whether the server closed `stream` (reads end), and how long that took.
+    fn closed(stream: &mut TcpStream) -> (bool, Duration) {
+        let start = Instant::now();
+        let mut byte = [0; 1];
+        let ended = matches!(stream.read(&mut byte), Ok(0));
+        (ended, start.elapsed())
     }
 
     fn connect(address: SocketAddr) -> TcpStream {
@@ -427,22 +454,27 @@ mod tests {
     fn a_session_logs_in_and_runs_commands() {
         let (address, warned) = server(limits());
         let mut rcon = connect(address);
-        // A command before the login, and a wrong password: refused, and the connection stays open.
+        // A command before the login: refused, and the connection stays open.
         rcon.write_all(&encode(1, EXEC, "list")).unwrap();
         assert_eq!(
             reply(&mut rcon),
             (AUTH_FAILURE, AUTH_RESPONSE, String::new())
         );
-        rcon.write_all(&encode(2, AUTH, "hunter3")).unwrap();
-        assert_eq!(
-            reply(&mut rcon),
-            (AUTH_FAILURE, AUTH_RESPONSE, String::new())
-        );
-        rcon.write_all(&encode(3, AUTH, "")).unwrap();
-        assert_eq!(
-            reply(&mut rcon),
-            (AUTH_FAILURE, AUTH_RESPONSE, String::new())
-        );
+        // A wrong password, or an empty one: refused, and that connection closes after the pause.
+        for password in ["hunter3", ""] {
+            rcon.write_all(&encode(2, AUTH, password)).unwrap();
+            assert_eq!(
+                reply(&mut rcon),
+                (AUTH_FAILURE, AUTH_RESPONSE, String::new())
+            );
+            let (ended, after) = closed(&mut rcon);
+            assert!(ended, "a refused login ends its connection");
+            assert!(
+                after >= PAUSE / 2,
+                "closed after the pause, not at once: {after:?}"
+            );
+            rcon = connect(address);
+        }
         rcon.write_all(&encode(4, AUTH, "hunter2")).unwrap();
         assert_eq!(reply(&mut rcon), (4, AUTH_RESPONSE, String::new()));
         rcon.write_all(&encode(5, EXEC, "say hi")).unwrap();
@@ -460,11 +492,10 @@ mod tests {
             reply(&mut rcon),
             (8, RESPONSE, "Unknown request fffffffe".into())
         );
-        // A login that fails takes the login back.
+        // A login that fails takes the login back, and ends the connection.
         rcon.write_all(&encode(9, AUTH, "nope")).unwrap();
         assert_eq!(reply(&mut rcon).0, AUTH_FAILURE);
-        rcon.write_all(&encode(10, EXEC, "list")).unwrap();
-        assert_eq!(reply(&mut rcon).0, AUTH_FAILURE);
+        assert!(closed(&mut rcon).0);
         assert_eq!(
             warned.lock().unwrap().len(),
             3,
@@ -536,6 +567,7 @@ mod tests {
         let (address, _) = server(Limits {
             clients: 1,
             login: Duration::from_secs(1),
+            refused: PAUSE,
         });
         let mut idle = connect(address);
         // The only place is taken: the next connection is closed at once.
@@ -558,7 +590,7 @@ mod tests {
     }
 
     fn properties(dir: &Path, text: &str) {
-        std::fs::write(dir.join(crate::config::PROPERTIES), text).unwrap();
+        std::fs::write(dir.join(config::PROPERTIES), text).unwrap();
     }
 
     #[test]
@@ -610,7 +642,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::fs::write(
-            engine::control_path(dir),
+            horizon_server_launch::control_path(dir),
             format!("{{\"port\":{port},\"token\":\"t\"}}"),
         )
         .unwrap();
@@ -670,7 +702,7 @@ mod tests {
             .port();
         // The dotted keys are quoted in TOML.
         // `[server] bind` is `server-ip`, the address RCON listens on too.
-        let toml = crate::config::TEMPLATE
+        let toml = config::TEMPLATE
             .replacen("bind = \"\"", "bind = \"127.0.0.1\"", 1)
             .replace(
                 "[properties]
@@ -683,7 +715,7 @@ enable-rcon = true
 "
                 ),
             );
-        std::fs::write(dir.join(crate::config::FILE), toml).unwrap();
+        std::fs::write(dir.join(config::FILE), toml).unwrap();
         let shared = Shared::with_install(&dir, None);
         shared.set_phase(Phase::Running);
         let address = start(shared.clone()).unwrap().expect("RCON is on");

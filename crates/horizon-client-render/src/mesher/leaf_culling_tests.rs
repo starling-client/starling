@@ -28,10 +28,17 @@ fn fixture() -> Fixture {
         });
     let assets = Assets::load(&root).unwrap();
     let facts = BlockFacts::load(&root, assets.registry).unwrap();
-    let biomes = Biomes::load(&root).unwrap();
-    let render = assets.reload(&root).unwrap();
+    let biomes = Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
+        root.to_path_buf(),
+    ))
+    .unwrap();
+    let render = assets
+        .reload(&horizon_assets::resource_source::ResourceRoot::directory(
+            root.to_path_buf(),
+        ))
+        .unwrap();
     let visibility = models::load_visibility(&root, assets.registry).unwrap();
-    let tables = MeshTables::new(&assets, &render, &facts, visibility.clone()).unwrap();
+    let tables = MeshTables::new(&assets, &render, &facts, visibility.clone(), None).unwrap();
     Fixture {
         assets,
         biomes,
@@ -73,6 +80,7 @@ fn mesh(
         nether_shading: false,
         shader_pack_lighting: false,
         separate_ao: false,
+        shader_pack: false,
         assets: &f.assets,
         render: &f.render,
         tables: &f.tables,
@@ -82,8 +90,10 @@ fn mesh(
         blend_radius: 0,
         smooth_lighting: false,
         cutout_leaves: true,
+        opaque_ice: false,
         translucent_layers: &[],
         leaf_culling: mode,
+        hidden_states: &[],
     };
     mesher.mesh(&region, sy)
 }
@@ -292,4 +302,48 @@ fn a_world_without_leaves_meshes_identically_in_every_mode() {
             );
         }
     }
+}
+
+/// A state a mod hides is air to the mesher: its own faces vanish and the neighbour's face
+/// toward it shows, where a solid block covered it.
+#[test]
+#[ignore = "requires prepared 26.3 resources (HORIZON_MESH_TEST_RESOURCES or .local/horizon-client/26.3)"]
+fn a_hidden_state_draws_nothing_and_shows_its_neighbours_face() {
+    let f = fixture();
+    let (stone, dirt) = (state(&f, "minecraft:stone"), state(&f, "minecraft:dirt"));
+    let mut chunk = Chunk::empty(0, 0);
+    chunk.set(8, 8, 8, stone);
+    chunk.set(9, 8, 8, dirt);
+    let mut hidden = vec![false; f.assets.registry.len()];
+    let faces = |hidden: &[bool]| {
+        let mut mesher = Mesher {
+            nether_shading: false,
+            shader_pack_lighting: false,
+            separate_ao: false,
+            shader_pack: false,
+            assets: &f.assets,
+            render: &f.render,
+            tables: &f.tables,
+            biomes: &f.biomes,
+            visibility: f.visibility.clone(),
+            zoom: BiomeZoom::new(0),
+            blend_radius: 0,
+            smooth_lighting: false,
+            cutout_leaves: true,
+            opaque_ice: false,
+            translucent_layers: &[],
+            leaf_culling: LeafCullingMode::Off,
+            hidden_states: hidden,
+        };
+        mesher.mesh(&around(&chunk), 4).solid.len() / 4
+    };
+    assert_eq!(faces(&[]), 10, "two touching blocks show five faces each");
+    hidden[stone as usize] = true;
+    assert_eq!(
+        faces(&hidden),
+        6,
+        "the stone is gone and the dirt shows the face toward it"
+    );
+    hidden[dirt as usize] = true;
+    assert_eq!(faces(&hidden), 0);
 }

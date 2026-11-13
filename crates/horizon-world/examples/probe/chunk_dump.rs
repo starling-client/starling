@@ -18,19 +18,21 @@
 //! NAME X Y Z PRIORITY` line per scheduled tick.
 use crate::support::common::tag;
 use horizon_core::position::ChunkPos;
-use horizon_world::{
-    DATA_VERSION,
-    nbt::Tag,
-    registry::BlockRegistry,
-    worldgen::{
-        biome::BiomeId,
-        blending::{BlendingData, Direction8, OldChunk, OldWorld, Sides},
-        generator::{GeneratorData, OverworldGenerator, ProtoChunk},
-        overrides::{PackFile, WorldgenOverrides},
-    },
-};
 use serde_json::Value;
 use std::{collections::HashMap, fmt::Write as _, fs, io::Write as _, path::Path, sync::Arc};
+use {
+    horizon_core::nbt::Tag,
+    horizon_world::{
+        DATA_VERSION,
+        registry::BlockRegistry,
+        worldgen::{
+            biome::BiomeId,
+            blending::{BlendingData, Direction8, OldChunk, OldWorld, Sides},
+            generator::{FlatSettings, GeneratorData, OverworldGenerator, ProtoChunk},
+            overrides::{PackFile, WorldgenOverrides},
+        },
+    },
+};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -46,6 +48,42 @@ fn registry(resources: &Path) -> Result<&'static BlockRegistry, Error> {
         ("defaults", tag(&facts["defaults"])),
     ]))?;
     Ok(Box::leak(Box::new(registry)))
+}
+
+/// A `flat_level_generator_preset`'s settings, from the client resources' data.
+fn flat_preset(resources: &Path, id: &str) -> Result<FlatSettings, Error> {
+    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    let file = resources.join(format!(
+        "data/{namespace}/worldgen/flat_level_generator_preset/{path}.json"
+    ));
+    let json: Value = serde_json::from_str(&fs::read_to_string(&file)?)?;
+    let s = &json["settings"];
+    let layers = s["layers"]
+        .as_array()
+        .ok_or("preset layers")?
+        .iter()
+        .map(|l| {
+            let block = l["block"].as_str().ok_or("layer block")?.to_owned();
+            Ok((block, l["height"].as_i64().ok_or("layer height")? as i32))
+        })
+        .collect::<Result<_, Error>>()?;
+    let structure_overrides = match &s["structure_overrides"] {
+        Value::Array(sets) => Some(
+            sets.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        ),
+        Value::String(set) => Some(vec![set.clone()]),
+        _ => None,
+    };
+    Ok(FlatSettings {
+        layers,
+        biome: s["biome"].as_str().unwrap_or("minecraft:plains").to_owned(),
+        structure_overrides,
+        features: s["features"].as_bool().unwrap_or(false),
+        lakes: s["lakes"].as_bool().unwrap_or(false),
+    })
 }
 
 /// Type-prefixed scalars with sorted compound keys, as the oracle prints them.
@@ -268,8 +306,15 @@ pub fn main() -> Result<(), Error> {
     for warning in data.warnings() {
         eprintln!("data pack worldgen: {warning}");
     }
-    let generator =
-        OverworldGenerator::for_dimension(data.clone(), seed, "minecraft:normal", &dimension)?;
+    // HORIZON_FLAT: a flat_level_generator_preset id; the overworld is that superflat world.
+    let generator = match std::env::var("HORIZON_FLAT") {
+        Ok(preset) => {
+            OverworldGenerator::flat(data.clone(), seed, &flat_preset(&resources, &preset)?, true)?
+        }
+        Err(_) => {
+            OverworldGenerator::for_dimension(data.clone(), seed, "minecraft:normal", &dimension)?
+        }
+    };
     let mut worker = generator.worker();
     let old_spec = std::env::var("HORIZON_OLD_CHUNKS").ok();
     let old_rect = match &old_spec {

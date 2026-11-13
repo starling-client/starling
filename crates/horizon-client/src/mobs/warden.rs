@@ -3,18 +3,23 @@
 //! tendril animations, the model and its emissive layers. Its brain
 //! (`WardenAi`) is in `warden_brain`.
 use super::{
-    Damage, DamageKind, Mob, MobEvent, MobWorld, Species, Who,
+    Damage, DamageKind, Mob, MobEvent, MobWorld, Species, TargetChange, Who,
     anim::{Poses, State},
     keyframes::Animation,
     path::PathType,
     warden_brain::{self, Brain},
 };
+use crate::health::DamageLevel;
 use crate::sculk::{self, Context, Info};
 use horizon_core::{
     geometry::{Vec3, trig::Mth},
-    random::{LegacyRandom, RandomSource},
+    random::RandomSource,
 };
-use std::{collections::HashMap, f32::consts::PI};
+use horizon_protocol::entity_data::PositionSource;
+use std::{
+    collections::{BTreeMap, HashMap},
+    f32::consts::PI,
+};
 
 pub const EMERGE_DURATION: i64 = warden_brain::EMERGE_DURATION as i64;
 pub const DIGGING_COOLDOWN: i64 = warden_brain::DIGGING_COOLDOWN;
@@ -160,11 +165,59 @@ impl AngerLevel {
 pub struct AngerManagement {
     suspects: Vec<Who>,
     anger: HashMap<Who, i32>,
+    /// `angerByUuid`: the suspects that are not in the level, kept by UUID so
+    /// their anger goes on calming down while they are away and finds them
+    /// again when they come back. `Who` cannot carry one of those (its mobs are
+    /// live ids), which is why a save writes this half as UUIDs.
+    unloaded: BTreeMap<[i32; 4], i32>,
+    /// `conversionDelay`: the anger ticks left before `unloaded` is looked up
+    /// in the level again. Vanilla draws the first value from a thread-local
+    /// `RandomSource` (0..=2 ticks); a fresh anger starts at 0 here, the fastest
+    /// of those, since the mob layer has no such stream and drawing from the
+    /// mob's own random would shift that stream's parity.
+    conversion_delay: i32,
     highest: i32,
 }
+/// `AngerManagement.CONVERSION_DELAY`: anger ticks between two lookups of the
+/// suspects that are away.
+const CONVERSION_DELAY: i32 = 2;
 impl AngerManagement {
-    /// One second: every suspect calms by one; the invalid are forgotten.
-    pub fn tick(&mut self, valid: impl Fn(Who) -> bool) {
+    /// `new AngerManagement(filter, List<Pair<UUID, Integer>>)`: a saved anger
+    /// starts with every suspect in the UUID map. The live map fills up again as
+    /// the ticks find them in the level (`convertFromUuids`).
+    pub fn from_saved(pairs: impl IntoIterator<Item = ([i32; 4], i32)>) -> Self {
+        Self {
+            unloaded: pairs.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+    /// The suspects that are not in the level, by UUID, angriest first: what a
+    /// save writes after the loaded ones (`createUuidAngerPairs` lists the
+    /// suspects, then this map).
+    pub fn unloaded(&self) -> impl Iterator<Item = ([i32; 4], i32)> + '_ {
+        let mut pairs: Vec<([i32; 4], i32)> = self.unloaded.iter().map(|(u, a)| (*u, *a)).collect();
+        pairs.sort_by_key(|(_, anger)| std::cmp::Reverse(*anger));
+        pairs.into_iter()
+    }
+    /// One anger tick (`Warden.customServerAiStep` runs it every 20 game
+    /// ticks): the UUIDs that are due are looked up in the level, then every
+    /// suspect calms by one - the ones that are away, then the ones in the
+    /// level, whose invalid are forgotten. `by_uuid` is `Level.getEntity(uuid)`
+    /// as a `Who` (`Game::who_by_uuid`); a world that cannot answer resolves
+    /// nothing, so those suspects stay away for another tick.
+    pub fn tick(&mut self, valid: impl Fn(Who) -> bool, by_uuid: impl Fn([i32; 4]) -> Option<Who>) {
+        self.conversion_delay -= 1;
+        if self.conversion_delay <= 0 {
+            self.convert_from_uuids(by_uuid);
+            self.conversion_delay = CONVERSION_DELAY;
+        }
+        self.unloaded.retain(|_, anger| {
+            if *anger <= 1 {
+                return false;
+            }
+            *anger -= 1;
+            true
+        });
         let mut dropped = Vec::new();
         for (who, anger) in self.anger.iter_mut() {
             if *anger > 1 && valid(*who) {
@@ -178,6 +231,29 @@ impl AngerManagement {
             self.suspects.retain(|s| *s != who);
         }
         self.sort_and_update_highest();
+    }
+    /// `AngerManagement.convertFromUuids`: a suspect that is back in the level
+    /// rejoins the live map with the anger it kept while it was away. One that
+    /// is already in the live map was angered again before this lookup: vanilla's
+    /// `increaseAnger` would have added the anger kept under its UUID then
+    /// (`angerByUuid.removeInt`, uncapped), which the mob layer cannot do as it
+    /// knows no UUIDs, so that anger is added here.
+    fn convert_from_uuids(&mut self, by_uuid: impl Fn([i32; 4]) -> Option<Who>) {
+        let away = std::mem::take(&mut self.unloaded);
+        for (uuid, anger) in away {
+            match by_uuid(uuid) {
+                Some(who) if self.anger.contains_key(&who) => {
+                    *self.anger.entry(who).or_default() += anger;
+                }
+                Some(who) => {
+                    self.anger.insert(who, anger);
+                    self.suspects.push(who);
+                }
+                None => {
+                    self.unloaded.insert(uuid, anger);
+                }
+            }
+        }
     }
     fn sort_and_update_highest(&mut self) {
         // AngerManagement.Sorter: the angry first, then players, then the
@@ -266,7 +342,14 @@ impl Warden {
 }
 
 pub fn register(m: &mut Mob) {
-    m.extra.warden = Some(Box::default());
+    // The brain at construction, with the mob's own type id so a mod part's
+    // behaviors join it (#824).
+    let id = m.kind.id.clone();
+    let st = Warden {
+        brain: Brain::new(&id, 0),
+        ..Warden::default()
+    };
+    m.extra.warden = Some(Box::new(st));
     m.ai.nav.can_float = true;
     m.set_malus(PathType::UnpassableRail, 0.0);
     m.set_malus(PathType::Damaging, 8.0);
@@ -289,7 +372,8 @@ pub fn delay_sensors(m: &mut Mob) {
 pub fn init_brain(m: &mut Mob, seed: i64) {
     if let Some(st) = m.extra.warden.as_mut() {
         let mem = std::mem::take(&mut st.brain.mem);
-        st.brain = Brain::new(seed);
+        let id = m.kind.id.clone();
+        st.brain = Brain::new(&id, seed);
         st.brain.mem = mem;
     }
     delay_sensors(m);
@@ -333,8 +417,7 @@ fn closer_than(m: &Mob, p: Vec3, horizontal: f64, vertical: f64) -> bool {
 pub fn can_target(w: &MobWorld, who: Who) -> bool {
     match who {
         Who::Player => w
-            .player
-            .as_ref()
+            .selected_player()
             .is_some_and(|p| p.alive && !p.creative && !p.spectator),
         Who::Mob(id) => w
             .seen(id)
@@ -366,8 +449,13 @@ pub(super) fn increase_anger(
     };
     let maybe_switch = st.target() != Some(Who::Player);
     let new = st.anger.increase(who, amount);
-    if who == Who::Player && maybe_switch && AngerLevel::by_anger(new).is_angry() {
-        st.brain.mem.attack_target.clear();
+    if who == Who::Player
+        && maybe_switch
+        && AngerLevel::by_anger(new).is_angry()
+        && warden_brain::mem(m).attack_target.present()
+        && let TargetChange::Set(target) = w.change_target(m, true, None)
+    {
+        warden_brain::mem(m).attack_target.set_opt(target);
     }
     if play_sound && pose(m) != Pose::Roaring {
         let level = anger_level(m);
@@ -432,7 +520,7 @@ fn handle_hurt(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             && let Some(p) = position_of(w, who)
             && (direct || m.distance_sqr(p) < 25.0)
         {
-            warden_brain::set_attack_target(m, who);
+            warden_brain::set_attack_target(m, w, who);
         }
     }
 }
@@ -458,7 +546,7 @@ pub(super) fn do_hurt_target(
     m: &mut Mob,
     target: Who,
     w: &MobWorld,
-    lr: &mut LegacyRandom,
+    level: &mut DamageLevel<'_>,
     events: &mut Vec<MobEvent>,
 ) {
     m.anim.states[ROAR].stop();
@@ -471,7 +559,7 @@ pub(super) fn do_hurt_target(
     let pitch = voice_pitch(m);
     sound(m, "entity.warden.attack_impact", 10.0, pitch, events);
     warden_brain::mem(m).sonic_boom_cooldown.set_ttl((), 40);
-    let mut cx = warden_brain::cx(w, lr, events);
+    let mut cx = warden_brain::cx(w, level, events);
     super::ai::do_hurt_target(m, target, &mut cx);
 }
 
@@ -521,7 +609,7 @@ pub fn listen(
     // isValidVibration: the warden can trigger avoid vibration.
     let listens = sculk::warden_can_listen(event);
     if listens
-        && ctx.source == Some(Who::Player)
+        && ctx.source == Some(Who::Player.into())
         && !ctx.spectator
         && ctx.stepping_carefully
         && sculk::ignored_when_sneaking(event)
@@ -544,6 +632,8 @@ pub fn listen(
                 pos,
                 source: ctx.source,
                 owner: ctx.owner,
+                source_uuid: ctx.source_uuid,
+                owner_uuid: ctx.owner_uuid,
             },
             now,
         );
@@ -552,7 +642,12 @@ pub fn listen(
 }
 /// `Level.gameEvent` for the mobs' own movement events from `from` on, as
 /// the mob AI probe has no sculk layer: every warden's listener hears them.
-pub fn hear_mob_events(mobs: &mut [Mob], events: &[MobEvent], from: usize, w: &MobWorld) {
+pub fn hear_mob_events(
+    mobs: &mut crate::join_seq::JoinList<Mob>,
+    events: &[MobEvent],
+    from: usize,
+    w: &MobWorld,
+) {
     for e in &events[from..] {
         let MobEvent::GameEvent {
             event,
@@ -566,7 +661,8 @@ pub fn hear_mob_events(mobs: &mut [Mob], events: &[MobEvent], from: usize, w: &M
         let who = mobs.iter().find(|m| m.id == source);
         let name = &w.facts.get(state).name;
         let ctx = Context {
-            source: Some(Who::Mob(source)),
+            source: Some(Who::Mob(source).into()),
+            affected_state: Some(state),
             dampening_state: w.has_tag("minecraft:dampens_vibrations", name),
             dampens: who.is_some_and(|m| m.species() == Species::Warden),
             targetable: who.is_some_and(|m| m.alive() && m.species() != Species::Warden),
@@ -628,7 +724,14 @@ fn receive_vibration(m: &mut Mob, w: &MobWorld, info: Info, events: &mut Vec<Mob
         }
         warden_brain::mem(m).recent_projectile.set_ttl((), 100);
     } else {
-        increase_anger(m, w, info.source, DEFAULT_ANGER, true, events);
+        increase_anger(
+            m,
+            w,
+            info.source.and_then(|s| s.actor()),
+            DEFAULT_ANGER,
+            true,
+            events,
+        );
     }
     if !anger_level(m).is_angry() {
         let active = m
@@ -636,7 +739,8 @@ fn receive_vibration(m: &mut Mob, w: &MobWorld, info: Info, events: &mut Vec<Mob
             .warden
             .as_ref()
             .and_then(|st| st.anger.active_entity(|e| can_target(w, e)));
-        if info.owner.is_some() || active.is_none() || active == info.source {
+        if info.owner.is_some() || active.is_none() || active == info.source.and_then(|s| s.actor())
+        {
             warden_brain::set_disturbance(m, w, suspicious);
         }
     }
@@ -665,6 +769,12 @@ pub fn pre_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             from: info.pos,
             to: eye,
             ticks: travel,
+            // `Warden.VibrationUser`: `new EntityPositionSource(warden,
+            // warden.getEyeHeight())`.
+            source: PositionSource::Entity {
+                id: m.id as i32,
+                y_offset: m.kind.eye_height as f32,
+            },
         });
     }
     if let Some(info) = tick.received {
@@ -679,14 +789,14 @@ pub fn pre_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 pub fn server_ai_step(
     m: &mut Mob,
     w: &MobWorld,
-    level_random: &mut LegacyRandom,
+    level: &mut DamageLevel<'_>,
     events: &mut Vec<MobEvent>,
 ) {
     if m.extra.warden.is_none() {
         return;
     }
     handle_hurt(m, w, events);
-    warden_brain::tick(m, w, level_random, events);
+    warden_brain::tick(m, w, level, events);
     if (i64::from(m.age) + i64::from(m.id)) % 120 == 0 {
         events.push(MobEvent::Darkness {
             at: at(m),
@@ -696,11 +806,24 @@ pub fn server_ai_step(
     if m.age.is_multiple_of(20)
         && let Some(st) = m.extra.warden.as_mut()
     {
-        st.anger.tick(|who| can_target(w, who));
+        st.anger
+            .tick(|who| can_target(w, who), |uuid| w.who_by_uuid(uuid));
         st.client_anger = st.anger.active_anger(st.target());
     }
+    let target_change = m.extra.warden.as_ref().and_then(|st| {
+        st.brain
+            .will_clear_attack_target()
+            .then(|| st.brain.mem.attack_target.value())
+    });
+    let target_change = target_change.map(|original| match w.change_target(m, true, None) {
+        TargetChange::Keep => original,
+        TargetChange::Set(target) => target,
+    });
     if let Some(st) = m.extra.warden.as_mut() {
         st.brain.update_activity();
+        if let Some(target) = target_change {
+            st.brain.mem.attack_target.set_opt(target);
+        }
     }
 }
 /// `SonicBoom.tick`: face the target; once the sound delay is over, the
@@ -750,25 +873,25 @@ pub(super) fn tick_sonic_boom(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEve
         });
     }
     sound(m, "entity.warden.sonic_boom", 3.0, 1.0, events);
-    events.push(MobEvent::SonicBoom {
+    let event = MobEvent::SonicBoom {
         target,
         attacker: m.id,
         from: at(m),
         direction: normal,
+    };
+    events.push(if target == Who::Player {
+        w.route_player_event(event)
+    } else {
+        event
     });
 }
-/// `Warden.tick` on the client: the heartbeat (pitched by the client's copy
-/// of the warden: a level event sound here), the tendril and heart
-/// animations, digging crumbs, and keyframes that ended.
+/// `Warden.tick` off the window's client: the heart's clock, the tendril and
+/// heart animations, digging crumbs, and keyframes that ended. The heartbeat
+/// sound is `playLocalSound` in the client branch, which a server never runs
+/// or sends, so nothing is played or drawn from the random here: the window's
+/// own `client_tick` plays it.
 pub fn ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
-    if heartbeat(m) {
-        events.push(MobEvent::LevelEventSound {
-            sound: "entity.warden.heartbeat",
-            at: at(m),
-            volume: 5.0,
-            spread: 0.2,
-        });
-    }
+    heartbeat(m);
     animate(m, events);
 }
 /// The heart's beat on its clock, from the client's anger level: whether
@@ -784,13 +907,23 @@ fn heartbeat(m: &mut Mob) -> bool {
     }
     beat
 }
-/// `Warden.tick` on a client that is not the server: the heart and tendril
-/// animations and the keyframes that ended. Its sounds and particles come
-/// from the server.
-pub fn client_tick(m: &mut Mob) {
+/// `Warden.tick` on a client that is not the server: the heartbeat, the heart
+/// and tendril animations and the keyframes that ended. The heartbeat is
+/// `playLocalSound`, so the server never sends it and each client plays its
+/// own; `Warden.clientDiggingParticles` is the client's own work too, so the
+/// events are handed back to the caller.
+pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.anim.vo = m.anim.v;
-    heartbeat(m);
-    animate(m, &mut Vec::new());
+    if heartbeat(m) && !m.silent {
+        let pitch = voice_pitch(m);
+        events.push(MobEvent::LocalSound(
+            "entity.warden.heartbeat",
+            at(m),
+            5.0,
+            pitch,
+        ));
+    }
+    animate(m, events);
 }
 fn animate(m: &mut Mob, events: &mut Vec<MobEvent>) {
     // The animation values count down after the sync of the last tick.
@@ -1004,23 +1137,38 @@ mod tests {
     }
 
     #[test]
+    fn a_suspect_angered_again_before_its_lookup_keeps_its_saved_anger() {
+        // `increaseAnger` on a new suspect adds what `angerByUuid` kept for it:
+        // a reloaded warden angered at the player again before the first lookup
+        // keeps both angers, not only the new one.
+        let player = [5, 5, 5, 5];
+        let mut a = AngerManagement::from_saved([(player, 95)]);
+        assert_eq!(a.increase(Who::Player, 35), 35);
+        a.tick(|_| true, |u| (u == player).then_some(Who::Player));
+        // 35 + 95 = 130, then one anger tick calms it by one.
+        assert_eq!(a.anger_of(Who::Player), 129);
+        assert_eq!(a.unloaded().count(), 0);
+        assert_eq!(a.suspects(), [Who::Player]);
+    }
+
+    #[test]
     fn anger_accumulates_to_a_cap_and_decays_each_second() {
         let mut a = AngerManagement::default();
         assert_eq!(a.increase(Who::Player, 35), 35);
         assert_eq!(a.increase(Who::Player, 35), 70);
         assert_eq!(a.increase(Who::Player, 100), 150);
         assert_eq!(a.active_anger(None), 150);
-        a.tick(|_| true);
+        a.tick(|_| true, |_| None);
         assert_eq!(a.anger_of(Who::Player), 149);
         // An invalid suspect is forgotten.
         a.increase(Who::Mob(3), 10);
-        a.tick(|w| w == Who::Player);
+        a.tick(|w| w == Who::Player, |_| None);
         assert_eq!(a.anger_of(Who::Mob(3)), 0);
         assert_eq!(a.suspects(), &[Who::Player]);
         // Anger of one point is gone after the next second.
         let mut b = AngerManagement::default();
         b.increase(Who::Mob(1), 1);
-        b.tick(|_| true);
+        b.tick(|_| true, |_| None);
         assert!(b.suspects().is_empty());
     }
 
@@ -1071,5 +1219,64 @@ mod tests {
         ] {
             assert_eq!(Pose::from_code(p.code()), p);
         }
+    }
+}
+
+#[cfg(test)]
+mod digging_tests {
+    use super::*;
+    use crate::mobs::MobTypes;
+    use std::sync::Arc;
+
+    fn mob(kind: &str) -> Option<Mob> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return None;
+        }
+        let data = MobTypes::load(&root).ok()?;
+        let kind = Arc::new(data.types.get(kind)?.clone());
+        Some(Mob::new(
+            1,
+            kind,
+            horizon_core::geometry::Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        ))
+    }
+
+    /// `Warden.clientDiggingParticles` (#8614): while the emerging or digging
+    /// animation is under 4500 ms the client wants 30 block particles a tick,
+    /// so `client_tick` has to hand the event to the caller instead of
+    /// dropping it.
+    #[test]
+    fn an_emerging_warden_hands_its_digging_particles_back() {
+        let Some(mut m) = mob("minecraft:warden") else {
+            return;
+        };
+        let mut out = Vec::new();
+        // The client moves the age on before it ticks (`tickCount++`), so a
+        // warden's first client tick is never at age 0, a heartbeat tick.
+        m.age += 1;
+        client_tick(&mut m, &mut out);
+        assert!(out.is_empty(), "a standing warden digs nothing: {out:?}");
+
+        set_pose(&mut m, Pose::Emerging);
+        client_tick(&mut m, &mut out);
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, MobEvent::DigParticles { .. })),
+            "an emerging warden digs: {out:?}"
+        );
+
+        // Past 4500 ms the animation has played out.
+        m.age += 20 * 5;
+        out.clear();
+        client_tick(&mut m, &mut out);
+        assert!(
+            !out.iter()
+                .any(|e| matches!(e, MobEvent::DigParticles { .. })),
+            "the animation is over: {out:?}"
+        );
     }
 }

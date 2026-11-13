@@ -1,11 +1,13 @@
 //! The Windows setup window: `horizon-launcher-setup.exe` installs, `horizon-launcher.exe
 //! uninstall` removes. The launcher's own sky and plates (docs/design-system.md, "Night"); the
 //! work is `horizon_launcher::installer`, on a thread, reported over a channel.
-use crate::plate::plate;
-use crate::shell::{action, c, label, text, Action};
+use crate::glass_ui;
+use crate::scene;
+use crate::shell::{c, text};
 use crate::sky::Sky;
 use crate::theme::{self, night, Theme};
 use crate::titlebar;
+use crate::Kind;
 use gpui::{
     div, prelude::*, px, size, App, Bounds, ClickEvent, Context, Div, PathPromptOptions, Render,
     Task, Window, WindowBounds, WindowOptions,
@@ -31,8 +33,15 @@ enum Event {
 pub struct Setup {
     mode: Mode,
     theme: Theme,
+    /// The redesign's scene behind the dark window (as the launcher draws it); the light
+    /// appearance keeps the dawn sky until the design has a light scene.
+    scene: gpui::Entity<scene::Scene>,
     sky: Sky,
     sky_wake: Option<(Instant, Task<()>)>,
+    /// The settings file's write time and size as last read: a change (the launcher's Settings
+    /// page) rebuilds the theme on the next frame, as the launcher applies it on its own next
+    /// frame.
+    settings_stamp: Option<(std::time::SystemTime, u64)>,
     options: Options,
     /// An install is already there: the button says Update.
     update: bool,
@@ -48,10 +57,10 @@ pub fn open(mode: Mode, cx: &mut App) {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(760.), px(520.))),
             titlebar: Some(titlebar::options()),
-            app_id: Some("horizon-launcher".into()),
+            app_id: Some(horizon_launcher::identity::APP_ID.into()),
             ..Default::default()
         },
-        |window, cx| cx.new(|_| Setup::new(mode, window)),
+        |window, cx| cx.new(|cx| Setup::new(mode, window, cx)),
     )
     .expect("window");
     cx.on_window_closed(|cx, _| cx.quit()).detach();
@@ -60,6 +69,8 @@ pub fn open(mode: Mode, cx: &mut App) {
 
 fn step_text(step: Step) -> String {
     match step {
+        // A launcher still open is being asked to quit (an existing, translated word).
+        Step::Closing => tr("Stopping").to_string(),
         Step::Files => tr("Copying files").to_string(),
         Step::Shortcuts => tr("Making shortcuts").to_string(),
         Step::Registry => tr("Registering with Windows").to_string(),
@@ -69,20 +80,30 @@ fn step_text(step: Step) -> String {
 }
 
 impl Setup {
-    fn new(mode: Mode, window: &mut Window) -> Self {
+    fn new(mode: Mode, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = Settings::load();
         i18n::set(settings.language());
         titlebar::apply_appearance(window, settings.appearance);
         Self {
             mode,
-            theme: Theme::for_appearance(settings.appearance, settings.accent, window.appearance()),
+            theme: Theme::for_appearance(settings.appearance, settings.accent, window.appearance())
+                .with_glass(settings.glass_tint(), settings.glass_blur()),
+            scene: cx.new(|_| scene::Scene::new()),
             sky: Sky::default(),
             sky_wake: None,
+            settings_stamp: Self::settings_stamp(),
             options: Options::new(),
             update: installer::installed().is_some(),
             stage: Stage::Welcome,
             rx: None,
         }
+    }
+
+    /// The settings file's write time and size, to notice a change made in the launcher.
+    fn settings_stamp() -> Option<(std::time::SystemTime, u64)> {
+        let meta =
+            std::fs::metadata(horizon_launcher::backend::data_dir().join("settings.json")).ok()?;
+        Some((meta.modified().ok()?, meta.len()))
     }
 
     /// Draws the window again when the sky next changes (as `Launcher::wake_sky`).
@@ -119,6 +140,7 @@ impl Setup {
             };
             let result = match mode {
                 Mode::Install => installer::install(&options, report).map(|_| Vec::new()),
+                // Asks a launcher that is still open to quit first (`installer::uninstall`).
                 Mode::Uninstall => installer::uninstall(options.remove_data, report),
             };
             let _ = tx.send(Event::Done(result));
@@ -244,9 +266,8 @@ impl Setup {
                     ),
             )
             .child(
-                action("change", Action::Raised, &t)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.choose_folder(cx)))
-                    .child(label(tr("Change…").to_string())),
+                crate::button("change", tr("Change…"), Kind::Secondary, &t)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.choose_folder(cx))),
             )
     }
 
@@ -257,7 +278,7 @@ impl Setup {
             Stage::Welcome if self.mode == Mode::Install => {
                 body = body
                     .child(text(night::UI, c(n.ink_soft)).child(
-                        tr("Installs Horizon Launcher for this account. No administrator needed.")
+                        tr(if cfg!(horizon_fork_launcher) { "Installs Horizon Fork Launcher (arismoko) for this account. No administrator needed." } else { "Installs Horizon Launcher for this account. No administrator needed." })
                             .to_string(),
                     ))
                     .child(self.folder_row(cx))
@@ -270,19 +291,23 @@ impl Setup {
                         cx,
                     ))
                     .child(div().flex().justify_end().child(
-                        action("go", Action::Main, &t)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start(cx)))
-                            .child(label(if self.update {
+                        crate::button(
+                            "go",
+                            if self.update {
                                 tr("Update").to_string()
                             } else {
                                 tr("Install").to_string()
-                            })),
+                            },
+                            Kind::Primary,
+                            &t,
+                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start(cx))),
                     ));
             }
             Stage::Welcome => {
                 body = body
                     .child(text(night::UI, c(n.ink_soft)).child(
-                        tr("Removes Horizon Launcher from this computer. Your worlds and the game's folder stay.")
+                        tr(if cfg!(horizon_fork_launcher) { "Removes Horizon Fork Launcher (arismoko) from this computer. Your worlds and the game's folder stay." } else { "Removes Horizon Launcher from this computer. Your worlds and the game's folder stay." })
                             .to_string(),
                     ))
                     .child(self.toggle(
@@ -303,16 +328,14 @@ impl Setup {
                             .justify_end()
                             .gap(px(12.))
                             .child(
-                                action("cancel", Action::Raised, &t)
-                                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.quit()))
-                                    .child(label(tr("Cancel").to_string())),
+                                crate::button("cancel", tr("Cancel"), Kind::Secondary, &t)
+                                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.quit())),
                             )
                             .child(
-                                action("go", Action::Main, &t)
+                                crate::button("go", tr("Uninstall"), Kind::Primary, &t)
                                     .on_click(
                                         cx.listener(|this, _: &ClickEvent, _, cx| this.start(cx)),
-                                    )
-                                    .child(label(tr("Uninstall").to_string())),
+                                    ),
                             ),
                     );
             }
@@ -323,8 +346,18 @@ impl Setup {
             }
             Stage::Done { left } => {
                 let said = match self.mode {
-                    Mode::Install => tr("Horizon Launcher is installed.").to_string(),
-                    Mode::Uninstall => tr("Horizon Launcher was removed.").to_string(),
+                    Mode::Install => tr(if cfg!(horizon_fork_launcher) {
+                        "Horizon Fork Launcher (arismoko) is installed."
+                    } else {
+                        "Horizon Launcher is installed."
+                    })
+                    .to_string(),
+                    Mode::Uninstall => tr(if cfg!(horizon_fork_launcher) {
+                        "Horizon Fork Launcher (arismoko) was removed."
+                    } else {
+                        "Horizon Launcher was removed."
+                    })
+                    .to_string(),
                 };
                 body = body.child(text(night::TITLE, c(n.ink)).child(said));
                 if !left.is_empty() {
@@ -345,11 +378,17 @@ impl Setup {
                 if self.mode == Mode::Install {
                     body = body.child(
                         div().flex().items_center().justify_end().child(
-                            action("launch", Action::Main, &t)
-                                .on_click(
-                                    cx.listener(|this, _: &ClickEvent, _, cx| this.launch(cx)),
-                                )
-                                .child(label(tr("Launch Horizon").to_string())),
+                            crate::button(
+                                "launch",
+                                tr(if cfg!(horizon_fork_launcher) {
+                                    "Launch Horizon Fork Launcher (arismoko)"
+                                } else {
+                                    "Launch Horizon"
+                                }),
+                                Kind::Primary,
+                                &t,
+                            )
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.launch(cx))),
                         ),
                     );
                 }
@@ -362,39 +401,78 @@ impl Setup {
                     .child(text(night::CAPTION, c(n.danger)).child(error.clone()))
                     .child(
                         div().flex().justify_end().child(
-                            action("close", Action::Raised, &t)
-                                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.quit()))
-                                .child(label(tr("Close").to_string())),
+                            crate::button("close", tr("Close"), Kind::Secondary, &t)
+                                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.quit())),
                         ),
                     );
             }
         }
-        plate(&n)
+        glass_ui::dialog_plate(horizon_theme::glass::radius::MODAL)
             .w(px(560.))
             .p(px(32.))
             .flex()
             .flex_col()
             .gap(px(18.))
-            .child(text(night::DISPLAY, c(n.ink)).child("Horizon"))
+            .child(
+                text(night::DISPLAY, c(n.ink)).child(tr(horizon_launcher::identity::WINDOW_TITLE)),
+            )
             .child(body)
     }
 }
 
 impl Render for Setup {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The launcher's Settings page writes Glass, Blur, Accent and Appearance into
+        // settings.json. Reading its write time each frame applies a change on the next frame:
+        // the same cadence at which the launcher's own window picks them up.
+        let stamp = Self::settings_stamp();
+        if stamp != self.settings_stamp {
+            self.settings_stamp = stamp;
+            let settings = Settings::load();
+            i18n::set(settings.language());
+            titlebar::apply_appearance(window, settings.appearance);
+            self.theme =
+                Theme::for_appearance(settings.appearance, settings.accent, window.appearance())
+                    .with_glass(settings.glass_tint(), settings.glass_blur());
+        }
+        // Look again twice a second, through the same wake the sky uses, so a settings change
+        // shows even while the scene has stopped animating, without drawing the window at
+        // 60 fps and reading the file's metadata every frame for it.
+        self.wake_sky(Duration::from_millis(500), cx);
         let t = self.theme;
         let viewport = window.viewport_size();
+        // The card's controls use the launcher's glass look and the player's accent, as the
+        // launcher draws them (`crate::button` and `crate::switch` pick it from these).
+        glass_ui::set_on(t.glass);
+        glass_ui::set_light(!t.dark);
+        glass_ui::set_look(t.look);
+        crate::glass::begin_build(window);
+        crate::glass::set_look(t.look);
+        crate::glass::set_light(!t.dark);
         self.sky.free_replaced(window);
-        let (sky, next) = self.sky.render(
-            &t.night,
-            (viewport.width.into(), viewport.height.into()),
-            window.scale_factor(),
-            window.is_window_active(),
-            Instant::now(),
-        );
-        if let Some(next) = next {
-            self.wake_sky(next, cx);
-        }
+        // The launcher's own backdrop: the redesign's scene in the dark look, tinted by the
+        // player's accent as the launcher tints it, and the dawn sky in the light one (the
+        // redesign has no light scene yet). The setup therefore looks like the client it
+        // installs: a player with a blue accent gets the blue scene, not the night sunset.
+        let tint = (t.dark && t.look.accent != horizon_theme::glass::ACCENT)
+            .then(|| horizon_theme::glass::mix_oklab(t.look.accent, 0x767676, 0.58));
+        self.scene
+            .update(cx, |scene, cx| scene.set_look(tint, t.look.blur, cx));
+        let sky = if t.dark {
+            self.scene.clone().into_any_element()
+        } else {
+            let (sky, next) = self.sky.render(
+                &t.night,
+                (viewport.width.into(), viewport.height.into()),
+                window.scale_factor(),
+                window.is_window_active(),
+                Instant::now(),
+            );
+            if let Some(next) = next {
+                self.wake_sky(next, cx);
+            }
+            sky.into_any_element()
+        };
         let card = self.card(cx);
         div()
             .flex()

@@ -2,92 +2,17 @@
 //! the walking, swimming, flying and amphibious node evaluators
 //! (`WalkNodeEvaluator`, `SwimNodeEvaluator`, `FlyNodeEvaluator`,
 //! `AmphibiousNodeEvaluator`), ported rule for rule.
-use super::{MobWorld, data};
+use super::{
+    MobWorld,
+    data::{self, PathComputationType},
+};
 use crate::blocks::Fluid;
 use crate::fast_hash::FxHashMap;
 use horizon_core::geometry::{Aabb, Vec3};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum PathType {
-    Blocked,
-    Open,
-    Walkable,
-    WalkableDoor,
-    Trapdoor,
-    PowderSnow,
-    OnTopOfPowderSnow,
-    Fence,
-    Lava,
-    Water,
-    WaterBorder,
-    Rail,
-    UnpassableRail,
-    FireInNeighbor,
-    Fire,
-    DamagingInNeighbor,
-    Damaging,
-    DoorOpen,
-    DoorWoodClosed,
-    DoorIronClosed,
-    Breach,
-    Leaves,
-    StickyHoney,
-    Cocoa,
-    DamageCautious,
-    OnTopOfTrapdoor,
-    BigMobsCloseToDanger,
-}
-pub const PATH_TYPES: usize = 27;
-impl PathType {
-    pub fn from_name(name: &str) -> Self {
-        match name {
-            "OPEN" => Self::Open,
-            "WALKABLE" => Self::Walkable,
-            "WALKABLE_DOOR" => Self::WalkableDoor,
-            "TRAPDOOR" => Self::Trapdoor,
-            "POWDER_SNOW" => Self::PowderSnow,
-            "ON_TOP_OF_POWDER_SNOW" => Self::OnTopOfPowderSnow,
-            "FENCE" => Self::Fence,
-            "LAVA" => Self::Lava,
-            "WATER" => Self::Water,
-            "WATER_BORDER" => Self::WaterBorder,
-            "RAIL" => Self::Rail,
-            "UNPASSABLE_RAIL" => Self::UnpassableRail,
-            "FIRE_IN_NEIGHBOR" => Self::FireInNeighbor,
-            "FIRE" => Self::Fire,
-            "DAMAGING_IN_NEIGHBOR" => Self::DamagingInNeighbor,
-            "DAMAGING" => Self::Damaging,
-            "DOOR_OPEN" => Self::DoorOpen,
-            "DOOR_WOOD_CLOSED" => Self::DoorWoodClosed,
-            "DOOR_IRON_CLOSED" => Self::DoorIronClosed,
-            "BREACH" => Self::Breach,
-            "LEAVES" => Self::Leaves,
-            "STICKY_HONEY" => Self::StickyHoney,
-            "COCOA" => Self::Cocoa,
-            "DAMAGE_CAUTIOUS" => Self::DamageCautious,
-            "ON_TOP_OF_TRAPDOOR" => Self::OnTopOfTrapdoor,
-            "BIG_MOBS_CLOSE_TO_DANGER" => Self::BigMobsCloseToDanger,
-            _ => Self::Blocked,
-        }
-    }
-    /// PathType's default malus.
-    pub fn malus(self) -> f32 {
-        match self {
-            Self::Blocked | Self::PowderSnow | Self::Fence | Self::Lava | Self::UnpassableRail => {
-                -1.0
-            }
-            Self::Damaging | Self::DoorWoodClosed | Self::DoorIronClosed | Self::Leaves => -1.0,
-            Self::Water
-            | Self::WaterBorder
-            | Self::FireInNeighbor
-            | Self::DamagingInNeighbor
-            | Self::StickyHoney => 8.0,
-            Self::Fire => 16.0,
-            Self::Breach | Self::BigMobsCloseToDanger => 4.0,
-            _ => 0.0,
-        }
-    }
-}
+/// The node kinds, moved to `mod_api` so mods can name them (#944).
+pub use mod_api::PathType;
+pub const PATH_TYPES: usize = PathType::COUNT;
 
 impl MobWorld<'_> {
     pub fn path_type_from_state(&self, x: i32, y: i32, z: i32) -> PathType {
@@ -283,6 +208,28 @@ impl Path {
     pub fn same_as(&self, other: Option<&Path>) -> bool {
         other.is_some_and(|o| o.nodes == self.nodes)
     }
+    /// `PathNavigation.trimPath`: a node standing on a cauldron
+    /// (`BlockTags.CAULDRONS`) is raised onto its rim, and the node after it is
+    /// raised to the rim's height too when it is not above the cauldron, so a
+    /// route that ends on a cauldron (a leatherworker's job site) aims at the
+    /// top face instead of into the block.
+    pub fn raise_cauldron_nodes(&mut self, is_cauldron: impl Fn(i32, i32, i32) -> bool) {
+        for i in 0..self.nodes.len() {
+            let node = self.nodes[i];
+            if !is_cauldron(node.x, node.y, node.z) {
+                continue;
+            }
+            self.nodes[i].y = node.y + 1;
+            if let Some(&next) = self.nodes.get(i + 1)
+                && node.y >= next.y
+            {
+                self.nodes[i + 1] = PathNode {
+                    y: node.y + 1,
+                    ..next
+                };
+            }
+        }
+    }
 }
 
 struct Target {
@@ -293,6 +240,43 @@ struct Target {
     best: Option<u32>,
     reached: bool,
     pos: [i32; 3],
+}
+
+/// Reusable allocation buffers for pathfinding queries.
+#[derive(Default)]
+pub struct FinderBuffers {
+    pub nodes: Vec<Node>,
+    pub index: FxHashMap<(i32, i32, i32), u32>,
+    pub heap: Vec<u32>,
+    pub types: FxHashMap<(i32, i32, i32), PathType>,
+    pub statics: std::cell::RefCell<FxHashMap<(i32, i32, i32), PathType>>,
+    pub collisions: FxHashMap<[u64; 6], bool>,
+}
+
+impl FinderBuffers {
+    pub fn new() -> Self {
+        Self {
+            nodes: Vec::with_capacity(256),
+            index: FxHashMap::default(),
+            heap: Vec::with_capacity(256),
+            types: FxHashMap::default(),
+            statics: std::cell::RefCell::new(FxHashMap::default()),
+            collisions: FxHashMap::default(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.nodes.clear();
+        self.index.clear();
+        self.heap.clear();
+        self.types.clear();
+        self.statics.borrow_mut().clear();
+        self.collisions.clear();
+    }
+}
+
+thread_local! {
+    static TLS_BUFFERS: std::cell::RefCell<FinderBuffers> = std::cell::RefCell::new(FinderBuffers::new());
 }
 
 /// One pathfinding query: the node arena, open set and per-query caches.
@@ -313,18 +297,61 @@ pub struct Finder<'a, 'w> {
     entity_depth: i32,
 }
 
+impl<'a, 'w> Drop for Finder<'a, 'w> {
+    fn drop(&mut self) {
+        TLS_BUFFERS.with(|cell| {
+            if let Ok(mut buf) = cell.try_borrow_mut() {
+                self.nodes.clear();
+                self.index.clear();
+                self.heap.clear();
+                self.types.clear();
+                self.statics.borrow_mut().clear();
+                self.collisions.clear();
+                buf.nodes = std::mem::take(&mut self.nodes);
+                buf.index = std::mem::take(&mut self.index);
+                buf.heap = std::mem::take(&mut self.heap);
+                buf.types = std::mem::take(&mut self.types);
+                buf.statics = std::mem::take(&mut self.statics);
+                buf.collisions = std::mem::take(&mut self.collisions);
+            }
+        });
+    }
+}
+
 impl<'a, 'w> Finder<'a, 'w> {
     pub fn new(w: &'a MobWorld<'w>, mob: &'a PathMob, eval: Evaluator) -> Self {
+        let (nodes, index, heap, types, statics, collisions) = TLS_BUFFERS.with(|cell| {
+            if let Ok(mut buf) = cell.try_borrow_mut() {
+                buf.clear();
+                (
+                    std::mem::take(&mut buf.nodes),
+                    std::mem::take(&mut buf.index),
+                    std::mem::take(&mut buf.heap),
+                    std::mem::take(&mut buf.types),
+                    std::mem::take(&mut buf.statics),
+                    std::mem::take(&mut buf.collisions),
+                )
+            } else {
+                (
+                    Vec::with_capacity(128),
+                    FxHashMap::default(),
+                    Vec::with_capacity(128),
+                    FxHashMap::default(),
+                    std::cell::RefCell::new(FxHashMap::default()),
+                    FxHashMap::default(),
+                )
+            }
+        });
         Self {
             w,
             mob,
             eval,
-            nodes: Vec::new(),
-            index: FxHashMap::default(),
-            heap: Vec::new(),
-            types: FxHashMap::default(),
-            statics: Default::default(),
-            collisions: FxHashMap::default(),
+            nodes,
+            index,
+            heap,
+            types,
+            statics,
+            collisions,
             entity_width: (mob.width + 1.0).floor() as i32,
             entity_height: (mob.height + 1.0).floor() as i32,
             entity_depth: (mob.width + 1.0).floor() as i32,
@@ -346,6 +373,9 @@ impl<'a, 'w> Finder<'a, 'w> {
     // --- world access -------------------------------------------------
     fn state(&self, x: i32, y: i32, z: i32) -> data::StateData {
         self.w.data.state(self.w.world.block(x, y, z))
+    }
+    fn pathfindable(&self, x: i32, y: i32, z: i32, kind: PathComputationType) -> bool {
+        self.w.data.pathfindable(self.w.world.block(x, y, z), kind)
     }
     fn type_from_state(&self, x: i32, y: i32, z: i32) -> PathType {
         self.w.path_type_from_state(x, y, z)
@@ -532,9 +562,8 @@ impl<'a, 'w> Finder<'a, 'w> {
             for yy in y..y + self.entity_height {
                 for zz in z..z + self.entity_depth {
                     let fluid = self.fluid(xx, yy, zz);
-                    let below = self.state(xx, yy - 1, zz);
                     if fluid == Fluid::None
-                        && below.flags & data::WATER != 0
+                        && self.pathfindable(xx, yy - 1, zz, PathComputationType::Water)
                         && self.is_air(xx, yy, zz)
                     {
                         return PathType::Breach;
@@ -546,7 +575,7 @@ impl<'a, 'w> Finder<'a, 'w> {
                 }
             }
         }
-        if self.state(last.0, last.1, last.2).flags & data::WATER != 0 {
+        if self.pathfindable(last.0, last.1, last.2, PathComputationType::Water) {
             PathType::Water
         } else {
             PathType::Blocked
@@ -650,7 +679,9 @@ impl<'a, 'w> Finder<'a, 'w> {
                     start_y = y;
                     y -= 1;
                     let s = self.w.world.block(bx, y, bz);
-                    if !self.w.facts.is_air(s) && self.w.data.state(s).flags & data::LAND == 0 {
+                    if !self.w.facts.is_air(s)
+                        && !self.w.data.pathfindable(s, PathComputationType::Land)
+                    {
                         break;
                     }
                 }
@@ -721,7 +752,7 @@ impl<'a, 'w> Finder<'a, 'w> {
             f64::from(nz) - p.z + (hi.z - lo.z) / 2.0,
         );
         let len = (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt();
-        let steps = (len / size).ceil().max(1.0) as i32;
+        let steps = collision_steps(len, size);
         delta = Vec3::new(
             delta.x / f64::from(steps),
             delta.y / f64::from(steps),
@@ -1003,28 +1034,29 @@ impl<'a, 'w> Finder<'a, 'w> {
         let malus =
             |s: &Self, n: Option<u32>| n.is_some_and(|n| s.nodes[n as usize].cost_malus >= 0.0);
         // Direction.values(): down, up, north, south, west, east.
-        let mut by_dir: FxHashMap<(i32, i32, i32), Option<u32>> = FxHashMap::default();
-        for (dx, dy, dz) in [
+        let dirs = [
             (0, -1, 0),
             (0, 1, 0),
             (0, 0, -1),
             (0, 0, 1),
             (-1, 0, 0),
             (1, 0, 0),
-        ] {
+        ];
+        let mut by_dir: [Option<u32>; 6] = [None; 6];
+        for (slot, (dx, dy, dz)) in by_dir.iter_mut().zip(dirs) {
             let n = self.swim_accepted(px + dx, py + dy, pz + dz);
-            by_dir.insert((dx, dy, dz), n);
+            *slot = n;
             if open(self, n) {
                 out.push(n.unwrap_or_default());
             }
         }
-        for ((dx, dz), (cx, cz)) in [
-            ((0, -1), (1, 0)),
-            ((1, 0), (0, 1)),
-            ((0, 1), (-1, 0)),
-            ((-1, 0), (0, -1)),
+        for (a, b, dx, dz, cx, cz) in [
+            (2usize, 5usize, 0i32, -1i32, 1i32, 0i32),
+            (5usize, 3usize, 1i32, 0i32, 0i32, 1i32),
+            (3usize, 4usize, 0i32, 1i32, -1i32, 0i32),
+            (4usize, 2usize, -1i32, 0i32, 0i32, -1i32),
         ] {
-            if malus(self, by_dir[&(dx, 0, dz)]) && malus(self, by_dir[&(cx, 0, cz)]) {
+            if malus(self, by_dir[a]) && malus(self, by_dir[b]) {
                 let d = self.swim_accepted(px + dx + cx, py, pz + dz + cz);
                 if open(self, d) {
                     out.push(d.unwrap_or_default());
@@ -1393,5 +1425,124 @@ impl<'a, 'w> Finder<'a, 'w> {
                         .then(a.nodes.len().cmp(&b.nodes.len()))
                 })
         }
+    }
+}
+
+// The smallest natural mob mean size (baby bee: 0.2666...) at minimum
+// minecraft:scale (0.0625) still exceeds 1/64. Preserve vanilla subdivision
+// counts above that conservative boundary, even for long airborne-start legs.
+// Only smaller mod boxes need a work cap to avoid a saturated i32 loop.
+fn collision_steps(length: f64, box_size: f64) -> i32 {
+    if !box_size.is_finite() || box_size <= 0.0 {
+        return 1;
+    }
+    let steps = (length / box_size).ceil().max(1.0);
+    if box_size < 1.0 / 64.0 {
+        steps.min(16_384.0) as i32
+    } else {
+        steps as i32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collision_subdivision_preserves_small_vanilla_boxes_and_bounds_pathological_ones() {
+        // Minimum-scale silverfish, west candidate from (0.99, 70, 0.921591).
+        let width = f64::from(0.4_f32 * 0.0625);
+        let height = f64::from(0.3_f32 * 0.0625);
+        let delta = Vec3::new(
+            -1.0 - 0.99 + width / 2.0,
+            height / 2.0,
+            -0.921591 + width / 2.0,
+        );
+        let length = (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt();
+        let size = (2.0 * width + height) / 3.0;
+        assert_eq!((length / size).ceil() as i32, 95);
+        assert_eq!(collision_steps(length, size), 95);
+        assert_eq!(collision_steps(1.0, 1e-30), 16_384);
+        assert_eq!(collision_steps(1.0, f64::from(f32::from_bits(1))), 16_384);
+        // Vanilla-size boxes keep the original formula, even above the work cap.
+        let boundary = 1.0_f64 / 64.0;
+        let below = f64::from_bits(boundary.to_bits() - 1);
+        let above = f64::from_bits(boundary.to_bits() + 1);
+        for size in [boundary, above] {
+            assert_eq!(collision_steps(512.0, size), (512.0 / size).ceil() as i32);
+        }
+        assert_eq!(collision_steps(512.0, below), 16_384);
+        // Pin both sides of the exact sub-vanilla work limit.
+        assert_eq!(collision_steps(16_383.0 / 128.0, 1.0 / 128.0), 16_383);
+        assert_eq!(collision_steps(16_383.5 / 128.0, 1.0 / 128.0), 16_384);
+        assert_eq!(collision_steps(16_384.5 / 128.0, 1.0 / 128.0), 16_384);
+        for size in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(collision_steps(1.0, size), 1);
+        }
+    }
+
+    fn node(x: i32, y: i32, z: i32) -> PathNode {
+        PathNode {
+            x,
+            y,
+            z,
+            kind: PathType::Open,
+        }
+    }
+
+    fn path(nodes: Vec<PathNode>) -> Path {
+        Path {
+            nodes,
+            next: 0,
+            target: [0, 0, 0],
+            dist_to_target: 0.0,
+            reached: true,
+        }
+    }
+
+    /// `PathNavigation.trimPath`: the node standing on a cauldron moves onto its
+    /// rim, and the node after it follows when it is not above the cauldron.
+    #[test]
+    fn a_node_on_a_cauldron_is_raised_onto_its_rim() {
+        let mut p = path(vec![
+            node(0, 63, 0),
+            node(1, 63, 0),
+            node(2, 63, 0),
+            node(2, 66, 0),
+        ]);
+        p.raise_cauldron_nodes(|x, y, _| x == 2 && y == 63);
+        assert_eq!(p.nodes[0], node(0, 63, 0), "a plain node keeps its height");
+        assert_eq!(p.nodes[1], node(1, 63, 0));
+        assert_eq!(
+            p.nodes[2],
+            node(2, 64, 0),
+            "the cauldron node is raised one block"
+        );
+        assert_eq!(
+            p.nodes[3],
+            node(2, 66, 0),
+            "a node above the cauldron is left alone"
+        );
+        assert_eq!(p.target, [0, 0, 0], "the requested target does not move");
+    }
+
+    /// The node after a cauldron is raised with it unless it is above it, so a
+    /// route that steps off a cauldron does not drop back into the block.
+    #[test]
+    fn the_node_after_a_cauldron_follows_it_up() {
+        let mut p = path(vec![node(0, 63, 0), node(1, 63, 0)]);
+        p.raise_cauldron_nodes(|_, y, _| y == 63);
+        // The closure still reports the original height, as the block under the
+        // raised node is the cauldron itself.
+        assert_eq!(p.nodes, vec![node(0, 64, 0), node(1, 64, 0)]);
+    }
+
+    /// A path with no cauldron under it is not touched.
+    #[test]
+    fn a_path_without_cauldrons_is_unchanged() {
+        let nodes = vec![node(0, 64, 0), node(1, 64, 0), node(1, 65, 0)];
+        let mut p = path(nodes.clone());
+        p.raise_cauldron_nodes(|_, _, _| false);
+        assert_eq!(p.nodes, nodes);
     }
 }

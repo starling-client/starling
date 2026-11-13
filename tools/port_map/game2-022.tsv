@@ -75,10 +75,10 @@ WoodlandMansionStructure.generatePieces	port	crates/horizon-world/src/worldgen/s
 StructurePlaceSettings.copy	skip:java		copy of a settings record; Rust clones the struct
 StructurePlaceSettings.getRandom	port	crates/horizon-world/src/worldgen/structure/processor.rs::PlaceSettings::with_random	shared random, else position-seeded one
 StructureTemplate.getSize	port	crates/horizon-world/src/worldgen/structure/template.rs::StructureTemplate::size	rotated size
-StructureTemplate.fillFromWorld	port	crates/horizon-client/src/game/structure_blocks.rs::Game::template_from_world	every block but structure voids (air too when asked) with its block entity's data, then the entities, for a box at the origin
+StructureTemplate.fillFromWorld	port	crates/horizon-client/src/game/administration/structure_blocks.rs::Game::template_from_world	every block but structure voids (air too when asked) with its block entity's data, then the entities, for a box at the origin
 StructureTemplate.addToLists	inline	crates/horizon-world/src/worldgen/structure/template.rs::StructureTemplate::from_nbt	block classes sorted inside from_nbt
 StructureTemplate.buildInfoList	inline	crates/horizon-world/src/worldgen/structure/template.rs::StructureTemplate::from_nbt	full, other, block-entity order inside from_nbt
-StructureTemplate.fillEntityList	port	crates/horizon-client/src/game/structure_blocks.rs::Game::template_entities	the entities inside the box at positions relative to its minimum corner, the UUID dropped
+StructureTemplate.fillEntityList	port	crates/horizon-client/src/game/administration/structure_blocks.rs::Game::template_entities	the entities inside the box at positions relative to its minimum corner, the UUID dropped
 StructureTemplate.createEntityIgnoreException	inline	crates/horizon-world/src/worldgen/structure/processor.rs::place_entities	entity NBT goes straight to add_entity; no exception catch here
 StructureTemplate.loadPalette	port	crates/horizon-world/src/worldgen/structure/template.rs::StructureTemplate::from_nbt	
 StructureTemplate.newIntegerList	skip:java		NBT list builder for template save only
@@ -90,7 +90,7 @@ StructureTemplate.SimplePalette.idFor	inline	crates/horizon-world/src/worldgen/s
 StructureTemplate.SimplePalette.stateFor	inline	crates/horizon-world/src/worldgen/structure/template.rs::StructureTemplate::from_nbt	palette index resolved to states inside from_nbt
 StructureTemplate.StructureBlockInfo.toString	skip:debug		
 StructureTemplateManager.tryLoad	port	crates/horizon-world/src/worldgen/structure.rs::StructureResources::template	load by id from resources
-StructureTemplateManager.save	port	crates/horizon-client/src/game/structure_blocks.rs::Game::write_template	the tree gzipped to the world's generated/<namespace>/structures/<path>.nbt
+StructureTemplateManager.save	port	crates/horizon-client/src/game/administration/structure_blocks.rs::Game::write_template	the tree gzipped to the world's generated/<namespace>/structures/<path>.nbt
 BlendedNoise.computeFbmRange	port	crates/horizon-core/src/density/terrain_noise.rs::BlendedNoise::range	16 octaves, the only firstOctave vanilla uses
 BlendedNoise.FbmSet.parityConfigString	skip:debug		test parity dump
 NoiseStack.get	port	crates/horizon-core/src/noise/stack.rs::NoiseStack::get3	weighted layer sum

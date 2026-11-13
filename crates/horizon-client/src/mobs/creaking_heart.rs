@@ -108,7 +108,8 @@ impl Blocks<'_, '_> {
 /// `EnvironmentAttributes.CREAKING_ACTIVE`: the overworld's night, from
 /// 12600 to 23400.
 pub fn creaking_active(w: &MobWorld) -> bool {
-    !w.nether && !w.end && (12600..23401).contains(&w.day_time.rem_euclid(24000))
+    w.dimension_type.has_timeline("minecraft:day")
+        && (12600..23401).contains(&w.day_time.rem_euclid(24000))
 }
 /// `CreakingHeartBlock.hasRequiredLogs`: pale oak logs on both ends of the
 /// heart's axis, along the same axis.
@@ -507,6 +508,20 @@ pub fn server_tick(
     host: &mut impl HeartHost,
     out: &mut Vec<HeartEvent>,
 ) {
+    if server_tick_start(heart, pos, lr, host, out) {
+        server_tick_update(heart, pos, w, lr, host, out);
+    }
+}
+
+/// [`server_tick`] up to its update, which reads no mob world: whether the
+/// update follows (as [`tick_updates`] said before it).
+pub fn server_tick_start(
+    heart: &mut CreakingHeart,
+    pos: [i32; 3],
+    lr: &mut LegacyRandom,
+    host: &mut impl HeartHost,
+    out: &mut Vec<HeartEvent>,
+) -> bool {
     heart.ticks_existed += 1;
     let signal = output_signal(heart, pos, host);
     if heart.output_signal != signal {
@@ -549,9 +564,19 @@ pub fn server_tick(
     }
     let ticker = heart.ticker;
     heart.ticker -= 1;
-    if ticker >= 0 {
-        return;
-    }
+    ticker < 0
+}
+
+/// The rest of [`server_tick`], once [`server_tick_start`] says so:
+/// `updateCreakingState` and the protector checks.
+pub fn server_tick_update(
+    heart: &mut CreakingHeart,
+    pos: [i32; 3],
+    w: &MobWorld,
+    lr: &mut LegacyRandom,
+    host: &mut impl HeartHost,
+    out: &mut Vec<HeartEvent>,
+) {
     heart.ticker = lr.next_int_bound(5).unwrap_or(0) + 20;
     let mut b = Blocks {
         w,
@@ -582,7 +607,7 @@ pub fn server_tick(
         if awake && host.spawning_monsters() {
             // getNearestPlayer(pos, 32, false): no spectators.
             let (x, y, z) = (f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
-            let near = w.player.as_ref().is_some_and(|p| {
+            let near = w.selected_player().is_some_and(|p| {
                 !p.spectator
                     && (p.position.x - x).powi(2)
                         + (p.position.y - y).powi(2)
@@ -599,7 +624,7 @@ pub fn server_tick(
         // playerIsStuckInYou reads the creaking's NEAREST_PLAYERS.
         let stuck = host.mob_mut(id).is_some_and(|m| {
             let listed = super::monster_brain::nearest_players(m).contains(&super::Who::Player);
-            let eye = w.player.as_ref().filter(|_| listed).map(|p| p.eye);
+            let eye = w.selected_player().filter(|_| listed).map(|p| p.eye);
             creaking::player_is_stuck(m, eye)
         });
         if !active && !persistent || distance_to_creaking(heart, pos, host) > TOO_FAR || stuck {

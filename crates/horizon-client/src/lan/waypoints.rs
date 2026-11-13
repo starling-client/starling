@@ -134,6 +134,7 @@ struct Memo {
     view_center: [i32; 2],
     transmitting: bool,
     team: Option<(String, Option<i32>)>,
+    icon: Icon,
 }
 
 /// ServerWaypointManager for one level.
@@ -520,6 +521,7 @@ impl Waypoints {
                     view_center: center,
                     transmitting,
                     team: p.team.clone(),
+                    icon: p.icon.clone(),
                 },
             );
             if p.receive_range > 0.0 {
@@ -572,6 +574,13 @@ impl Waypoints {
                 for receiver in self.players.clone() {
                     self.create_connection(&mut t, receiver, p.uuid);
                 }
+            }
+            // `WaypointCommand.mutateIcon`: a changed icon is untracked, then
+            // tracked again, whatever the transmit range.
+            if p.icon != self.memo[&p.uuid].icon {
+                self.memo.get_mut(&p.uuid).unwrap().icon = p.icon.clone();
+                self.untrack(&mut t, p.uuid);
+                self.track(&mut t, p.uuid);
             }
         }
         t.out
@@ -656,6 +665,89 @@ mod tests {
         ));
         let out = w.tick(&[b.clone()], &[], true);
         assert_eq!(to(&out, 20), [(1, WaypointTarget::Empty)]);
+    }
+
+    /// What a connection to `source` shows, as (operation, style, colour).
+    fn icons(out: &[(u32, C)], conn: u32) -> Vec<(i32, String, Option<i32>)> {
+        out.iter()
+            .filter(|(c, _)| *c == conn)
+            .map(|(_, p)| match p {
+                C::TrackedWaypoint(w) => (w.operation, w.style.clone(), w.color),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_changed_icon_is_untracked_and_tracked_again_for_whoever_sees_it() {
+        let (a, mut b) = (
+            player(1, 10, [0.5, 64.0, 0.5]),
+            player(2, 20, [4.5, 64.0, 0.5]),
+        );
+        let mut w = Waypoints::default();
+        let out = w.tick(&[a.clone(), b.clone()], &[], true);
+        assert_eq!(
+            icons(&out, 10),
+            [(0, "minecraft:default".into(), None)],
+            "A sees B's default icon"
+        );
+        assert!(w.tick(&[a.clone(), b.clone()], &[], true).is_empty());
+
+        b.icon = Icon {
+            style: "example:flag".into(),
+            color: Some(0x12_34AB),
+        };
+        let out = w.tick(&[a.clone(), b.clone()], &[], true);
+        assert_eq!(
+            icons(&out, 10),
+            [
+                (
+                    waypoint_operation::UNTRACK,
+                    "minecraft:default".into(),
+                    None
+                ),
+                (
+                    waypoint_operation::TRACK,
+                    "example:flag".into(),
+                    Some(0x12_34AB)
+                ),
+            ]
+        );
+        // B's own bar shows A as before: B's icon is not A's.
+        assert!(icons(&out, 20).is_empty());
+        assert!(w.tick(&[a.clone(), b.clone()], &[], true).is_empty());
+
+        // The icon is the player's own, not their team's colour, once it has one.
+        b.team = Some(("red".into(), Some(0xFF5555)));
+        let out = w.tick(&[a.clone(), b.clone()], &[], true);
+        assert_eq!(
+            icons(&out, 10).last(),
+            Some(&(
+                waypoint_operation::TRACK,
+                "example:flag".into(),
+                Some(0x12_34AB)
+            ))
+        );
+    }
+
+    #[test]
+    fn a_hidden_players_changed_icon_shows_nobody_anything() {
+        let (a, mut b) = (
+            player(1, 10, [0.5, 64.0, 0.5]),
+            player(2, 20, [4.5, 64.0, 0.5]),
+        );
+        b.transmit_range = 0.0;
+        let mut w = Waypoints::default();
+        w.tick(&[a.clone(), b.clone()], &[], true);
+        b.icon.style = "example:flag".into();
+        assert!(w.tick(&[a.clone(), b.clone()], &[], true).is_empty());
+        // Showing again carries the new style.
+        b.transmit_range = PLAYER_RANGE;
+        let out = w.tick(&[a, b], &[], true);
+        assert_eq!(
+            icons(&out, 10),
+            [(waypoint_operation::TRACK, "example:flag".into(), None)]
+        );
     }
 
     #[test]

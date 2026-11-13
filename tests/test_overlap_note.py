@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -6,10 +9,10 @@ from tools.ci import overlap_note as ov
 ROOT = Path(__file__).resolve().parents[1]
 
 DIFF = """\
-diff --git a/crates/horizon-client/src/game/dragon.rs b/crates/horizon-client/src/game/dragon.rs
+diff --git a/crates/horizon-client/src/game/mobs/dragon.rs b/crates/horizon-client/src/game/mobs/dragon.rs
 index 1..2 100644
---- a/crates/horizon-client/src/game/dragon.rs
-+++ b/crates/horizon-client/src/game/dragon.rs
+--- a/crates/horizon-client/src/game/mobs/dragon.rs
++++ b/crates/horizon-client/src/game/mobs/dragon.rs
 @@ -440 +440,2 @@ impl Dragon {
 -        let a = 1;
 +        let a = 2;
@@ -63,8 +66,8 @@ def fx(*names, path="a.rs"):
 class FunctionTests(unittest.TestCase):
     def test_functions_from_a_diff(self):
         self.assertEqual(ov.functions(DIFF), {
-            ("crates/horizon-client/src/game/dragon.rs", "tick_dragon"),
-            ("crates/horizon-client/src/game/dragon.rs", "helper"),
+            ("crates/horizon-client/src/game/mobs/dragon.rs", "tick_dragon"),
+            ("crates/horizon-client/src/game/mobs/dragon.rs", "helper"),
             ("tools/lan_e2e.py", "check_chest"),
         })
         # `impl Dragon` and `use` headers name no function; a hunk that only adds a new function after
@@ -125,6 +128,36 @@ class NoteTests(unittest.TestCase):
         self.assertNotIn("@", text)  # names, never mentions
         self.assertIsNone(ov.note([]))
         self.assertTrue(ov.CLEARED.startswith(ov.MARKER))
+
+
+class PresentTests(unittest.TestCase):
+    def test_reports_held_commits_without_fetching_the_others(self):
+        def run(cwd, *args):
+            return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            server, clone = os.path.join(tmp, "server"), os.path.join(tmp, "clone")
+            run(tmp, "init", "-q", "-b", "main", server)
+            run(server, "config", "uploadpack.allowFilter", "true")
+            run(server, "config", "uploadpack.allowAnySHA1InWant", "true")
+            run(server, "commit", "-q", "--allow-empty", "-m", "one")
+            held = run(server, "rev-parse", "HEAD")
+            run(server, "commit", "-q", "--allow-empty", "-m", "two")
+            later = run(server, "rev-parse", "HEAD")
+            run(server, "branch", "-f", "old", held)
+            run(tmp, "clone", "-q", "--filter=blob:none", "--single-branch", "--branch", "old",
+                "file://" + server, clone)
+            cwd = os.getcwd()
+            os.chdir(clone)
+            try:
+                self.assertEqual(ov.present([held, later, ""]), {held})
+            finally:
+                os.chdir(cwd)
+            # The blobless clone would fetch a missing commit on any lookup; present() must not.
+            check = subprocess.run(["git", "cat-file", "-e", later], cwd=clone, capture_output=True,
+                                   env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
+            self.assertNotEqual(check.returncode, 0)
 
 
 class WorkflowTests(unittest.TestCase):

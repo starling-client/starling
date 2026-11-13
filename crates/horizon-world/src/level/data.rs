@@ -13,13 +13,7 @@ use crate::{
 };
 use horizon_core::geometry::{Aabb, Direction, ShapeOp, Vec3, VoxelShape};
 use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fs::{self, File},
-    io,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
 #[path = "data/cache.rs"]
 mod cache;
 pub(super) use cache::set_dir as set_cache_dir;
@@ -636,7 +630,8 @@ pub fn load_registry_with_flags(root: &Path) -> io::Result<(BlockRegistry, Vec<(
     if let Some(cached) = cache::load_registry(root) {
         return Ok(cached);
     }
-    let loaded = BlockRegistry::from_facts_json_with_flags(File::open(root.join("facts.json"))?)?;
+    // Read whole, then parsed from the slice: see `BlockRegistry::from_facts_json_bytes`.
+    let loaded = BlockRegistry::from_facts_json_bytes(&fs::read(root.join("facts.json"))?)?;
     cache::store_registry(root, &loaded.0, &loaded.1);
     Ok(loaded)
 }
@@ -736,6 +731,8 @@ fn build_with_gameplay<G: GameplayStateSource>(
         return Err(fail("fluid registry order differs from Horizon's"));
     }
 
+    let fluid_state_definitions = crate::fluid_definitions::load(behaviour, &fluids)?;
+
     // Tags.
     let bundle = read_json(&root.join("block-tags.json"))?;
     let mut definitions = TagDefinitions::default();
@@ -814,7 +811,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
             .map_err(|e| invalid(e.to_string()))?;
     }
     let fluid_built = fluid_definitions
-        .build(|name, _| FluidKind::from_name(name).map(|kind| kind as u8))
+        .build(|name, _| FluidKind::from_name(name).and_then(FluidKind::vanilla_index))
         .map_err(|e| invalid(e.to_string()))?;
     let fluid_mask = |name: &str| -> u8 {
         fluid_built
@@ -868,6 +865,12 @@ fn build_with_gameplay<G: GameplayStateSource>(
             int(3) as u8,
             row.get(4).and_then(Value::as_bool).unwrap_or(false),
         );
+        let fluid = registry
+            .state(BlockStateId(id as u32))
+            .map(crate::fluid::mod_fluid_of_block)
+            .transpose()?
+            .flatten()
+            .unwrap_or(fluid);
         facts.push(StateFacts {
             flags,
             sturdy: int(0) as u32,
@@ -1125,6 +1128,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
         shapes,
         shape_info,
         fluid_tags,
+        fluid_definitions: fluid_state_definitions,
         blocks,
         items,
         potted_by_content,

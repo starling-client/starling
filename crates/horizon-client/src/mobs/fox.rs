@@ -3,9 +3,9 @@
 //! faceplanted), stalking and pouncing, napping in the shade by day, seeking
 //! shelter, perching, eating berries and the food held in the mouth (with the
 //! item's on-consumed effects: a chorus fruit teleports it).
-//! Strolling through villages and defending trusted players are not ported yet.
+//! Defending trusted players is not ported yet.
 //! The goal that walks to a dropped item is here; the game side takes the
-//! items (`Fox.pickUpItem`, `game/foxes.rs`). A totem in the mouth is a
+//! items (`Fox.pickUpItem`, `game/mobs/foxes.rs`). A totem in the mouth is a
 //! `death_protection` item like any other held one (`Mob::damage`).
 use super::{
     Mob, MobEvent, MobWorld, Seen, Species,
@@ -15,16 +15,20 @@ use super::{
         Prey, Stroll, goal_clone, hide_pos, reduced,
     },
     living::wrap,
+    raider::heightmap_pos,
     riders,
+    villager_brain::{closer_to_center, sections_to_village, village_sections},
 };
 use horizon_core::{
     geometry::{Axis, Vec3},
     jmath,
     random::RandomSource,
 };
+use horizon_core::{position::BlockPos, random::LegacyRandom};
 use horizon_items::items::ConsumeEffect;
 use horizon_world::registry::BlockStateId;
-use horizon_world::teleport_consume::TeleportConsume;
+use horizon_world::teleport_consume::TeleportConsumeWorld;
+use std::convert::Infallible;
 
 // Fox.DATA_FLAGS_ID, kept in `extra.ints[0]` (and sent to clients as is).
 pub const SITTING: i32 = 1;
@@ -51,12 +55,11 @@ pub fn flag(m: &Mob, f: i32) -> bool {
 /// blocks of the fox's; otherwise the ambient sound.
 pub fn awake_ambient(m: &mut Mob, w: &MobWorld) -> &'static str {
     // Level.isBrightOutside: the End has a fixed time, so never there.
-    let bright = w.daylight && !w.end;
+    let bright = w.daylight && !w.dimension_type.has_fixed_time;
     if !bright && m.random.next_float() < 0.1 {
         let around = m.bounds().inflate(Vec3::new(16.0, 16.0, 16.0));
         let player_near = w
-            .player
-            .as_ref()
+            .selected_player()
             .is_some_and(|p| !p.spectator && p.bounds.intersects(around));
         if !player_near {
             return SCREECH;
@@ -66,7 +69,7 @@ pub fn awake_ambient(m: &mut Mob, w: &MobWorld) -> &'static str {
 }
 /// `SoundEvents.FOX_SCREECH`.
 pub const SCREECH: &str = "entity.fox.screech";
-fn set_flag(m: &mut Mob, f: i32, on: bool) {
+pub(super) fn set_flag(m: &mut Mob, f: i32, on: bool) {
     if on {
         m.extra.ints[0] |= f;
     } else {
@@ -144,7 +147,7 @@ pub fn populate_default_equipment(m: &mut Mob) {
         } else {
             "minecraft:feather"
         };
-        m.extra.main_hand = Some(held.into());
+        m.extra.set_main_hand(Some(held.into()));
     }
 }
 /// `Fox.registerGoals` and `setTargetGoals` (the targets wait for the variant:
@@ -176,7 +179,7 @@ pub fn register(m: &mut Mob) {
     g.add(6, SeekShelter::new(1.25));
     g.add(
         7,
-        Wrap::new(MeleeAttack::new(1.2, true).bite("entity.fox.bite"))
+        Wrap::new(MeleeAttack::new(f64::from(1.2_f32), true).bite("entity.fox.bite"))
             .when(
                 |m| !flag(m, SITTING | SLEEPING | CROUCHING | FACEPLANTED),
                 false,
@@ -185,6 +188,7 @@ pub fn register(m: &mut Mob) {
     );
     g.add(7, Sleep { countdown });
     g.add(8, Wrap::new(FollowParent::new(1.25)).on_start(clear_states));
+    g.add(9, StrollThroughVillage::default());
     g.add(10, EatBerries::new());
     g.add(10, LeapAtTarget::new(0.4));
     g.add(11, Stroll::avoiding_water(1.0));
@@ -241,14 +245,133 @@ fn fully_crouched(m: &Mob) -> bool {
     m.anim.v[CROUCH_AMOUNT] == MAX_CROUCH_AMOUNT
 }
 
-/// `Fox.tick` and the eating part of `Fox.aiStep`.
+/// The mouth-item snapshot at `Fox.aiStep`'s consumption boundary.
+/// It owns the full stack so a listener never observes a later hand value.
+#[derive(Clone, Debug)]
+pub struct Consumption {
+    pub mob: u32,
+    pub stack: horizon_items::items::ItemStack,
+    pub from: Vec3,
+    ticks_since_eaten: i32,
+}
+impl Consumption {
+    fn same_item_use(&self, m: &Mob) -> bool {
+        m.id == self.mob
+            && m.alive()
+            && !m.removed
+            && m.extra.main_hand_stack() == Some(&self.stack)
+            && m.extra.ints[TICKS_SINCE_EATEN] == self.ticks_since_eaten
+    }
+    /// Refuse an old decision after the actor, mouth, position or eating state changed.
+    pub fn still_valid(&self, m: &Mob) -> bool {
+        self.still_valid_at(m, self.from)
+    }
+    /// A successful earlier effect may move the actor; listener writes may not
+    /// replace the mouth item, counter or pre-attempt position under a pending effect.
+    pub fn still_valid_at(&self, m: &Mob, expected: Vec3) -> bool {
+        self.same_item_use(m)
+            && m.species() == Species::Fox
+            && !m.no_ai
+            && m.position == expected
+            && m.ai.target.is_none()
+            && m.on_ground
+            && !flag(m, SLEEPING)
+    }
+    /// Finish the original item use after its own effects have moved the actor.
+    /// Refuse a replaced mouth stack or actor instead of overwriting listener writes.
+    pub fn finish(
+        &self,
+        m: &mut Mob,
+        expected: Vec3,
+        remainder: Option<std::sync::Arc<str>>,
+    ) -> bool {
+        if !self.same_item_use(m) || m.position != expected {
+            return false;
+        }
+        if self.stack.count > 1 {
+            let mut remaining = self.stack.clone();
+            remaining.count -= 1;
+            m.extra.set_main_hand_stack(Some(remaining));
+            // LivingEntity.handleExtraItemsCreatedOnUse is empty for a fox:
+            // an additional use remainder is discarded while food remains.
+        } else {
+            m.extra.set_main_hand(remainder);
+        }
+        m.extra.ints[TICKS_SINCE_EATEN] = 0;
+        true
+    }
+}
+
+/// Decide consumption after incrementing the fox's eat counter, before drawing
+/// teleport candidates or replacing the mouth stack. No random values are drawn.
+pub fn decide_consumption(m: &Mob, w: &MobWorld) -> Option<Consumption> {
+    let stack = m.extra.main_hand_stack()?;
+    if !m.alive()
+        || m.removed
+        || m.no_ai
+        || m.species() != Species::Fox
+        || m.extra.ints[TICKS_SINCE_EATEN] <= 600
+        || !eats(w, &stack.item)
+        || m.ai.target.is_some()
+        || !m.on_ground
+        || flag(m, SLEEPING)
+    {
+        return None;
+    }
+    Some(Consumption {
+        mob: m.id,
+        stack: stack.clone(),
+        from: m.position,
+        ticks_since_eaten: m.extra.ints[TICKS_SINCE_EATEN],
+    })
+}
+
+/// Apply a still-current consumption decision using the existing effects and remainder.
+/// The game can resume at the same boundary after giving its full host to a listener.
+pub fn apply_consumption(
+    decision: &Consumption,
+    w: &MobWorld,
+    m: &mut Mob,
+    events: &mut Vec<MobEvent>,
+) -> bool {
+    if !decision.still_valid(m) {
+        return false;
+    }
+    consume(w, m, events, &decision.stack);
+    let remainder = w
+        .items
+        .and_then(|i| i.items.get(&decision.stack.item))
+        .and_then(|i| i.use_remainder.as_deref())
+        .map(Into::into);
+    let position = m.position;
+    decision.finish(m, position, remainder)
+}
+
+/// `Fox.tick` and `Fox.aiStep`: eating, and `SoundEvents.FOX_AGGRO`
+/// (`Entity.playSound` at its feet) while the fox is defending. Only the
+/// server broadcasts that sound.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    client_tick(m);
+    if let Some(decision) = ai_step_until_consumption(m, w, events) {
+        apply_consumption(&decision, w, m, events);
+        before_living_ai_step(m, w);
+    }
+    finish_ai_step(m, w, events);
+}
+
+/// Run `Fox.aiStep` until its mouth item must be consumed. `Some` pauses before
+/// effect RNG draws and remainder replacement; the owner applies consumption and
+/// resumes `before_living_ai_step`. `None` means the pre-living step already ran.
+#[inline]
+pub fn ai_step_until_consumption(
+    m: &mut Mob,
+    w: &MobWorld,
+    events: &mut Vec<MobEvent>,
+) -> Option<Consumption> {
     if !m.alive() {
-        return;
+        return None;
     }
     m.extra.ints[TICKS_SINCE_EATEN] += 1;
-    if let Some(item) = m.extra.main_hand.clone()
+    if let Some(item) = super::finalize::item(m, super::finalize::MAINHAND)
         && eats(w, &item)
         && m.ai.target.is_none()
         && m.on_ground
@@ -258,14 +381,9 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         if eaten > 600 {
             // ItemStack.finishUsingItem: the consumable's on-consumed effects
             // run (a chorus fruit teleports it), then a use remainder stays.
-            consume(w, m, events, &item);
-            m.extra.set_main_hand(
-                w.items
-                    .and_then(|i| i.items.get(&item))
-                    .and_then(|i| i.use_remainder.as_deref())
-                    .map(Into::into),
-            );
-            m.extra.ints[TICKS_SINCE_EATEN] = 0;
+            if let Some(decision) = decide_consumption(m, w) {
+                return Some(decision);
+            }
         } else if eaten > 560 && m.random.next_float() < 0.1 {
             let at = [m.position.x, m.position.y, m.position.z];
             events.push(MobEvent::Sound("entity.fox.eat", at, 1.0, 1.0));
@@ -277,8 +395,27 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             });
         }
     }
+    before_living_ai_step(m, w);
+    None
+}
+
+/// `Fox.aiStep` after eating, before `super.aiStep`: forget the absent target's
+/// pose and suppress input when sleeping or immobile.
+#[inline]
+pub fn before_living_ai_step(m: &mut Mob, w: &MobWorld) {
     if !m.target_info(w).is_some_and(|t| t.alive) {
         set_flag(m, CROUCHING | INTERESTED, false);
+    }
+    pre_ai_step(m);
+}
+
+/// The fox's post-living tick: weather/sitting flags, growl and snow particles.
+/// Eating and the living movement step have already finished.
+#[inline]
+pub fn finish_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    if m.no_ai {
+        client_tick(m);
+        return;
     }
     let in_water = m.fluids.in_water;
     if in_water || m.ai.target.is_some() || w.thundering {
@@ -286,6 +423,12 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
     if in_water || flag(m, SLEEPING) {
         set_flag(m, SITTING, false);
+    }
+    // `Fox.aiStep`, after the living step: one tick in twenty a defending fox
+    // growls. `Entity.playSound` is positional and a silent fox stays quiet.
+    if flag(m, DEFENDING) && m.random.next_float() < 0.05 && !m.silent {
+        let at = [m.position.x, m.position.y, m.position.z];
+        events.push(MobEvent::Sound("entity.fox.aggro", at, 1.0, 1.0));
     }
     // Faceplanted: crumbs of the snow now and then (level event 2001).
     if flag(m, FACEPLANTED) && m.random.next_float() < 0.2 {
@@ -300,10 +443,11 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             data: w.world.block(at[0], at[1], at[2]).0 as i32,
         });
     }
+    client_tick(m);
 }
-/// `Fox.aiStep` before the living step: a sleeping fox takes no input.
+/// `Fox.aiStep` before the living step: a sleeping or immobile fox takes no input.
 pub fn pre_ai_step(m: &mut Mob) {
-    if flag(m, SLEEPING) {
+    if flag(m, SLEEPING) || !m.alive() {
         m.ai.jumping = false;
         m.ai.xxa = 0.0;
         m.ai.zza = 0.0;
@@ -318,114 +462,125 @@ fn eats(w: &MobWorld, item: &str) -> bool {
 
 /// `Consumable.onConsume`'s `on_consume_effects` when a fox finishes an item
 /// (`Item.finishUsingItem`): the teleport that a chorus fruit gives it.
-fn consume(w: &MobWorld, m: &mut Mob, events: &mut Vec<MobEvent>, item: &str) {
+fn consume(
+    w: &MobWorld,
+    m: &mut Mob,
+    events: &mut Vec<MobEvent>,
+    stack: &horizon_items::items::ItemStack,
+) {
     let Some(consumable) = w
         .items
-        .and_then(|i| i.items.get(item))
-        .and_then(|i| i.consumable.as_ref())
+        .and_then(|items| items.items.get(&stack.item))
+        .and_then(|info| stack.consumable(Some(info)))
     else {
         return;
     };
     for effect in &consumable.effects {
         if let ConsumeEffect::TeleportRandomly(teleport) = effect {
-            teleport_randomly(w, m, events, teleport);
+            let Ok(_) = teleport.apply(
+                &mut Teleporter {
+                    world: w,
+                    mob: m,
+                    events,
+                },
+                (),
+            );
         }
     }
 }
 
-/// `TeleportRandomlyConsumeEffect.apply` for a fox: 16 draws of a point in a
-/// cube of `diameter` around it, the first it can stand at takes it, with the
-/// fox's own teleport sound and the portal trail (level event 2017).
-fn teleport_randomly(
-    w: &MobWorld,
-    m: &mut Mob,
-    events: &mut Vec<MobEvent>,
-    teleport: &TeleportConsume,
-) {
-    let origin = m.position;
-    let diameter = f64::from(teleport.diameter);
-    // `Mth.clamp(y, level.getMinY(), getMinY() + logicalHeight - 1)`.
-    let low = f64::from(w.world.bottom_y());
-    let high = low + f64::from(w.world.shape.logical_height) - 1.0;
-    for _ in 0..16 {
-        let x = origin.x + (m.random.next_double() - 0.5) * diameter;
-        let y = (origin.y + (m.random.next_double() - 0.5) * diameter).clamp(low, high);
-        let z = origin.z + (m.random.next_double() - 0.5) * diameter;
-        if m.extra.passenger {
-            riders::stop_riding(m, None);
-        }
-        let old = m.position;
-        if !random_teleport(w, m, Vec3::new(x, y, z)) {
-            continue;
-        }
-        // `SoundEvents.FOX_TELEPORT`, else the chorus fruit's own; the sound
-        // plays at the point reached.
-        events.push(MobEvent::Sound(
+/// Standalone AI uses the same candidate/effect algorithm and living landing
+/// helper as Game's owning-host adapter. Native hooks belong to the Game pause;
+/// this borrowed model never manufactures a narrower host for a callback.
+struct Teleporter<'a, 'w> {
+    world: &'a MobWorld<'w>,
+    mob: &'a mut Mob,
+    events: &'a mut Vec<MobEvent>,
+}
+impl TeleportConsumeWorld for Teleporter<'_, '_> {
+    type Error = Infallible;
+    type Level = ();
+    type Random = ();
+    type Source = LegacyRandom;
+    fn position_field(&self) -> Vec3 {
+        self.mob.position
+    }
+    fn get_random(&mut self) -> Result<(), Infallible> {
+        Ok(())
+    }
+    fn random_source(&mut self, (): ()) -> &mut LegacyRandom {
+        &mut self.mob.random
+    }
+    fn min_y(&mut self, (): ()) -> Result<i32, Infallible> {
+        Ok(self.world.world.bottom_y())
+    }
+    fn logical_height(&mut self, (): ()) -> Result<i32, Infallible> {
+        Ok(self.world.world.shape.logical_height)
+    }
+    fn is_passenger(&mut self) -> Result<bool, Infallible> {
+        Ok(self.mob.extra.passenger)
+    }
+    fn stop_riding(&mut self) -> Result<(), Infallible> {
+        riders::stop_riding(self.mob, None);
+        Ok(())
+    }
+    fn position(&mut self) -> Result<Vec3, Infallible> {
+        Ok(self.mob.position)
+    }
+    fn random_teleport(&mut self, target: Vec3) -> Result<bool, Infallible> {
+        Ok(super::living::random_teleport(
+            self.mob,
+            self.world,
+            target,
+            Some("minecraft:consumable_does_not_teleport_to"),
+            self.events,
+        ))
+    }
+    fn teleport_event(&mut self, (): (), old: Vec3) -> Result<(), Infallible> {
+        self.events.push(MobEvent::GameEvent {
+            event: "minecraft:teleport",
+            at: [old.x, old.y, old.z],
+            source: self.mob.id,
+            state: BlockStateId(0),
+        });
+        Ok(())
+    }
+    fn is_fox(&self) -> bool {
+        true
+    }
+    fn teleport_sound(&mut self, (): (), at: Vec3, _: bool) -> Result<(), Infallible> {
+        self.events.push(MobEvent::Sound(
             "entity.fox.teleport",
-            [m.position.x, m.position.y, m.position.z],
+            [at.x, at.y, at.z],
             1.0,
             1.0,
         ));
-        if teleport.directional_particles {
-            let at = |p: Vec3| [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32];
-            let (from, to) = (at(old), at(m.position));
-            // `BlockPos` offset clamped to a byte per axis, packed as vanilla does.
-            let axis = |a: i32, b: i32| (b - a).clamp(-127, 127) + 127;
-            events.push(MobEvent::LevelEvent {
-                id: 2017,
-                pos: from,
-                data: (axis(from[0], to[0]) << 16)
-                    | (axis(from[1], to[1]) << 8)
-                    | axis(from[2], to[2]),
-            });
-        }
-        m.fall_distance = 0.0;
-        return;
+        Ok(())
     }
-}
-
-/// `Entity.randomTeleport`: the drawn point drops to the first
-/// motion-blocking ground below it and takes the fox only if its box there
-/// is free and holds no liquid, on a block the consume effect allows.
-/// Otherwise the fox stays where it was.
-fn random_teleport(w: &MobWorld, m: &mut Mob, to: Vec3) -> bool {
-    let (x, z) = (to.x, to.z);
-    let (bx, bz) = (x.floor() as i32, z.floor() as i32);
-    if !w.world.loaded(bx, bz) {
-        return false;
+    fn block_position(&mut self) -> Result<BlockPos, Infallible> {
+        Ok(BlockPos::containing(self.mob.position))
     }
-    // `while (!foundGround && pos.getY() > level().getMinY())`: every step
-    // down that is not ground lowers the landing height by one.
-    let mut y = to.y;
-    let mut by = to.y.floor() as i32;
-    let mut ground = false;
-    while by > w.world.bottom_y() {
-        by -= 1;
-        if w.facts.get(w.world.block(bx, by, bz)).full_collision {
-            ground = true;
-            break;
-        }
-        y -= 1.0;
+    fn directional_particles(
+        &mut self,
+        (): (),
+        origin: BlockPos,
+        offset: i32,
+    ) -> Result<(), Infallible> {
+        self.events.push(MobEvent::LevelEvent {
+            id: 2017,
+            pos: [origin.x, origin.y, origin.z],
+            data: offset,
+        });
+        Ok(())
     }
-    if !ground {
-        return false;
+    fn reset_fall_distance(&mut self) -> Result<(), Infallible> {
+        self.mob.fall_distance = 0.0;
+        Ok(())
     }
-    // `level().noCollision(this) && !level().containsAnyLiquid(getBoundingBox())
-    // && !getBlockState(blockPosition()).is(CONSUMABLE_DOES_NOT_TELEPORT_TO)`.
-    let at = Vec3::new(x, y, z);
-    let bounds = m.bounds_at(at);
-    let landing = w.block_name(x.floor() as i32, y.floor() as i32, z.floor() as i32);
-    if !w.no_collision(bounds)
-        || w.contains_any_liquid(bounds)
-        || w.has_tag("minecraft:consumable_does_not_teleport_to", landing)
-    {
-        return false;
+    fn reset_impulse(&mut self) -> Result<(), Infallible> {
+        // Mob has no separate CurrentImpulseContext state.
+        Ok(())
     }
-    m.position = at;
-    m.previous = at;
-    m.velocity = Vec3::ZERO;
-    m.ai.nav.stop();
-    true
 }
 
 /// `Fox.FoxBehaviorGoal.hasShelter`: out of the sky's sight and not a bad spot.
@@ -455,7 +610,7 @@ fn alertable(m: &Mob, w: &MobWorld) -> bool {
         })
         .next()
         .is_some();
-    mob || w.player.as_ref().is_some_and(|p| {
+    mob || w.selected_player().is_some_and(|p| {
         p.alive
             && !p.creative
             && !p.spectator
@@ -509,6 +664,107 @@ impl Goal for Sleep {
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         self.countdown = m.random.next_int_bound(reduced(140)).unwrap_or(0);
         clear_states(m);
+    }
+}
+
+/// `Fox.FoxStrollThroughVillageGoal` (`StrollThroughVillageGoal(fox, 200)`):
+/// at night near a village, pick a spot toward its heart and walk 10 blocks
+/// that way. The fox's `canFoxMove` comes after the base checks (and their
+/// draws), and `start` clears its states.
+#[derive(Clone, Debug, Default)]
+struct StrollThroughVillage {
+    /// `StrollThroughVillageGoal.wantedPos`.
+    wanted: Option<[i32; 3]>,
+}
+/// `Fox.FoxStrollThroughVillageGoal.canFoxMove`.
+fn can_fox_move(m: &Mob) -> bool {
+    !flag(m, SLEEPING | SITTING | DEFENDING) && m.ai.target.is_none()
+}
+fn block_pos(p: Vec3) -> [i32; 3] {
+    [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32]
+}
+fn section_of(p: [i32; 3]) -> [i32; 3] {
+    [p[0] >> 4, p[1] >> 4, p[2] >> 4]
+}
+impl Goal for StrollThroughVillage {
+    goal_clone!();
+    fn name(&self) -> &'static str {
+        "FoxStrollThroughVillage"
+    }
+    fn flags(&self) -> u8 {
+        MOVE
+    }
+    /// `StrollThroughVillageGoal.canUse`, then `canFoxMove`.
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        let w = cx.w;
+        if riders::mob_controlled(m, w) {
+            return false;
+        }
+        // Level.isBrightOutside: never in a dimension with a fixed time
+        // (the Nether, the End).
+        if w.daylight && !w.dimension_type.has_fixed_time {
+            return false;
+        }
+        if m.random.next_int_bound(reduced(200)).unwrap_or(1) != 0 {
+            return false;
+        }
+        let villages = village_sections(m, w);
+        // ServerLevel.isCloseToVillage(pos, 6).
+        if sections_to_village(&villages, section_of(block_pos(m.position))) > 6 {
+            return false;
+        }
+        let land = m.land_random_pos_scored(w, 15, 7, |p| {
+            -f64::from(sections_to_village(&villages, section_of(p)))
+        });
+        self.wanted = land.map(|p| block_pos(Vec3::new(p[0], p[1], p[2])));
+        self.wanted.is_some() && can_fox_move(m)
+    }
+    /// `StrollThroughVillageGoal.canContinueToUse`, then `canFoxMove`.
+    fn can_continue(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
+        self.wanted.is_some()
+            && !m.ai.nav.is_done()
+            && m.ai.nav.target_pos == self.wanted
+            && can_fox_move(m)
+    }
+    fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
+        clear_states(m);
+    }
+    /// `StrollThroughVillageGoal.tick`: with the path done and the wanted
+    /// spot past 10 blocks, a step of 10 toward a point 0.4 of the way back
+    /// from it, on the `MOTION_BLOCKING_NO_LEAVES` surface; `moveRandomly`
+    /// when there is no path there.
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        let Some(wanted) = self.wanted else {
+            return;
+        };
+        let w = cx.w;
+        if !m.ai.nav.is_done() || closer_to_center(wanted, m.position, 10.0) {
+            return;
+        }
+        // Vec3.atBottomCenterOf.
+        let target = Vec3::new(
+            f64::from(wanted[0]) + 0.5,
+            f64::from(wanted[1]),
+            f64::from(wanted[2]) + 0.5,
+        );
+        let at = m.position;
+        let long_distance = at.subtract(target).scale(0.4).add_vector(target);
+        let step = block_pos(
+            long_distance
+                .subtract(at)
+                .normalize()
+                .scale(10.0)
+                .add_vector(at),
+        );
+        let to = heightmap_pos(w, step[0], step[2]);
+        if !m.nav_move_to(w, to.map(f64::from), 1.0) {
+            // moveRandomly.
+            let x = -8 + m.random.next_int_bound(16).unwrap_or(0);
+            let z = -8 + m.random.next_int_bound(16).unwrap_or(0);
+            let p = block_pos(m.position);
+            let to = heightmap_pos(w, p[0] + x, p[2] + z);
+            m.nav_move_to(w, to.map(f64::from), 1.0);
+        }
     }
 }
 
@@ -784,7 +1040,7 @@ impl Goal for Pounce {
             ) == "minecraft:snow"
         {
             m.head_pitch = 60.0;
-            m.ai.target = None;
+            m.set_ai_target(cx.w, None);
             set_flag(m, FACEPLANTED, true);
         }
     }
@@ -934,7 +1190,7 @@ struct EatBerries {
 impl EatBerries {
     fn new() -> Self {
         Self {
-            block: MoveToBlock::new(1.2, 12, 1),
+            block: MoveToBlock::new(f64::from(1.2_f32), 12, 1),
             waited: 0,
         }
     }
@@ -951,7 +1207,7 @@ impl EatBerries {
                     .and_then(|a| a.parse().ok())
                     .unwrap_or(0);
             let mut count = 1 + m.random.next_int_bound(2).unwrap_or(0) + i32::from(age == 3);
-            if m.extra.main_hand.is_none() {
+            if m.extra.main_hand_id().is_none() {
                 m.extra
                     .set_main_hand(Some("minecraft:sweet_berries".into()));
                 count -= 1;
@@ -1026,7 +1282,7 @@ impl Goal for EatBerries {
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if self.block.reached {
             if self.waited >= 40 {
-                if cx.w.mob_griefing {
+                if cx.w.can_grief(m.id) {
                     self.pick(m, cx);
                 }
             } else {
@@ -1134,7 +1390,7 @@ pub fn set_item_at(m: &mut Mob, at: Option<[f64; 3]>) {
 /// `Fox.canHoldItem`: an empty mouth, or food to swap for what is not food once it has
 /// eaten at all. `food` says whether `item` and the held item are consumable food.
 pub fn can_hold_item(m: &Mob, item_is_food: bool, held_is_food: bool) -> bool {
-    m.extra.main_hand.is_none()
+    m.extra.main_hand_id().is_none()
         || (m.extra.ints[TICKS_SINCE_EATEN] > 0 && item_is_food && !held_is_food)
 }
 /// `Fox.pickUpItem` after the swap: it has taken the item (`ticksSinceEaten = 0`).
@@ -1150,7 +1406,7 @@ impl Goal for SearchForItems {
         MOVE
     }
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
-        if m.extra.main_hand.is_some() {
+        if m.extra.main_hand_id().is_some() {
             return false;
         }
         if m.ai.target.is_some() || m.ai.last_hurt_by.is_some() {
@@ -1162,7 +1418,7 @@ impl Goal for SearchForItems {
         if m.random.next_int_bound(reduced(10)).unwrap_or(0) != 0 {
             return false;
         }
-        m.extra.point.is_some() && m.extra.main_hand.is_none()
+        m.extra.point.is_some() && m.extra.main_hand_id().is_none()
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(at) = m.extra.point {
@@ -1170,7 +1426,7 @@ impl Goal for SearchForItems {
         }
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
-        if m.extra.main_hand.is_none()
+        if m.extra.main_hand_id().is_none()
             && let Some(at) = m.extra.point
         {
             m.nav_move_to_entity(cx.w, at, 0, f64::from(1.2_f32));
@@ -1189,6 +1445,41 @@ mod pickup_tests {
         k.id = "minecraft:fox".into();
         k.species = Species::Fox;
         Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    #[ignore = "requires prepared entity resources in .local/horizon-client"]
+    fn carry_crouch_advances_only_after_living_step() {
+        assert!(crate::mobs::world::with_test_world(&[], |w, _| {
+            let mut world = w.clone();
+            world.player = Some(crate::mobs::world::test_player(Vec3::new(1.0, 0.0, 0.0)));
+            let w = &world;
+            let mut f = fox();
+            f.ai.target = Some(crate::mobs::Who::Player);
+            set_flag(&mut f, CROUCHING, true);
+            let mut events = Vec::new();
+            assert!(ai_step_until_consumption(&mut f, w, &mut events).is_none());
+            assert_eq!(f.anim.v[CROUCH_AMOUNT], 0.0);
+            finish_ai_step(&mut f, w, &mut events);
+            assert_eq!(f.anim.v[CROUCH_AMOUNT], 0.2);
+        }));
+    }
+
+    #[test]
+    #[ignore = "requires prepared entity resources in .local/horizon-client"]
+    fn carry_no_ai_keeps_sleeping_in_water_and_animates() {
+        assert!(crate::mobs::world::with_test_world(&[], |w, _| {
+            let mut f = fox();
+            f.no_ai = true;
+            f.fluids.in_water = true;
+            set_flag(&mut f, SLEEPING | SITTING | CROUCHING | FACEPLANTED, true);
+            let mut events = Vec::new();
+            finish_ai_step(&mut f, w, &mut events);
+            assert!(flag(&f, SLEEPING));
+            assert!(flag(&f, SITTING));
+            assert!(events.is_empty());
+            assert_eq!(f.anim.v[CROUCH_AMOUNT], 0.2);
+        }));
     }
 
     /// `Fox.canHoldItem`: an empty mouth takes anything; a full one only swaps its non-food
@@ -1261,6 +1552,8 @@ mod consume_tests {
                 let kind = std::sync::Arc::new(types.types["minecraft:fox"].clone());
                 let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 0.5), 0.0);
                 m.on_ground = true;
+                let velocity = Vec3::new(0.2, 0.0, -0.1);
+                m.velocity = velocity;
                 m.extra.set_main_hand(Some("minecraft:chorus_fruit".into()));
                 // Past the 600 ticks `Fox.aiStep` waits before it finishes the item.
                 m.extra.ints[TICKS_SINCE_EATEN] = 601;
@@ -1274,7 +1567,36 @@ mod consume_tests {
                     "it stands on the stone floor, got {}",
                     m.position.y
                 );
-                assert_eq!(m.extra.main_hand, None, "the fruit was eaten");
+                assert_eq!(m.velocity, velocity, "randomTeleport preserves motion");
+                let entity = events
+                    .iter()
+                    .position(|e| matches!(e, MobEvent::EntityEvent { event: 46, .. }))
+                    .unwrap();
+                let game = events
+                    .iter()
+                    .position(|e| {
+                        matches!(
+                            e,
+                            MobEvent::GameEvent {
+                                event: "minecraft:teleport",
+                                ..
+                            }
+                        )
+                    })
+                    .unwrap();
+                let sound = events
+                    .iter()
+                    .position(|e| matches!(e, MobEvent::Sound("entity.fox.teleport", ..)))
+                    .unwrap();
+                let trail = events
+                    .iter()
+                    .position(|e| matches!(e, MobEvent::LevelEvent { id: 2017, .. }))
+                    .unwrap();
+                assert!(
+                    entity < game && game < sound && sound < trail,
+                    "the normal landing, game event, sound and trail preserve vanilla order"
+                );
+                assert_eq!(m.extra.main_hand_id(), None, "the fruit was eaten");
                 assert_eq!(m.extra.ints[TICKS_SINCE_EATEN], 0);
                 assert!(
                     events
@@ -1287,6 +1609,12 @@ mod consume_tests {
                         .iter()
                         .any(|e| matches!(e, MobEvent::LevelEvent { id: 2017, .. })),
                     "the portal trail: {events:?}"
+                );
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::EntityEvent { event: 46, .. })),
+                    "entity event 46: {events:?}"
                 );
             },
         );

@@ -4,11 +4,11 @@
 //! (`HostEvent::ChatFiltered`).
 use super::{HostEvent, Hub, chat::now_millis};
 use horizon_chat_filter::{Action, Guard, Mute, duration_text};
+use horizon_core::nbt::{JavaString, Tag};
 use horizon_protocol::{
     packets::play::{self, Clientbound as C},
     text::literal,
 };
-use horizon_world::nbt::{JavaString, Tag};
 
 /// Where a player's text was going.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

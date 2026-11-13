@@ -54,6 +54,19 @@ extern "system" fn Java_io_github_juanluci_starling_StarlingActivity_onImeHeight
     horizon_client::android::set_ime_height(pixels);
 }
 
+/// `StarlingActivity.onSafeInsets` (packaging/android/java), called on the UI thread.
+#[unsafe(no_mangle)]
+extern "system" fn Java_io_github_juanluci_starling_StarlingActivity_onSafeInsets(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+) {
+    horizon_client::android::set_safe_insets([left, top, right, bottom]);
+}
+
 /// `TextMirror.onMirrorEdit`, called on the UI thread.
 #[unsafe(no_mangle)]
 extern "system" fn Java_io_github_juanluci_starling_TextMirror_onMirrorEdit(

@@ -55,7 +55,7 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
 
   --server HOST:PORT     default 127.0.0.1:25565
   --bots N               default 10
-  --behaviour B          idle, walk, explore, fight or mixed (60 % walk, 20 % explore, 20 % idle); default mixed.
+  --behaviour B          idle, hotbar, walk, explore, fight or mixed (60 % walk, 20 % explore, 20 % idle); default mixed.
                          fight needs gamemode=survival, force-gamemode=true and allow-flight=true.
                          stand: stays on the ground where the server puts it (/tp), for a survival test.
                          One abusive client, to test a server's limits (run it beside a normal crowd):
@@ -89,7 +89,11 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
   --view-distance N      what the bots ask for; default 10
   --seed N               default 12345
   --explore-speed B      blocks a second an explore bot flies; default 22 (as fast as chunks come)
+  --explore-distance B   stop exploring after B blocks, then hold position; default unlimited
   --pvp B                fight bots also attack each other (true or false); default true
+  --crits                fight bots swing at a sword's full strength (every 13 ticks) and jump into every
+                         other swing, landing it while falling: a critical hit, then a sweep from the
+                         ground (give them swords); for PvP benches (crit and sweep particles)
   --name PREFIX          bot names: PREFIX0, PREFIX1...; default Bot
   --brand B              the client brand sent in configuration (minecraft:brand); default none
   --height H             blocks above spawn the bots fly at (walk, explore, idle); default 24
@@ -111,6 +115,7 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
 enum Behaviour {
     Idle,
     Stand,
+    Hotbar,
     Walk,
     Explore,
     Fight,
@@ -131,6 +136,7 @@ impl Behaviour {
         match self {
             Self::Idle => "idle",
             Self::Stand => "stand",
+            Self::Hotbar => "hotbar",
             Self::Walk => "walk",
             Self::Explore => "explore",
             Self::Fight => "fight",
@@ -158,6 +164,7 @@ struct Options {
     view_distance: i8,
     seed: u64,
     explore_speed: f64,
+    explore_distance: f64,
     pvp: bool,
     /// The players or entity UUIDs to attack, how long after joining to start,
     /// and how many rounds.
@@ -165,6 +172,8 @@ struct Options {
     attack_after: f64,
     attack_rounds: u32,
     no_swing: bool,
+    /// --crits: fight bots alternate jumped critical hits and sweeps at a sword's cooldown.
+    crits: bool,
     flood: usize,
     no_read: bool,
     no_loaded: bool,
@@ -197,11 +206,13 @@ fn options() -> Result<Options, String> {
         view_distance: 10,
         seed: 12345,
         explore_speed: 22.0,
+        explore_distance: f64::INFINITY,
         pvp: true,
         attack: None,
         attack_after: 5.0,
         attack_rounds: u32::MAX,
         no_swing: false,
+        crits: false,
         flood: 100,
         no_read: false,
         no_loaded: false,
@@ -230,6 +241,10 @@ fn options() -> Result<Options, String> {
             o.no_swing = true;
             continue;
         }
+        if arg == "--crits" {
+            o.crits = true;
+            continue;
+        }
         if arg == "--no-loaded" {
             o.no_loaded = true;
             continue;
@@ -254,6 +269,12 @@ fn options() -> Result<Options, String> {
             "--seed" => o.seed = value.parse().map_err(|_| number("a number"))?,
             "--explore-speed" => {
                 o.explore_speed = value.parse().map_err(|_| number("blocks a second"))?;
+            }
+            "--explore-distance" => {
+                o.explore_distance = value.parse().map_err(|_| number("positive blocks"))?;
+                if !o.explore_distance.is_finite() || o.explore_distance <= 0.0 {
+                    return Err(number("positive finite blocks"));
+                }
             }
             "--pvp" => o.pvp = value.parse().map_err(|_| number("true or false"))?,
             "--flood" => o.flood = value.parse().map_err(|_| number("packets a tick"))?,
@@ -321,13 +342,14 @@ fn options() -> Result<Options, String> {
             _ => return Err(format!("unknown option {arg}; --help lists them")),
         }
     }
-    const BEHAVIOURS: [&str; 16] = [
+    const BEHAVIOURS: [&str; 17] = [
         "idle",
         "walk",
         "explore",
         "fight",
         "mixed",
         "stand",
+        "hotbar",
         "flood-move",
         "flood-acks",
         "flood-packets",
@@ -351,6 +373,8 @@ fn options() -> Result<Options, String> {
 /// What one bot is doing, shared between its reader and its ticks.
 #[derive(Default)]
 struct Bot {
+    explore_complete: AtomicBool,
+    server_time: Mutex<Option<i64>>,
     online: AtomicBool,
     chunks: AtomicU64,
     /// Chunks received while the bot already held them (no ForgetLevelChunk in between).
@@ -532,11 +556,84 @@ fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
+/// A sword's attack speed is 1.6 a second: full strength 20 / 1.6 = 12.5 ticks after a swing.
+const SWORD_COOLDOWN_TICKS: u32 = 13;
+/// `LivingEntity.getJumpPower`: a jump's first upward motion, in blocks a tick.
+const JUMP_POWER: f64 = 0.42;
+
+/// `--crits`: a fight bot that swings at a sword's full strength and jumps into every other swing, so
+/// it lands while falling (`Player.attack`'s critical hit: falling, not on the ground, full strength),
+/// and the next one from the ground (a sweep: on the ground, full strength, a sword).
+#[derive(Default)]
+struct Crits {
+    /// Vertical motion while in the air (`LivingEntity.travel`: minus 0.08 a tick, times 0.98).
+    jump: Option<f64>,
+    ground: f64,
+    /// The next swing is the jumped one.
+    crit_next: bool,
+}
+
+impl Crits {
+    fn airborne(&self) -> bool {
+        self.jump.is_some()
+    }
+
+    /// One tick: walk up to the target and, with a full cooldown, strike; jump ahead of a crit's swing.
+    fn tick(
+        &mut self,
+        pos: &mut [f64; 3],
+        target: (i32, [f64; 3]),
+        since: &mut u32,
+    ) -> Option<i32> {
+        if let Some(v) = self.jump {
+            pos[1] += v;
+            if pos[1] <= self.ground {
+                pos[1] = self.ground;
+                self.jump = None;
+            } else {
+                self.jump = Some((v - 0.08) * 0.98);
+            }
+        } else {
+            self.ground = pos[1];
+            // A jump takes 6 ticks to its top: start it so the cooldown ends on the way down.
+            if self.crit_next && *since + 8 >= SWORD_COOLDOWN_TICKS {
+                self.jump = Some(JUMP_POWER);
+            }
+        }
+        let falling = self.jump.is_some_and(|v| v < 0.0);
+        if self.crit_next && !falling {
+            *since = since.saturating_add(1);
+            fight_step(pos, target.1);
+            return None;
+        }
+        let hit = fight_tick(pos, target, since, SWORD_COOLDOWN_TICKS);
+        if hit.is_some() {
+            self.crit_next = !self.crit_next;
+        }
+        hit
+    }
+}
+
 /// One tick of a fighting bot with a target: walk up to it, and strike once the cooldown is over.
 /// Returns the entity to attack. `since_attack` counts ticks since the last swing.
-fn fight_tick(pos: &mut [f64; 3], target: (i32, [f64; 3]), since_attack: &mut u32) -> Option<i32> {
+fn fight_tick(
+    pos: &mut [f64; 3],
+    target: (i32, [f64; 3]),
+    since_attack: &mut u32,
+    cooldown: u32,
+) -> Option<i32> {
     *since_attack = since_attack.saturating_add(1);
     let (id, at) = target;
+    fight_step(pos, at);
+    if *since_attack >= cooldown && distance(*pos, at) <= ATTACK_REACH {
+        *since_attack = 0;
+        return Some(id);
+    }
+    None
+}
+
+/// Walk toward `at`, stopping `CLOSE_IN` short of it.
+fn fight_step(pos: &mut [f64; 3], at: [f64; 3]) {
     let (dx, dz) = (at[0] - pos[0], at[2] - pos[2]);
     let horizontal = dx.hypot(dz);
     if horizontal > CLOSE_IN {
@@ -544,11 +641,6 @@ fn fight_tick(pos: &mut [f64; 3], target: (i32, [f64; 3]), since_attack: &mut u3
         pos[0] += dx / horizontal * step;
         pos[2] += dz / horizontal * step;
     }
-    if *since_attack >= ATTACK_COOLDOWN_TICKS && distance(*pos, at) <= ATTACK_REACH {
-        *since_attack = 0;
-        return Some(id);
-    }
-    None
 }
 
 /// One tick of walking to random points around the spawn, at sprint speed (5.6 blocks a second).
@@ -616,7 +708,7 @@ fn costly(
         Behaviour::FloodUse => {
             // A block within reach: place stone there, or break what is there.
             let at = [0, 1, 2].map(|k| block[k] + (random.unit() * 7.0) as i32 - 3);
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 play::Serverbound::UseItemOn(play::UseItemOn {
                     hand: 0,
                     pos: at,
@@ -645,7 +737,7 @@ fn costly(
             carried: None,
         }),
         Behaviour::FloodSuggest => {
-            let text = if i % 2 == 0 {
+            let text = if i.is_multiple_of(2) {
                 "/"
             } else {
                 LONG_COMMAND.as_str()
@@ -901,6 +993,10 @@ fn read(
         }
         let mut r = Reader::new(&body);
         let sent = match id {
+            cb::SET_TIME => {
+                *lock(&bot.server_time) = r.i64().ok();
+                Ok(())
+            }
             cb::KEEP_ALIVE => match r.i64() {
                 Ok(v) => send(raw(sb::KEEP_ALIVE, |w| w.i64(v))),
                 Err(_) => Ok(()),
@@ -1124,8 +1220,11 @@ fn run_bot(
         spawn[1] + o.height
     };
     let mut since_attack = ATTACK_COOLDOWN_TICKS;
+    let mut crits = Crits::default();
     let heading = random.unit() * std::f64::consts::TAU;
+    let mut explored = 0.0_f64;
     let mut target = pos;
+    let (mut hotbar_deadline, mut hotbar_step) = (None, 0usize);
     let mut next = Instant::now();
     let (joined, mut tick) = (Instant::now(), 0u64);
     loop {
@@ -1138,7 +1237,22 @@ fn run_bot(
         }
         let here = ((pos[0].floor() as i32) >> 4, (pos[2].floor() as i32) >> 4);
         // The abusive client doesn't wait for its chunk, as a real client must.
-        if behaviour == Behaviour::Stand {
+        if behaviour == Behaviour::Hotbar {
+            // Server time packets pace requests even during slow startup ticks.
+            if let Some(time) = *lock(&bot.server_time) {
+                let deadline = hotbar_deadline.get_or_insert(time + 40);
+                if time >= *deadline {
+                    *deadline = time + 20;
+                    if hotbar_step == 3 {
+                        bot.explore_complete.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                    let slot = [3, 7, 3][hotbar_step];
+                    send(play::Serverbound::SetCarriedItem(play::SetCarriedItem { slot }).encode());
+                    hotbar_step += 1;
+                }
+            }
+        } else if behaviour == Behaviour::Stand {
             // Where the server put it, on the ground.
         } else if behaviour == Behaviour::FloodMove {
             // The last of these moves goes out below, with the tick's end.
@@ -1176,16 +1290,21 @@ fn run_bot(
             pos[1] = (pos[1] + 0.5).min(cruise);
         } else {
             match behaviour {
-                Behaviour::Idle | Behaviour::Stand => {}
+                Behaviour::Idle | Behaviour::Stand | Behaviour::Hotbar => {}
                 Behaviour::Walk => walk_step(&mut pos, &mut target, spawn, cruise, &mut random),
                 Behaviour::Fight => {
                     let near = lock(&bot.entities).nearest(pos, o.pvp, &bots);
                     if let Some(near) = near {
-                        if let Some(victim) = fight_tick(&mut pos, near, &mut since_attack) {
+                        let hit = if o.crits {
+                            crits.tick(&mut pos, near, &mut since_attack)
+                        } else {
+                            fight_tick(&mut pos, near, &mut since_attack, ATTACK_COOLDOWN_TICKS)
+                        };
+                        if let Some(victim) = hit {
                             // The client sends the attack, then swings the arm.
                             let sent = send(
                                 play::Serverbound::Attack(play::Attack { id: victim }).encode(),
-                            ) && send(raw(sb::PUNCH, |w| w.varint(0)));
+                            ) && send(play::Serverbound::Punch(Empty).encode());
                             if sent {
                                 bot.attacks.fetch_add(1, Ordering::Relaxed);
                             }
@@ -1228,9 +1347,12 @@ fn run_bot(
                     }
                     // Flying in creative, by default about 22 blocks a second, which keeps new
                     // chunks coming as fast as the server sends them.
-                    let step = o.explore_speed / 20.0;
+                    let step = (o.explore_speed / 20.0).min(o.explore_distance - explored);
                     pos[0] += heading.cos() * step;
                     pos[2] += heading.sin() * step;
+                    explored += step;
+                    bot.explore_complete
+                        .store(explored >= o.explore_distance, Ordering::Relaxed);
                 }
             }
         }
@@ -1300,9 +1422,10 @@ fn run_bot(
                 x: pos[0],
                 y: pos[1],
                 z: pos[2],
-                // Fight bots stand on the ground; the others fly.
+                // Fight bots stand on the ground (but in a --crits jump); the others fly.
                 flags: u8::from(
-                    matches!(behaviour, Behaviour::Fight | Behaviour::Stand) || o.ground,
+                    (matches!(behaviour, Behaviour::Fight | Behaviour::Stand) && !crits.airborne())
+                        || o.ground,
                 ),
             })
             .encode(),
@@ -1328,6 +1451,7 @@ fn behaviour_of(mode: &str, index: usize) -> Behaviour {
     match mode {
         "idle" => Behaviour::Idle,
         "stand" => Behaviour::Stand,
+        "hotbar" => Behaviour::Hotbar,
         "walk" => Behaviour::Walk,
         "explore" => Behaviour::Explore,
         "fight" => Behaviour::Fight,
@@ -1463,6 +1587,7 @@ fn main() {
             "forgotten": b.forgotten.load(Ordering::Relaxed),
             "pulled_back": b.pulled_back.load(Ordering::Relaxed),
             "waited_ticks": b.waited.load(Ordering::Relaxed),
+            "explore_complete": b.explore_complete.load(Ordering::Relaxed),
             "error": *lock(&b.error),
             "attacks": b.attacks.load(Ordering::Relaxed),
             "health": *lock(&b.health),
@@ -1470,10 +1595,10 @@ fn main() {
     });
     if o.report.as_deref() == Some("-") {
         println!("{summary:#}");
-    } else if let Some(path) = &o.report {
-        if let Err(e) = std::fs::write(path, format!("{summary:#}\n")) {
-            eprintln!("horizon-bots: {path}: {e}");
-        }
+    } else if let Some(path) = &o.report
+        && let Err(e) = std::fs::write(path, format!("{summary:#}\n"))
+    {
+        eprintln!("horizon-bots: {path}: {e}");
     }
     let errors: Vec<String> = bots
         .iter()
@@ -1600,7 +1725,9 @@ mod tests {
         let target = (3, [1.0, 64.0, 0.0]);
         let mut since = ATTACK_COOLDOWN_TICKS;
         let hits: Vec<u32> = (0..40)
-            .filter_map(|tick| fight_tick(&mut pos, target, &mut since).map(|_| tick))
+            .filter_map(|tick| {
+                fight_tick(&mut pos, target, &mut since, ATTACK_COOLDOWN_TICKS).map(|_| tick)
+            })
             .collect();
         assert_eq!(hits[0], 0, "a bot in reach strikes at once");
         assert!(
@@ -1617,7 +1744,7 @@ mod tests {
         let mut since = ATTACK_COOLDOWN_TICKS;
         let mut first = None;
         for tick in 0..100 {
-            if fight_tick(&mut pos, target, &mut since).is_some() {
+            if fight_tick(&mut pos, target, &mut since, ATTACK_COOLDOWN_TICKS).is_some() {
                 first = Some(tick);
                 break;
             }
@@ -1625,6 +1752,43 @@ mod tests {
         assert!(first.is_some_and(|t| t > 30));
         assert!((target.1[0] - pos[0]).abs() <= ATTACK_REACH);
         assert!(pos[0] < 10.0 - CLOSE_IN + 1e-9);
+    }
+
+    #[test]
+    fn crits_alternate_a_falling_swing_and_a_grounded_one() {
+        let mut pos = [0.0, 64.0, 0.0];
+        let target = (3, [1.0, 64.0, 0.0]);
+        let (mut since, mut crits) = (SWORD_COOLDOWN_TICKS, Crits::default());
+        let mut last_y = pos[1];
+        let mut hits = Vec::new();
+        for tick in 0..120u32 {
+            let hit = crits.tick(&mut pos, target, &mut since);
+            if hit.is_some() {
+                hits.push((tick, crits_state(pos[1], last_y)));
+            }
+            last_y = pos[1];
+        }
+        assert!(hits.len() >= 6, "{hits:?}");
+        for (i, w) in hits.windows(2).enumerate() {
+            assert!(
+                w[1].0 - w[0].0 >= SWORD_COOLDOWN_TICKS,
+                "full strength each time: {hits:?}"
+            );
+            assert_ne!(w[0].1, w[1].1, "swing {i} and the next alternate: {hits:?}");
+        }
+        // A crit lands in the air, on the way down; a sweep from the ground.
+        assert!(hits.iter().any(|h| h.1 == "falling") && hits.iter().any(|h| h.1 == "ground"));
+        assert!(pos[1] >= 64.0);
+    }
+
+    fn crits_state(y: f64, before: f64) -> &'static str {
+        if y == 64.0 {
+            "ground"
+        } else if y < before {
+            "falling"
+        } else {
+            "rising"
+        }
     }
 
     #[test]

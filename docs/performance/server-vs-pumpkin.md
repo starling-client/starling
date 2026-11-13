@@ -1,7 +1,7 @@
 # Horizon's server against Pumpkin
 
-[Pumpkin](https://github.com/Pumpkin-MC/Pumpkin) is a Minecraft server written in Rust, and the one Horizon's
-server is measured against. It is GPL-3.0: we build it and run it as a black box, and never read or copy its
+[Pumpkin](https://github.com/Pumpkin-MC/Pumpkin) is a Minecraft server written in Rust, and the server Horizon's
+is measured against. It is GPL-3.0: we build it and run it as a black box, and never read or copy its
 source. Only its binary, its log and the configuration file it writes run here.
 
 Both servers speak the same protocol: Pumpkin 0.2.1+26.3-26.60 says "Java Minecraft (Protocol 777)", the
@@ -76,7 +76,7 @@ On a Linux machine with the vanilla data prepared (`python3 tools/lab.py prepare
 # Pumpkin: your own build, run as a black box (GPL-3.0: don't read or copy its source into Horizon)
 git clone https://github.com/Pumpkin-MC/Pumpkin && cd Pumpkin && git checkout 55cb804cc && cargo build --release && cd -
 # Horizon
-cargo build --release -p horizon-client --bin horizon-client
+cargo build --release -p horizon-game --bin horizon-client
 cargo build --release -p horizon-server -p horizon-bots
 # The comparison: 0, 20, 60 and 100 bots, three rounds, the servers alternated
 taskset -c 0-3 python3 tools/server_bench.py --servers horizon,pumpkin --pumpkin Pumpkin/target/release/pumpkin \

@@ -12,7 +12,7 @@
 //! [`overlay`] merges a block entity Horizon models (and re-encodes from its own,
 //! partial state) with the NBT it was loaded from, so fields Horizon does not model
 //! survive and only what the game changed is replaced.
-use horizon_world::nbt::{Compound, Tag};
+use horizon_core::nbt::{Compound, Tag};
 
 fn string(s: &str) -> Tag {
     Tag::String(s.into())
@@ -77,6 +77,20 @@ struct Fields<'a> {
     out: Compound,
 }
 impl<'a> Fields<'a> {
+    /// Every key of `tag` but the metadata the tail of `canonical` writes.
+    fn custom(&mut self, tag: &Tag) {
+        if let Tag::Compound(c) = tag {
+            for (k, v) in c {
+                let key = k.to_string_lossy();
+                if !matches!(
+                    key.as_str(),
+                    "id" | "x" | "y" | "z" | "keepPacked" | "components"
+                ) {
+                    self.out.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
     fn put(&mut self, key: &str, value: Tag) {
         self.out.insert(key.into(), value);
     }
@@ -143,7 +157,9 @@ impl<'a> Fields<'a> {
     /// `RandomizableContainer.tryLoadLootTable` / `trySaveLootTable`; true when the
     /// block entity has a loot table (and so saves no items).
     fn loot_table(&mut self) -> bool {
-        let Some(table) = text(self.input.get("LootTable")) else {
+        let Some(table) =
+            text(self.input.get("LootTable")).and_then(|id| crate::identifier::normalize_id(&id))
+        else {
             return false;
         };
         self.put("LootTable", string(&table));
@@ -215,9 +231,10 @@ pub fn stack(tag: &Tag) -> Option<Tag> {
     Some(Tag::compound(out))
 }
 /// `ItemStackTemplate.CODEC`: an item id or `{id, count?, components?}`.
+/// Encoding uses the primary record form, including for a bare item id.
 fn template(tag: &Tag) -> Option<Tag> {
     match tag {
-        Tag::String(_) => Some(tag.clone()),
+        Tag::String(_) => Some(Tag::compound([("id", tag.clone())])),
         Tag::Compound(_) => {
             let mut out = vec![("id", string(&text(tag.get("id"))?))];
             if let Some(count) = int(tag.get("count")).filter(|c| *c != 1) {
@@ -360,6 +377,12 @@ pub const TYPES: [&str; 47] = [
 /// The two types added after the ones above in 26.3.
 pub const NEWEST: [&str; 2] = ["minecraft:copper_golem_statue", "minecraft:potent_sulfur"];
 
+/// Whether `id` is in the `minecraft:block_entity_type` registry: one of
+/// vanilla's, or one a mod declared.
+pub fn is_known_type(id: &str) -> bool {
+    TYPES.iter().chain(&NEWEST).any(|k| *k == id) || crate::block_entity_types::declared(id)
+}
+
 /// The block entity as vanilla would save it after loading `tag` (a full block
 /// entity compound with `id`, `x`, `y`, `z`); None for an unknown type or a tag
 /// without a position.
@@ -370,6 +393,23 @@ pub fn canonical(tag: &Tag) -> Option<Tag> {
         input: tag,
         out: Compound::new(),
     };
+    // A mod's type: its own fields as loaded (`saveAdditional`), the
+    // position, and its component patch only when it has one, as a mod block
+    // entity is saved in a chunk.
+    if crate::block_entity_types::declared(&id) {
+        f.custom(tag);
+        let mut out = f.out;
+        out.insert("id".into(), string(&id));
+        out.insert("x".into(), Tag::Int(x));
+        out.insert("y".into(), Tag::Int(y));
+        out.insert("z".into(), Tag::Int(z));
+        if let Some(c @ Tag::Compound(patch)) = tag.get("components")
+            && !patch.is_empty()
+        {
+            out.insert("components".into(), c.clone());
+        }
+        return Some(Tag::Compound(out));
+    }
     match id.as_str() {
         "minecraft:furnace" | "minecraft:smoker" | "minecraft:blast_furnace" => {
             f.base_container();
@@ -678,17 +718,7 @@ pub fn canonical(tag: &Tag) -> Option<Tag> {
             // and defaulted by vanilla; they are kept as loaded. No `spawn_data` is
             // added: an absent one loads as Optional.empty and is not stored, and
             // an empty entity would keep the spawner from ever picking a mob.
-            if let Tag::Compound(c) = tag {
-                for (k, v) in c {
-                    let key = k.to_string_lossy();
-                    if !matches!(
-                        key.as_str(),
-                        "id" | "x" | "y" | "z" | "keepPacked" | "components"
-                    ) {
-                        f.out.insert(k.clone(), v.clone());
-                    }
-                }
-            }
+            f.custom(tag);
         }
         "minecraft:vault" => {
             // `VaultConfig.DEFAULT` (when the config is absent): the trial key and the
@@ -825,7 +855,7 @@ fn keyed_by_slot(list: &[Tag]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_world::nbt::parse_snbt;
+    use horizon_core::nbt::parse_snbt;
 
     fn snbt(s: &str) -> Tag {
         parse_snbt(s).expect("snbt").0
@@ -903,6 +933,16 @@ mod tests {
         assert!(out.get("Items").is_none());
         assert!(out.get("LootTableSeed").is_none());
         assert_eq!(out.get("LootTable"), Some(&string("minecraft:chests/x")));
+    }
+
+    #[test]
+    fn invalid_loot_table_leaves_items_intact() {
+        let out = canon(
+            "{id:\"minecraft:barrel\",x:1,y:2,z:3,LootTable:\"INVALID TABLE\",\
+             Items:[{Slot:0b,id:\"minecraft:stone\",count:1}]}",
+        );
+        assert!(out.get("Items").is_some());
+        assert!(out.get("LootTable").is_none());
     }
 
     #[test]
@@ -997,5 +1037,71 @@ mod tests {
             "slot 0 keeps its lore"
         );
         assert_eq!(items[1].get("count"), Some(&Tag::Int(5)));
+    }
+}
+
+#[cfg(test)]
+mod pot_template_tests {
+    use super::*;
+    use horizon_core::nbt::parse_snbt;
+
+    #[test]
+    fn decorated_pot_string_template_load_save_uses_item_compound() {
+        let parse = |s: &str| parse_snbt(s).expect("valid input NBT").0;
+        let input = |front: &str| {
+            let mut tag = parse(
+                r#"{id:"minecraft:decorated_pot",x:4,y:200,z:4,sherds:{back:{id:"minecraft:brick"},right:{id:"minecraft:archer_pottery_sherd"}},item:{id:"minecraft:wheat",count:3,components:{"minecraft:custom_name":"H290 item"}}}"#,
+            );
+            let Tag::Compound(root) = &mut tag else {
+                unreachable!()
+            };
+            let Some(Tag::Compound(sides)) = root.get_mut(&"sherds".into()) else {
+                unreachable!()
+            };
+            sides.insert("front".into(), parse(front));
+            tag
+        };
+        let other_fields = |loaded: &Tag, saved: &Tag| {
+            assert_eq!(saved.get("id"), loaded.get("id"));
+            for key in ["x", "y", "z", "item"] {
+                assert_eq!(saved.get(key), loaded.get(key), "{key}");
+            }
+            let loaded_sides = loaded.get("sherds").unwrap();
+            let saved_sides = saved.get("sherds").unwrap();
+            for side in ["back", "right"] {
+                assert_eq!(saved_sides.get(side), loaded_sides.get(side), "{side}");
+            }
+            assert_eq!(saved_sides.get("left"), None);
+        };
+        let plain = r#"{id:"minecraft:angler_pottery_sherd"}"#;
+        let defaults = r#"{id:"minecraft:angler_pottery_sherd",count:1,components:{}}"#;
+        let rich = r#"{id:"minecraft:angler_pottery_sherd",count:3,components:{"minecraft:custom_data":{h290:1},"minecraft:custom_name":"H290 sherd"}}"#;
+        // Actual canonical load/save entry, not the private template helper.
+        for (front, expected) in [(plain, plain), (defaults, plain), (rich, rich)] {
+            let loaded = input(front);
+            let original = loaded.clone();
+            let saved = canonical(&loaded).expect("actual decorated-pot codec");
+            other_fields(&loaded, &saved);
+            assert_eq!(
+                saved.get("sherds").unwrap().get("front"),
+                Some(&parse(expected))
+            );
+            assert_eq!(canonical(&saved).as_ref(), Some(&saved));
+            assert_eq!(loaded, original, "read-only canonicalization");
+        }
+        println!(
+            "H290 actual canonical compound/default/count/components, other sides/item/name and idempotency controls admitted"
+        );
+        let loaded = input(r#""minecraft:angler_pottery_sherd""#);
+        let original = loaded.clone();
+        let saved = canonical(&loaded).expect("actual decorated-pot codec");
+        other_fields(&loaded, &saved);
+        assert_eq!(loaded, original, "read-only canonicalization");
+        assert_eq!(
+            saved.get("sherds").unwrap().get("front"),
+            Some(&parse(plain)),
+            "string template must save the primary item compound",
+        );
+        assert_eq!(canonical(&saved).as_ref(), Some(&saved));
     }
 }

@@ -5,7 +5,7 @@
 //! does; render preparation must diagnose these before baking.
 use crate::json::*;
 use serde_json::value::RawValue;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Direction {
@@ -59,22 +59,98 @@ pub enum TextureSlot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CuboidModel {
     pub parent: Option<String>,
+    pub loader: Option<Loader>,
     pub ambient_occlusion: Option<bool>,
     pub gui_light: Option<GuiLight>,
     pub textures: BTreeMap<String, TextureSlot>,
     pub elements: Option<Vec<Option<Element>>>,
     pub display: Option<ItemTransforms>,
-    /// NeoForge's OBJ loader (mods' blocks): the mesh file it names; its faces, once read beside
-    /// the model (`mesh`), are drawn with the elements.
-    pub obj: Option<ObjSource>,
-    pub mesh: Option<std::sync::Arc<Vec<crate::obj::MeshFace>>>,
+    /// NeoForge's `render_type`, without a `minecraft:` prefix.
+    pub render_type: Option<String>,
+    /// A model's `visibility`: an obj object or composite child name to shown; absent is shown.
+    pub visibility: BTreeMap<String, bool>,
 }
-/// The OBJ file of a `neoforge:obj` model: `<ns>:<path to the .obj>` and whether its UVs' v is
-/// upside down.
+/// A custom model loader's payload; a model inherits its parent's loader unless it names its own.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ObjSource {
-    pub model: String,
-    pub flip_v: bool,
+pub enum Loader {
+    /// `neoforge:composite`: children in document order.
+    Composite {
+        children: Vec<(String, Arc<CuboidModel>)>,
+        /// Child name to shown; a child absent from the map is shown.
+        visibility: BTreeMap<String, bool>,
+    },
+    /// `neoforge:obj`: `model` and `mtl_override` are asset locations.
+    Obj {
+        model: String,
+        flip_v: bool,
+        shade_quads: Option<bool>,
+        mtl_override: Option<String>,
+    },
+    /// A loader a native mod registered ([`crate::model_loaders`]): the model's JSON object,
+    /// which its mod reads.
+    Registered {
+        kind: String,
+        config: Arc<serde_json::Value>,
+    },
+    /// A loader nobody registered: it adds no geometry.
+    Unknown(String),
+}
+/// NeoForge's `neoforge_data` of an element or a face; a face's keys win.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NeoforgeData {
+    pub block_light: Option<u8>,
+    pub sky_light: Option<u8>,
+    /// ARGB.
+    pub color: Option<i32>,
+    pub ambient_occlusion: Option<bool>,
+}
+impl NeoforgeData {
+    /// `self` over `base`, key by key.
+    pub fn over(self, base: Self) -> Self {
+        Self {
+            block_light: self.block_light.or(base.block_light),
+            sky_light: self.sky_light.or(base.sky_light),
+            color: self.color.or(base.color),
+            ambient_occlusion: self.ambient_occlusion.or(base.ambient_occlusion),
+        }
+    }
+    fn decode(raw: &RawValue) -> Result<Self> {
+        let obj = object(raw)?;
+        let light = |key: &str| -> Result<Option<u8>> {
+            Ok(obj
+                .get(key)
+                .map(|r| integer(r))
+                .transpose()?
+                .map(|v| v.clamp(0, 15) as u8))
+        };
+        // Some mods spell both lights as one `light_emission`.
+        let emission = light("light_emission")?;
+        let color = match obj.get("color") {
+            Some(raw) if raw.get().starts_with('"') => {
+                let text = string(raw)?;
+                let text = text.trim();
+                let hex = text
+                    .strip_prefix('#')
+                    .or_else(|| text.strip_prefix("0x"))
+                    .or_else(|| text.strip_prefix("0X"));
+                match hex {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok().map(|v| v as i32),
+                    None => text.parse::<u32>().ok().map(|v| v as i32),
+                }
+            }
+            Some(raw) => Some(integer(raw)?),
+            None => None,
+        };
+        Ok(Self {
+            block_light: light("block_light")?.or(emission),
+            sky_light: light("sky_light")?.or(emission),
+            color,
+            ambient_occlusion: obj
+                .get("ambient_occlusion")
+                .map(|r| boolean(r))
+                .transpose()?,
+        })
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Element {
@@ -84,6 +160,7 @@ pub struct Element {
     pub rotation: Option<ElementRotation>,
     pub shade_direction_override: Option<Direction>,
     pub light_emission: u8,
+    pub neoforge_data: Option<NeoforgeData>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Face {
@@ -93,6 +170,9 @@ pub struct Face {
     pub uv: Option<[f32; 4]>,
     /// Normalized counterclockwise quadrants, in the range 0..4.
     pub rotation: u8,
+    /// A face-level `light_emission`, which wins over its element's.
+    pub light_emission: Option<u8>,
+    pub neoforge_data: Option<NeoforgeData>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
@@ -172,6 +252,11 @@ impl CuboidModel {
         } else {
             Some(identifier(&parent)?)
         };
+        let loader = obj
+            .get("loader")
+            .filter(|raw| raw.get() != "null")
+            .map(|raw| Loader::decode(raw, &obj))
+            .transpose()?;
         let ambient_occlusion = obj
             .get("ambientocclusion")
             .map(|r| boolean(r))
@@ -203,34 +288,94 @@ impl CuboidModel {
             .get("display")
             .map(|r| ItemTransforms::decode(r))
             .transpose()?;
-        // NeoForge's OBJ models: the mesh is read beside the model (`mesh`); the model itself is
-        // where the geometry is, with no elements of its own.
-        let loader = obj.get("loader").map(|r| primitive_string(r)).transpose()?;
-        let source = match (loader.as_deref(), obj.get("model")) {
-            (Some(l), Some(model)) if l.ends_with(":obj") => Some(ObjSource {
-                model: primitive_string(model)?,
-                flip_v: obj
-                    .get("flip_v")
-                    .map(|r| boolean(r))
-                    .transpose()?
-                    .unwrap_or(false),
-            }),
-            _ => None,
-        };
-        let elements = match (&source, elements) {
-            (Some(_), None) => Some(Vec::new()),
-            (_, elements) => elements,
-        };
+        let render_type = obj
+            .get("render_type")
+            .filter(|raw| raw.get().starts_with('"'))
+            .map(|raw| string(raw))
+            .transpose()?
+            .map(|name| name.strip_prefix("minecraft:").unwrap_or(&name).to_owned());
         Ok(Self {
             parent,
+            loader,
             ambient_occlusion,
             gui_light,
             textures,
             elements,
             display,
-            obj: source,
-            mesh: None,
+            render_type,
+            visibility: visibility(&obj)?,
         })
+    }
+    /// The models this one needs besides itself: its parent and its composite children's parents.
+    pub fn referenced_models(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.parent.iter().cloned().collect();
+        if let Some(Loader::Composite { children, .. }) = &self.loader {
+            for (_, child) in children {
+                names.extend(child.referenced_models());
+            }
+        }
+        names
+    }
+}
+fn visibility(obj: &Object<'_>) -> Result<BTreeMap<String, bool>> {
+    let mut visibility = BTreeMap::new();
+    if let Some(raw) = obj.get("visibility") {
+        for (key, raw) in object(raw)? {
+            visibility.insert(key, boolean(raw)?);
+        }
+    }
+    Ok(visibility)
+}
+impl Loader {
+    fn decode(raw: &RawValue, obj: &Object<'_>) -> Result<Self> {
+        let name = primitive_string(raw)?;
+        match name.as_str() {
+            "neoforge:composite" => {
+                let mut children = Vec::new();
+                if let Some(raw) = obj.get("children") {
+                    for (name, raw) in ordered_object(raw)? {
+                        children.push((name, Arc::new(CuboidModel::decode(raw)?)));
+                    }
+                }
+                Ok(Self::Composite {
+                    children,
+                    visibility: visibility(obj)?,
+                })
+            }
+            "neoforge:obj" => {
+                let optional = |key: &str| {
+                    obj.get(key)
+                        .filter(|raw| raw.get() != "null")
+                        .map(|raw| primitive_string(raw))
+                        .transpose()
+                };
+                Ok(Self::Obj {
+                    model: identifier(&optional("model")?.ok_or_else(|| error("missing model"))?)?,
+                    flip_v: obj
+                        .get("flip_v")
+                        .map(|r| boolean(r))
+                        .transpose()?
+                        .unwrap_or(false),
+                    shade_quads: obj.get("shade_quads").map(|r| boolean(r)).transpose()?,
+                    mtl_override: optional("mtl_override")?
+                        .map(|name| identifier(&name))
+                        .transpose()?,
+                })
+            }
+            kind if crate::model_loaders::is_registered(kind) => {
+                let mut config = serde_json::Map::new();
+                for (key, raw) in obj {
+                    let value = serde_json::from_str(raw.get())
+                        .map_err(|_| error("invalid model loader data"))?;
+                    config.insert(key.clone(), value);
+                }
+                Ok(Self::Registered {
+                    kind: name,
+                    config: Arc::new(serde_json::Value::Object(config)),
+                })
+            }
+            _ => Ok(Self::Unknown(name)),
+        }
     }
 }
 /// A `neoforge:composite` (or `forge:composite`) model as one plain model: its own elements, then
@@ -376,6 +521,10 @@ impl Element {
             rotation,
             shade_direction_override,
             light_emission: light_emission as u8,
+            neoforge_data: obj
+                .get("neoforge_data")
+                .map(|r| NeoforgeData::decode(r))
+                .transpose()?,
         })
     }
 }
@@ -409,6 +558,15 @@ impl Face {
             texture,
             uv,
             rotation: (rotation / 90) as u8,
+            light_emission: obj
+                .get("light_emission")
+                .map(|r| integer(r))
+                .transpose()?
+                .map(|v| v.clamp(0, 15) as u8),
+            neoforge_data: obj
+                .get("neoforge_data")
+                .map(|r| NeoforgeData::decode(r))
+                .transpose()?,
         })
     }
 }
