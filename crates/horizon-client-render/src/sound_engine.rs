@@ -1090,6 +1090,11 @@ fn handle_channel(h: &Handle) -> Option<ChannelId> {
     h.channel
 }
 impl SoundEngine {
+    /// Starling: a fresh unseeded random (`RandomSource.create()`), as Horizon's
+    /// `SoundEngine::unseeded` gave the native mods made for it.
+    pub fn unseeded() -> LegacyRandom {
+        LegacyRandom::new(crate::random_source::unique_seed())
+    }
     pub fn new(registry: SoundRegistry) -> Self {
         Self {
             registry,

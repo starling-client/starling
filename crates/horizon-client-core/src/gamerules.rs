@@ -482,6 +482,11 @@ impl GameRules {
     pub fn rule(&self, name: &str) -> Option<&Rule> {
         self.available_rules().find(|rule| rule.matches(name))
     }
+    /// Starling: whether a boolean rule is on, as Horizon's `GameRules::bool` answered and native
+    /// mods made for it ask (`game.ui.rules.bool("block_drops")`).
+    pub fn bool(&self, name: &str) -> bool {
+        matches!(self.get(name), Some(Value::Bool(true)))
+    }
     pub fn get(&self, name: &str) -> Option<Value> {
         let index = self
             .registry

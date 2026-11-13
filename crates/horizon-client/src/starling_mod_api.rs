@@ -18,8 +18,35 @@ pub use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
+pub use horizon_protocol::packets::play::Clientbound as ClientboundPlayPacket;
 pub use horizon_world::registry::BlockStateId;
 pub use serde_json;
+
+/// `mobs::render::render_layers` with `render_with`'s parameters, as Horizon had it: mods pick
+/// one of the two as a function. The split's also hands back the posed parts; this asks for none.
+pub fn render_layers_old(
+    m: &crate::mobs::Mob,
+    alpha: f32,
+    camera: glam::DVec3,
+    atlas: crate::mobs::render::Atlas,
+    light: u32,
+    data: &crate::mobs::MobData,
+    extra: &[(&crate::mobs::Part, [f32; 4], u32, u32, bool)],
+    out: &mut Vec<crate::mesher::Vertex>,
+) {
+    crate::mobs::render::render_layers(m, alpha, camera, atlas, light, data, extra, None, out);
+}
+
+/// A stack of the panel's events as the old panel gave it: the item by its id.
+pub fn native_stack_old(stack: &::mod_api::Stack) -> NativeStack {
+    NativeStack {
+        item: ::mod_api::__private::item_key_id(stack.item)
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "minecraft:air".to_owned()),
+        count: stack.count,
+        components: stack.components.clone(),
+    }
+}
 
 /// A native mod as Options > Mods lists it (`native_mods`).
 #[derive(Clone, Debug, Default, PartialEq)]

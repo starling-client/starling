@@ -337,6 +337,10 @@ impl Game<'_> {
         }
         self.modifiers.control_key()
     }
+    /// Starling: `Screen.hasAltDown`, beside the two above, which native mods made for Horizon call.
+    pub(crate) fn has_alt_down(&self) -> bool {
+        self.modifiers.alt_key()
+    }
 
     /// Real events word the modifiers by their own `ModifiersChanged`; a
     /// control socket's `key` is synthesized, so it words the bit directly
