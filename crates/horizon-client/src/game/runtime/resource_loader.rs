@@ -7,23 +7,23 @@ use super::*;
 /// CPU-only startup data, owned by one loader generation. No file reads or
 /// model baking are needed when the event loop installs this bundle.
 pub(super) struct GameCpuResources {
-    pub(super) painting_variants: paintings::PaintingVariants,
-    pub(super) frame_model: frames::FrameModel,
-    pub(super) glow_frame_model: frames::FrameModel,
-    pub(super) map_frame_model: frames::FrameModel,
-    pub(super) glow_map_frame_model: frames::FrameModel,
-    pub(super) armor_stand_assets: armor_stands::ArmorStandAssets,
-    pub(super) waypoint_styles: horizon_client::locator_bar::WaypointStyles,
-    pub(super) boat_models: boats::BoatModels,
-    pub(super) cart_models: minecarts::CartModels,
-    pub(super) crystal_model: Option<horizon_client::mobs::Part>,
-    pub(super) cushion_model: Option<horizon_client::mobs::Part>,
-    pub(super) dragon_model: Option<horizon_client::mobs::Part>,
-    pub(super) arrow_model: Option<horizon_client::mobs::Part>,
-    pub(super) bee_stinger_model: Option<horizon_client::mobs::Part>,
-    pub(super) trident_model: Option<horizon_client::mobs::Part>,
-    pub(super) entity_models: EntityModels,
-    pub(super) creative_screen: Creative,
+    painting_variants: paintings::PaintingVariants,
+    frame_model: frames::FrameModel,
+    glow_frame_model: frames::FrameModel,
+    map_frame_model: frames::FrameModel,
+    glow_map_frame_model: frames::FrameModel,
+    armor_stand_assets: armor_stands::ArmorStandAssets,
+    waypoint_styles: horizon_client::locator_bar::WaypointStyles,
+    boat_models: boats::BoatModels,
+    cart_models: minecarts::CartModels,
+    crystal_model: Option<horizon_client::mobs::Part>,
+    cushion_model: Option<horizon_client::mobs::Part>,
+    dragon_model: Option<horizon_client::mobs::Part>,
+    arrow_model: Option<horizon_client::mobs::Part>,
+    bee_stinger_model: Option<horizon_client::mobs::Part>,
+    trident_model: Option<horizon_client::mobs::Part>,
+    entity_models: EntityModels,
+    creative_screen: Creative,
 }
 
 /// Baked layers of entities that may first show up deep into a session. They come from the
@@ -32,17 +32,17 @@ pub(super) struct GameCpuResources {
 #[derive(Default)]
 pub(super) struct EntityModels {
     /// LeashKnotModel.
-    pub(super) leash_knot: Option<horizon_client::mobs::Part>,
+    leash_knot: Option<horizon_client::mobs::Part>,
     /// WindChargeModel.
-    pub(super) wind_charge: Option<horizon_client::mobs::Part>,
+    wind_charge: Option<horizon_client::mobs::Part>,
     /// ShulkerBulletModel.
-    pub(super) shulker_bullet: Option<horizon_client::mobs::Part>,
+    shulker_bullet: Option<horizon_client::mobs::Part>,
     /// SkullModel of the wither skull.
-    pub(super) wither_skull: Option<horizon_client::mobs::Part>,
+    wither_skull: Option<horizon_client::mobs::Part>,
     /// EvokerFangsModel.
-    pub(super) evoker_fangs: Option<Arc<horizon_client::mobs::Part>>,
+    evoker_fangs: Option<Arc<horizon_client::mobs::Part>>,
     /// BannerModel's pole and flag (a raid captain's banner).
-    pub(super) banner: Option<(horizon_client::mobs::Part, horizon_client::mobs::Part)>,
+    banner: Option<(horizon_client::mobs::Part, horizon_client::mobs::Part)>,
 }
 
 impl EntityModels {
@@ -62,9 +62,10 @@ impl EntityModels {
 
 impl GameCpuResources {
     pub(super) fn load(
-        root: &std::path::Path,
+        resources: &horizon_assets::resource_source::ResourceRoot,
         document: Option<&horizon_client::mobs::EntityModelDocument>,
     ) -> Result<Self> {
+        let root = resources.prepared();
         let owned_document;
         let document = match document {
             Some(document) => Some(document),
@@ -79,10 +80,7 @@ impl GameCpuResources {
         let model = |key| document.and_then(|document| document.model(key));
         let (
             painting_variants,
-            frame_model,
-            glow_frame_model,
-            map_frame_model,
-            glow_map_frame_model,
+            frames,
             armor_stand_assets,
             waypoint_styles,
             boat_models,
@@ -92,23 +90,14 @@ impl GameCpuResources {
             let painting_variants = named_scope(scope, "game_cpu.paintings", move || {
                 paintings::PaintingVariants::load(root)
             });
-            let frame_model = named_scope(scope, "game_cpu.frame", move || {
-                frames::bake_frame(root, "item_frame")
-            });
-            let glow_frame_model = named_scope(scope, "game_cpu.glow_frame", move || {
-                frames::bake_frame(root, "glow_item_frame")
-            });
-            let map_frame_model = named_scope(scope, "game_cpu.map_frame", move || {
-                frames::bake_frame(root, "item_frame_map")
-            });
-            let glow_map_frame_model = named_scope(scope, "game_cpu.glow_map_frame", move || {
-                frames::bake_frame(root, "glow_item_frame_map")
+            let frames = named_scope(scope, "game_cpu.frames", move || {
+                frames::bake_frames(resources.source())
             });
             let armor_stand_assets = named_scope(scope, "game_cpu.armor_stands", move || {
-                armor_stands::ArmorStandAssets::load(root, document)
+                armor_stands::ArmorStandAssets::load(resources.source(), document)
             });
             let waypoint_styles = named_scope(scope, "game_cpu.waypoints", move || {
-                horizon_client::locator_bar::WaypointStyles::load(root)
+                horizon_client::locator_bar::WaypointStyles::load(resources.source())
             });
             let boat_models = named_scope(scope, "game_cpu.boats", move || {
                 boats::BoatModels::load(document)
@@ -117,26 +106,13 @@ impl GameCpuResources {
                 minecarts::CartModels::load(document)
             });
             let creative_screen = named_scope(scope, "game_cpu.creative", move || {
-                let mut creative = Creative::load(root).map_err(|error| error.to_string())?;
-                let tab_modifiers =
-                    horizon_client::polytone_creative_tabs::TabModifier::read_all(root);
-                creative.set_pack_modifiers(tab_modifiers);
-                Ok::<_, String>(creative)
+                Creative::load(root).map_err(|error| error.to_string())
             });
             (
                 painting_variants
                     .join()
                     .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                frame_model
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                glow_frame_model
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                map_frame_model
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                glow_map_frame_model
+                frames
                     .join()
                     .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
                 armor_stand_assets
@@ -156,6 +132,12 @@ impl GameCpuResources {
                     .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
             )
         });
+        let [
+            frame_model,
+            glow_frame_model,
+            map_frame_model,
+            glow_map_frame_model,
+        ] = frames;
         Ok(Self {
             painting_variants,
             frame_model,
@@ -181,19 +163,22 @@ impl GameCpuResources {
 
 /// The data the background loader produces for `Game::new`.
 pub(super) struct Loaded {
-    pub(super) game_cpu: Option<GameCpuResources>,
+    game_cpu: Option<GameCpuResources>,
     /// The one parsed `entity-models.json`, for the handoff `Game::new` does
     /// itself on the synchronous launch.
-    pub(super) entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
-    pub(super) renderer_cpu: Option<horizon_client::gfx::PreparedTextures>,
-    pub(super) root: PathBuf,
-    pub(super) pack_error: Option<String>,
-    pub(super) resources: Arc<Resources>,
-    pub(super) rest_loader: Option<WorldRestLoader>,
-    pub(super) pack: PackResources,
+    entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
+    renderer_cpu: Option<horizon_client::gfx::PreparedTextures>,
+    root: PathBuf,
+    pack_error: Option<String>,
+    resources: Arc<Resources>,
+    rest_loader: Option<WorldRestLoader>,
+    /// The client reload listeners' prepared applies, staged by the loader
+    /// thread; `start_game` runs them once the game exists.
+    client_applies: Vec<client_reload::PreparedClientReload>,
+    pack: PackResources,
     /// The menu bundle, for the synchronous launch; the loading screen receives
     /// it earlier through its own channel.
-    pub(super) gui: Option<UiResources>,
+    gui: Option<UiResources>,
 }
 
 /// What the background loader publishes: the menu bundle as soon as it is
@@ -215,7 +200,6 @@ pub(super) enum PendingWorldEntry {
         address: String,
         name: String,
         lan: bool,
-        /// The Realms screen asked for it (`ServerData.isRealm`).
         realm: bool,
         /// A transfer's carried-over server cookies (`TransferState`).
         cookies: Option<horizon_client::net::Cookies>,
@@ -224,8 +208,8 @@ pub(super) enum PendingWorldEntry {
 }
 
 pub(super) struct WorldRestLoader {
-    pub(super) progress: Progress,
-    pub(super) handle: JoinHandle<std::result::Result<(), String>>,
+    progress: Progress,
+    handle: JoinHandle<std::result::Result<(), String>>,
 }
 
 impl WorldRestLoader {
@@ -236,7 +220,7 @@ impl WorldRestLoader {
         Ok(self.handle.is_finished())
     }
 
-    pub(super) fn finish(self) -> Result<()> {
+    fn finish(self) -> Result<()> {
         self.handle
             .join()
             .map_err(|_| "world resource loader panicked")?
@@ -273,6 +257,16 @@ pub(super) fn run_loading(
     let (receiver, loader) =
         startup_menu::spawn_loader(&options, &settings, &vanilla_root, started, &progress)?;
     let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
+    let sound_registry = options.dedicated.is_none().then(|| {
+        let root = vanilla_root.clone();
+        std::thread::spawn(move || {
+            // Starling: a phone's setup before 0.1.6 left the sounds out.
+            horizon_client::preparer::complete_sounds(&root);
+            horizon_client::sound_events::SoundRegistry::load(
+                &horizon_assets::resource_source::ResourceSource::directory(root),
+            )
+        })
+    });
     let loading = Loading {
         window: None,
         renderer: None,
@@ -296,9 +290,16 @@ pub(super) fn run_loading(
         title_drawn: false,
         menu,
         error: None,
+        failure: None,
+        setup: Default::default(),
+        touch_pointer: Default::default(),
+        imports: Default::default(),
+        audio: None,
+        sound_registry,
+        suspended: false,
     };
     let mut app = App::Loading(Box::new(loading));
-    let result = EventLoop::new()?.run_app(&mut app);
+    let result = event_loop()?.run_app(&mut app);
     narrator::stop();
     match &mut app {
         // Ready: splitscreen around P1's game.
