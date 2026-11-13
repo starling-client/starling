@@ -105,7 +105,11 @@ def read_bundle(path):
         return mod_id, entries
 
 
-def split_body(body):
+def split_body(body, most=MAX_MODS):
+    """The mods a request's body holds. `most` is this machine's count, which is here to keep one
+    player from filling the service's small machine; `None` is for a machine that lives for one
+    build (mod_build_once.py on GitHub's runner), where the body's size, what it expands to and the
+    build's own clock are the limits and a count on top of them only turns players away."""
     mods, at = [], 0
     while at < len(body):
         if at + 4 > len(body):
@@ -116,8 +120,10 @@ def split_body(body):
             raise Refused("The request was cut short.")
         mods.append(body[at : at + size])
         at += size
-    if not mods or len(mods) > MAX_MODS:
-        raise Refused("Send from 1 to 16 mods.")
+    if not mods:
+        raise Refused("Send at least one mod.")
+    if most is not None and len(mods) > most:
+        raise Refused(f"The build server takes {most} mods at a time; build on GitHub for more.")
     return mods
 
 
