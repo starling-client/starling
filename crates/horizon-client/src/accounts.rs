@@ -589,6 +589,38 @@ pub fn download_files() {
     });
 }
 
+/// Let go of the official files once the game has loaded what was prepared from them:
+/// horizon-prepare copied what the game reads (its sounds among them) into the prepared
+/// resources, so the files here only took the space twice, some 700 MB. A preparation needed
+/// again (a reinstall of the resources, a new version) fetches them again, as the first did.
+pub fn drop_files() {
+    let root = files_root();
+    let aside = root.with_file_name("minecraft.dropped");
+    // What a stop midway left.
+    let _ = std::fs::remove_dir_all(&aside);
+    {
+        let mut s = shared();
+        if matches!(s.files, Files::Checking | Files::Downloading(_)) {
+            return;
+        }
+        // Out of the way at once, a rename, so a download started now finds no half of them.
+        match std::fs::rename(&root, &aside) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                log::warn!("Horizon: the fetched game files stay: {e}");
+                return;
+            }
+        }
+        s.files = Files::Missing;
+        s.files_seen = true;
+    }
+    match std::fs::remove_dir_all(&aside) {
+        Ok(()) => log::info!("Horizon: the fetched game files went, the prepared ones are in use"),
+        Err(e) => log::warn!("Horizon: the fetched game files did not all go: {e}"),
+    }
+}
+
 /// Stop the download in progress (what it fetched stays for the next one).
 pub fn cancel_download() {
     if let Some(cancel) = shared().files_cancel.take() {

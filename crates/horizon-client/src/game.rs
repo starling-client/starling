@@ -21844,7 +21844,12 @@ impl ApplicationHandler for App {
                     None => Step::Waiting,
                     Some(Err(e)) => Step::Failed(e.into()),
                     Some(Ok(loaded)) => match loading.finish(loaded) {
-                        Ok(Some(game)) => Step::Ready(Box::new(game)),
+                        Ok(Some(game)) => {
+                            // Starling: the prepared resources loaded, the files they came
+                            // from can go.
+                            horizon_client::preparer::drop_downloads(&loading.vanilla_root);
+                            Step::Ready(Box::new(game))
+                        }
                         Ok(None) => Step::Done,
                         Err(e) => Step::Failed(e),
                     },
@@ -22139,6 +22144,8 @@ pub fn run_with() -> Result<()> {
     options.resources = loaded.root.clone();
     // Starling: a phone's setup before 0.1.6 left the sounds out.
     horizon_client::preparer::complete_sounds(&vanilla_root);
+    // Starling: the prepared resources loaded, the files they came from can go.
+    horizon_client::preparer::drop_downloads(&vanilla_root);
     let audio = if !options.execution_role.is_client() || options.headless {
         Audio::silent(&options.resources)
     } else {

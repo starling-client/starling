@@ -221,6 +221,25 @@ pub fn complete_sounds(resources: &Path) {
     }
 }
 
+/// Once the game has loaded the prepared `resources`, the official files they were prepared
+/// from go (accounts::drop_files), on a thread of their own: thousands of files to delete. Not
+/// while the resources lack their sounds, which `complete_sounds` still takes from them.
+pub fn drop_downloads(resources: &Path) {
+    let root = crate::accounts::files_root();
+    if !crate::platform::registered()
+        || !resources.join("assets/minecraft/sounds.json").is_file()
+        || !(root.exists() || root.with_file_name("minecraft.dropped").exists())
+    {
+        return;
+    }
+    if let Err(e) = std::thread::Builder::new()
+        .name("drop-downloads".into())
+        .spawn(crate::accounts::drop_files)
+    {
+        log::warn!("Horizon: the fetched game files stay: {e}");
+    }
+}
+
 /// horizon-prepare copies into the kit's prepared folder: a link to `resources` stands in for
 /// it while it does.
 #[cfg(unix)]
