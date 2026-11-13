@@ -115,7 +115,11 @@ impl Game<'_> {
         particle.scale(0.6);
         self.particles.push(particle);
     }
-    pub(super) fn particle_sprite(&self, state: BlockStateId, pos: [i32; 3]) -> Option<(String, u32)> {
+    pub(super) fn particle_sprite(
+        &self,
+        state: BlockStateId,
+        pos: [i32; 3],
+    ) -> Option<(String, u32)> {
         let sprite = Self::block_particle_sprite(&self.pack, state)?;
         let chunks = &self.world.chunks;
         let (cx, cz) = (pos[0] >> 4, pos[2] >> 4);

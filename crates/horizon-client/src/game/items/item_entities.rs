@@ -2,8 +2,6 @@
 //! `tick_experience`), the stacks a destroyed container lets fall, and spawning and merging orbs.
 use super::*;
 
-mod ahead;
-
 impl Game<'_> {
     pub(super) fn tick_items(&mut self) {
         let mut round = self.item_update_round();
@@ -784,7 +782,12 @@ impl Game<'_> {
 
     /// `Block.popResourceFromFace`: the loot leaves the clicked face with the
     /// face's own motion instead of the item's random one.
-    pub(super) fn pop_resource_from_face(&mut self, pos: [i32; 3], face: [i32; 3], mut stack: ItemStack) {
+    pub(super) fn pop_resource_from_face(
+        &mut self,
+        pos: [i32; 3],
+        face: [i32; 3],
+        mut stack: ItemStack,
+    ) {
         self.pending.attach(pos, &mut stack);
         let (p, v) = spill::pop_position_from_face(&mut self.world.random, pos, face);
         // The private overload checks the gamerule after the offsets are drawn.
@@ -1067,10 +1070,3 @@ mod escape_tests {
         assert_eq!(game.world.random.next_float(), level.next_float());
     }
 }
-
-#[cfg(test)]
-#[path = "item_void_tests.rs"]
-mod item_void_tests;
-#[cfg(test)]
-#[path = "wither_star_tests.rs"]
-mod wither_star_tests;

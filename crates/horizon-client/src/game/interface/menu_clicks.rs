@@ -109,7 +109,10 @@ impl Game<'_> {
         }
     }
     /// Several clicks on one menu instance (a quick craft drag is three).
-    pub(super) fn menu_ops(&mut self, ops: &[(Option<usize>, i32, horizon_client::menu::Input)]) -> bool {
+    pub(super) fn menu_ops(
+        &mut self,
+        ops: &[(Option<usize>, i32, horizon_client::menu::Input)],
+    ) -> bool {
         use horizon_client::menu::Input;
         // BundleMouseActions.onSlotClicked: a Shift click or a swap clears the bundle's selection.
         for &(slot, _, input) in ops {

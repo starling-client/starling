@@ -2178,7 +2178,11 @@ mod tests {
 
 impl Game<'_> {
     /// PortalShape: an obsidian frame around 2..=21 by 3..=21 empty blocks.
-    pub(super) fn portal_shape(&self, start: [i32; 3], x_axis: bool) -> Option<([i32; 3], i32, i32)> {
+    pub(super) fn portal_shape(
+        &self,
+        start: [i32; 3],
+        x_axis: bool,
+    ) -> Option<([i32; 3], i32, i32)> {
         let name = |p: [i32; 3]| {
             self.res
                 .facts()

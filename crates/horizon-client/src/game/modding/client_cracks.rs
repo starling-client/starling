@@ -2,7 +2,6 @@
 use super::Game;
 
 impl Game<'_> {
-
     pub(super) fn expire_client_cracks(&mut self) {
         let now = self.world.game_time;
         self.destroying

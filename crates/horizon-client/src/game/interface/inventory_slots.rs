@@ -6,7 +6,6 @@ use super::*;
 thread_local! { pub(in crate::game) static SLOT_POSITIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
 
 impl Game<'_> {
-
     pub(super) fn draw_item(&self, batch: &mut HudBatch, stack: &ItemStack, x: f32, y: f32) {
         // `GuiGraphics.renderItem`: the resolved item model (tints, foil and
         // special renderers included), then the decorations.

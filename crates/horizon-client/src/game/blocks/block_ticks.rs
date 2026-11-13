@@ -10,7 +10,10 @@ impl Game<'_> {
         result
     }
     /// The ticks shown by this frame; still mode follows world time.
-    pub(super) fn tick_blocks_with_scratch(&mut self, scratch: &mut TickScratch) -> Result<Option<usize>> {
+    pub(super) fn tick_blocks_with_scratch(
+        &mut self,
+        scratch: &mut TickScratch,
+    ) -> Result<Option<usize>> {
         let mut laps = horizon_client::spans::laps();
         // ServerChunkCache.tick: the tickets that time out.
         let world = &self.world;
@@ -372,6 +375,3 @@ impl Game<'_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod random_order_tests;

@@ -3496,10 +3496,6 @@ fn camera_rotation(
     )
 }
 impl Game<'_> {
-
-
-
-
     /// `Level.canHaveWeather`, from the level's dimension type (sky light, no
     /// ceiling) and the End, which vanilla names by id. Every rain, thunder
     /// and lightning rule asks this, never the dimension's id.
@@ -8713,7 +8709,6 @@ impl Game<'_> {
         }
     }
 
-
     /// The mob hit along the view, the distance to it and the point the ray
     /// met its box at, measured from the mob's feet (`EntityHitResult
     /// .getLocation() - entity.position()`, the interact packet's location).
@@ -11624,7 +11619,6 @@ impl Game<'_> {
         self.see_through_vertices = see_through;
         result
     }
-
 }
 /// `computeNextAutosaveInterval`'s arithmetic: `Math.max(100, (int)(rate * 300.0F))`.
 fn autosave_interval(rate: f32) -> i64 {
@@ -12340,12 +12334,6 @@ impl<'a> Game<'a> {
     }
 }
 
-
-
-
-
-
-
 /// `key.hotbar.1` to `key.hotbar.9` in a menu.
 const HOTBAR_DIGITS: [KeyCode; 9] = [
     KeyCode::Digit1,
@@ -12763,8 +12751,6 @@ fn hwnd(window: &Window) -> Option<isize> {
         Err(_) => None,
     }
 }
-
-
 
 pub use launch_api::{UsageError, exit_code};
 
@@ -13384,10 +13370,7 @@ mod escape_tests {
     use super::game_tests::tests::server_game;
     use horizon_client::items::ItemStack;
     use horizon_core::random::RandomSource;
-
 }
-
-
 
 impl Game<'_> {
     fn presence_status(&self) -> horizon_client::social::PresenceStatus {

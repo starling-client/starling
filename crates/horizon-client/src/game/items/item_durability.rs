@@ -107,7 +107,11 @@ impl Game<'_> {
         }
     }
     /// `Player.hurtArmor`: every armor slot wears.
-    pub(super) fn hurt_armor(&mut self, source: horizon_world::damage_source::DamageTypeId, damage: f32) {
+    pub(super) fn hurt_armor(
+        &mut self,
+        source: horizon_world::damage_source::DamageTypeId,
+        damage: f32,
+    ) {
         self.hurt_equipment(source, damage, &[3, 2, 1, 0]);
     }
     /// `LivingEntity.doHurtEquipment` of the `slots` of `armor`: each worn piece that

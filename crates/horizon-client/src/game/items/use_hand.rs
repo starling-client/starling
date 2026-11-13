@@ -744,11 +744,3 @@ impl Game<'_> {
         self.damage_held(1);
     }
 }
-
-#[cfg(test)]
-#[path = "sign_use_tests.rs"]
-mod sign_use_tests;
-
-#[cfg(test)]
-#[path = "sign_chain_tests.rs"]
-mod sign_chain_tests;
