@@ -212,11 +212,12 @@ impl Game<'_> {
     /// `Player.attack` on a mob: the damage, knockback, sweep, particles and
     /// sounds.
     pub(super) fn attack_mob(&mut self, index: usize) {
-        let _attacker = self.knockback_scope(self.player.as_ref().map_or(0, |p| p.entity_id));
+        let attack = self.attack_of(self.player.as_ref().map_or(0, |p| p.entity_id));
         let target_kind = self.mobs[index].kind.id.clone();
         let target_kind = format!("minecraft:{}", target_kind.trim_start_matches("minecraft:"));
-        let (amount, scale, crit, magic) = self.melee_damage(&target_kind, true);
-        let sweep = self.sweep_attack_position(scale, crit);
+        let (amount, scale, crit, magic) =
+            self.melee_damage(&target_kind, true, Some(self.mobs[index].id));
+        let sweep = self.sweep_attack_position(scale, crit, &target_kind);
         let (knockback, knockback_attack) = self.extra_knockback(&target_kind, scale);
         self.attack_ticks = 0;
         let player = self.player.as_ref();
@@ -275,19 +276,21 @@ impl Game<'_> {
                     m.velocity = Vec3::new(x, y, z);
                     m.needs_sync = true;
                 } else {
-                    self.mobs[index].knockback_effect(
+                    let level = crate::game::entity::damage_level_of!(self, &attack);
+                    self.mobs[index].knockback_full(
+                        level,
                         f64::from(knockback),
                         xd,
                         zd,
                         &source,
                         amount,
+                        true,
                     );
                 }
                 self.stop_sprint_after_extra_knockback();
             }
             let mob = &self.mobs[index];
-            // Player.damageStatsAndHearts: the damage the hit actually did.
-            let actual = old_health - mob.health;
+            let actual = old_health - mob.health; // Player.damageStatsAndHearts
             // Player.attack: crit emitter and damage indicator hearts.
             let (feet, width, height) = (
                 [mob.position.x, mob.position.y, mob.position.z],
@@ -339,8 +342,7 @@ impl Game<'_> {
                     randomization: 0,
                 });
             }
-            self.last_hurt_by_player
-                .insert(self.mobs[index].id, self.lan_acting);
+            self.remember_mob_player_credit(self.mobs[index].id);
             let sound = if crit {
                 "minecraft:entity.player.attack.crit"
             } else if scale > 0.9 {
@@ -348,14 +350,16 @@ impl Game<'_> {
             } else {
                 "minecraft:entity.player.attack.weak"
             };
-            // Player.playServerSideSound: at the player.
+            // Player.playServerSideSound: at the player. A critical hit a mod
+            // let sweep has both sounds (attackVisualEffects).
             if let Some(at) = sweep {
                 let target = (
                     self.mobs[index].bounds(),
                     mace::Spared::Mob(self.mobs[index].id),
                 );
                 self.sweep_attack(at, from, Some(target), scale);
-            } else {
+            }
+            if crit || sweep.is_none() {
                 self.audio.play(sound, from, 1.0, 1.0);
             }
             // The hurt or death sound the mob raised (getHurtSound / getDeathSound,
@@ -401,7 +405,36 @@ impl Game<'_> {
         &mut self,
         target_kind: &str,
         living: bool,
+        victim: Option<u32>,
     ) -> (f32, f32, bool, bool) {
-        self.melee_damage_with_admission(target_kind, living).0
+        if self.legacy_rules() {
+            return self.legacy_melee_damage(target_kind, living);
+        }
+        let hand_damage = self.attack_damage();
+        // Riptide's spin replaces the attack damage attribute.
+        let spin = self.player.as_ref().map_or(0.0, |p| p.auto_spin_attack_dmg);
+        let damage = if spin > 0.0 { spin } else { hand_damage };
+        let scale = self.attack_strength_scale();
+        // getEnchantedDamage(target, damage, source) - damage, taken before the
+        // attack strength scales the base damage.
+        let enchant_bonus = self.enchanted_damage(target_kind, damage, victim) - damage;
+        let mut amount = damage * (0.2 + scale * scale * 0.8);
+        // Player.attack decides the critical hit only for a hit with base or
+        // enchantment damage: checked before the mace's smash bonus is added.
+        let damaging = amount > 0.0 || enchant_bonus * scale > 0.0;
+        // Item.getAttackDamageBonus (a mace's smash), before the critical hit.
+        amount += self.smash_damage_bonus(target_kind);
+        let vanilla_crit = living && self.critical_attack(scale);
+        let mut crit = vanilla_crit;
+        let mut multiplier = if vanilla_crit { 1.5 } else { 1.0 };
+        if living && damaging {
+            self.native_critical_hit(target_kind, vanilla_crit, &mut crit, &mut multiplier);
+        }
+        if crit {
+            amount *= multiplier;
+        }
+        // Enchantment damage (sharpness, smite, bane) scaled by the attack strength.
+        amount += enchant_bonus * scale;
+        (amount, scale, crit, enchant_bonus * scale > 0.0)
     }
 }
