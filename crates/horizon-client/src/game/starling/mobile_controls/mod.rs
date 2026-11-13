@@ -348,15 +348,18 @@ impl Game<'_> {
             return;
         }
         let tc = &self.mobile.controls;
-        tc.draw(b, &self.gui.atlas);
-        ui::draw_goy_hud(
-            tc,
-            b,
-            &self.gui.atlas,
-            self.pad_in_menu(),
-            self.mobile.ui.virtual_mouse,
-        );
+        // Starling: while editing, only Horizon Android's editor draws. `TouchControls::draw`
+        // would add Horizon's own editor (Done, Grid, Add buttons...) under its canvas, seen
+        // through it but never reached by a touch.
         if tc.editor.is_none() {
+            tc.draw(b, &self.gui.atlas);
+            ui::draw_goy_hud(
+                tc,
+                b,
+                &self.gui.atlas,
+                self.pad_in_menu(),
+                self.mobile.ui.virtual_mouse,
+            );
             // Out of the camera cutout's strips with the controls (#166), the hub with the keys
             // beside it; `android_aux_touch` and `floating_menu_touch` read them there.
             self.draw_clear_of_cutout(b, |b, _| {
