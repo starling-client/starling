@@ -11474,38 +11474,6 @@ impl Game<'_> {
             .collect()
     }
 
-    fn sky_darken(&self) -> i32 {
-        if self.dim == Dim::Nether {
-            return 11;
-        }
-        if self.dim == Dim::End {
-            let sky = self
-                .res
-                .end_environment()
-                .sample(&horizon_client::environment::Sample {
-                    day_time: self.world.day_time,
-                    ..Default::default()
-                });
-            // Level.updateSkyBrightness truncates (`(int)`), see `environment::sky_darken`.
-            return (15.0 - 15.0 * sky.sky_light_level) as i32;
-        }
-        let (rain, thunder) = self.weather_levels(1.0);
-        // Sampled once per (dimension, time, weather): every mob asks each tick.
-        let key = (
-            self.dim,
-            self.world.day_time,
-            rain.to_bits(),
-            thunder.to_bits(),
-        );
-        if let Some((k, darken)) = self.sky_darken_memo.get()
-            && k == key
-        {
-            return darken;
-        }
-        let darken = self.sky_darken_in(&self.world, self.dim);
-        self.sky_darken_memo.set(Some((key, darken)));
-        darken
-    }
     /// The mob hit along the view, the distance to it and the point the ray
     /// met its box at, measured from the mob's feet (`EntityHitResult
     /// .getLocation() - entity.position()`, the interact packet's location).
@@ -18407,32 +18375,8 @@ impl Game<'_> {
         }
         hit.beside()
     }
-    fn raining_at(&self, p: BlockPos) -> bool {
-        self.weather_levels(1.0).0 > 0.2
-            && self.world.light(p.x, p.y, p.z) >> 4 == 15
-            && self.rain_height(p.x, p.z) <= p.y
-            && self.precipitation(p.x, p.y, p.z) == Some(false)
-    }
-    fn rain_height(&self, x: i32, z: i32) -> i32 {
-        render_tick::motion_blocking_height(&self.world, &self.pack.assets.properties, x, z)
-    }
-    fn tick_weather_effects(&mut self) {
-        if self.flash > 0 {
-            self.flash -= 1;
-        }
-        // The rain sounds come with the rain splashes (`tick_particles`).
-    }
 }
 
-impl Game<'_> {
-    fn precipitation(&self, x: i32, y: i32, z: i32) -> Option<bool> {
-        let chunk = self.world.chunks.get(&(x >> 4, z >> 4))?;
-        self.res
-            .biomes()
-            .get(chunk.biome(x, y, z))
-            .snows_at(x, y, z)
-    }
-}
 
 impl Game<'_> {
     fn presence_status(&self) -> horizon_client::social::PresenceStatus {
