@@ -702,25 +702,6 @@ impl Game<'_> {
         }
         true
     }
-    /// `CrafterBlockEntity.setSlotState`: the menu's slot states land on the
-    /// block entity, whose `setChanged` marks the chunk for saving.
-    pub(super) fn apply_crafter_slot_states(&mut self, menu: &horizon_client::menu::Menu) {
-        let Some(key) = self.container else {
-            return;
-        };
-        let Some(BlockEntity::Crafter(c)) = self.world.block_entities.get_mut(&key) else {
-            return;
-        };
-        let mut changed = false;
-        for (i, d) in c.disabled.iter_mut().enumerate() {
-            let disabled = menu.data[i] == 1;
-            changed |= *d != disabled;
-            *d = disabled;
-        }
-        if changed {
-            self.container_changed(key);
-        }
-    }
     pub(super) fn click_inventory(&mut self, right: bool) {
         if self.mod_browser_press(right) || self.mount_click(right) {
             return;

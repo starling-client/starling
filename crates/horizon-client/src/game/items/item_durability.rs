@@ -228,45 +228,6 @@ impl Game<'_> {
             self.player_equipment_broke(break_slot, &broken);
         }
     }
-    pub(super) fn damage_held_with_max(&mut self, amount: u32, max: u32) {
-        if self.creative {
-            return;
-        }
-        let amount = match self.held().cloned() {
-            Some(held) => self.wear(&held, amount),
-            None => amount,
-        };
-        self.apply_held_damage(
-            amount,
-            max,
-            horizon_core::equipment_slot::EquipmentSlot::MainHand,
-        );
-    }
-    /// `ItemStack.hurtAndBreak`: apply nonzero processed wear to the acting hand.
-    pub(super) fn apply_held_damage(
-        &mut self,
-        amount: u32,
-        max: u32,
-        break_slot: horizon_core::equipment_slot::EquipmentSlot,
-    ) {
-        // ItemStack.hurtAndBreak does not apply damage or break a stack when
-        // processDurabilityChange leaves no wear (including Unbreaking).
-        if amount == 0 {
-            return;
-        }
-        let cell = self.held_mut();
-        if let Some(stack) = cell.as_mut()
-            && max > 0
-        {
-            stack.damage += amount;
-            if stack.damage >= max {
-                let gone = stack.clone();
-                *cell = None;
-                // LivingEntity.onEquippedItemBroken: the sound and the crumbs.
-                self.player_equipment_broke(break_slot, &gone);
-            }
-        }
-    }
     /// `ItemStack.hurtWithoutBreaking`: Unbreaking applies, but the stack stops at
     /// one point of durability left instead of breaking.
     pub(super) fn hurt_held_without_breaking(&mut self, amount: u32) {

@@ -41,22 +41,6 @@ impl Game<'_> {
         broken
     }
 
-    /// `Block.popResource` for a player's break, or into `break_collect`
-    /// when a mod takes the drops to the player's inventory: the stack still
-    /// gets what the block entity copies into it, and nothing is kept where
-    /// blocks don't drop.
-    pub(super) fn pop_break_drop(&mut self, pos: [i32; 3], mut stack: ItemStack) {
-        if self.break_collect.is_none() {
-            return self.pop_resource(pos, stack);
-        }
-        self.pending.attach(pos, &mut stack);
-        if self.ui.rules.bool("block_drops")
-            && let Some(kept) = self.break_collect.as_mut()
-        {
-            kept.push(stack);
-        }
-    }
-
     /// `BundleItem.dropContent`: `removeOneItemFromBundle` and `Player.drop`,
     /// then the drop sound and the used statistic.
     pub(super) fn drop_bundle_content(&mut self, slot: usize) {

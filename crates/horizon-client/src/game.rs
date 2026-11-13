@@ -12575,6 +12575,52 @@ fn test_server_load() -> horizon_world::native_load_context::LoadContext {
 }
 
 #[cfg(test)]
+pub(crate) fn in_own_process(name: &str, body: impl FnOnce()) {
+    const OWN_PROCESS: &str = "HORIZON_TEST_OWN_PROCESS";
+    if std::env::var_os(OWN_PROCESS).is_some_and(|v| v == name) {
+        return body();
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([name, "--exact", "--include-ignored", "--test-threads=1"])
+        .env(OWN_PROCESS, name)
+        .output()
+        .unwrap();
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && report.contains("test result: ok. 1 passed;"),
+        "{name} failed in its own process:\n{report}"
+    );
+}
+
+impl Game<'_> {
+    fn presence_status(&self) -> horizon_client::social::PresenceStatus {
+        use horizon_client::social::PresenceStatus;
+        if self.integrated.is_some() {
+            // `getSingleplayerServer().getMultiplayerScope()`: LAN while the world is
+            // opened to LAN (a pause-menu Open to LAN or an invite code).
+            if self.lan.is_some() {
+                PresenceStatus::PlayingHostedServer
+            } else {
+                PresenceStatus::PlayingOffline
+            }
+        } else if self.remote.is_some() {
+            // `getCurrentServer().isRealm()`: the connection came from Realms.
+            if self.realm_session {
+                PresenceStatus::PlayingRealms
+            } else {
+                PresenceStatus::PlayingServer
+            }
+        } else {
+            PresenceStatus::Online
+        }
+    }
+}
+
+#[cfg(test)]
 mod nested_orb_spawn_tests {
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
@@ -12616,52 +12662,5 @@ mod nested_orb_spawn_tests {
                 expected
             );
         });
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn in_own_process(name: &str, body: impl FnOnce()) {
-    const OWN_PROCESS: &str = "HORIZON_TEST_OWN_PROCESS";
-    if std::env::var_os(OWN_PROCESS).is_some_and(|v| v == name) {
-        return body();
-    }
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([name, "--exact", "--include-ignored", "--test-threads=1"])
-        .env(OWN_PROCESS, name)
-        .output()
-        .unwrap();
-    let report = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        out.status.success() && report.contains("test result: ok. 1 passed;"),
-        "{name} failed in its own process:\n{report}"
-    );
-}
-
-
-impl Game<'_> {
-    fn presence_status(&self) -> horizon_client::social::PresenceStatus {
-        use horizon_client::social::PresenceStatus;
-        if self.integrated.is_some() {
-            // `getSingleplayerServer().getMultiplayerScope()`: LAN while the world is
-            // opened to LAN (a pause-menu Open to LAN or an invite code).
-            if self.lan.is_some() {
-                PresenceStatus::PlayingHostedServer
-            } else {
-                PresenceStatus::PlayingOffline
-            }
-        } else if self.remote.is_some() {
-            // `getCurrentServer().isRealm()`: the connection came from Realms.
-            if self.realm_session {
-                PresenceStatus::PlayingRealms
-            } else {
-                PresenceStatus::PlayingServer
-            }
-        } else {
-            PresenceStatus::Online
-        }
     }
 }

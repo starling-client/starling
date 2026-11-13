@@ -52,14 +52,6 @@ impl Game<'_> {
             .any(|s| immune.is_some_and(|t| t.contains(&*s.item)))
     }
 
-    /// `PowderSnowBlock.canEntityWalkOnPowderSnow`'s boots half: leather boots
-    /// on the feet.
-    pub(crate) fn wears_leather_boots(&self) -> bool {
-        self.armor[3]
-            .as_ref()
-            .is_some_and(|s| &*s.item == "minecraft:leather_boots")
-    }
-
     pub(super) fn held_slot(&self) -> usize {
         match self.hand {
             Hand::Main => self.selected,
@@ -79,16 +71,6 @@ impl Game<'_> {
         self.hand = prior;
         out
     }
-
-}
-
-/// The item of the stack in `selected` (`Player.tick`'s main-hand item), borrowed: a guest's
-/// tick compares it with the last one and clones it only when it changed.
-pub(super) fn held_attack_item(
-    inventory: &[Option<ItemStack>],
-    selected: usize,
-) -> Option<&Arc<str>> {
-    inventory.get(selected)?.as_ref().map(|s| &s.item)
 }
 
 #[cfg(test)]
@@ -102,18 +84,5 @@ mod tests {
             damage: 0,
             extra: None,
         }
-    }
-
-    #[test]
-    fn held_attack_item_matches_the_cloned_stack() {
-        let mut inventory: Vec<Option<ItemStack>> = vec![None; 36];
-        inventory[0] = Some(stack("minecraft:stone"));
-        inventory[3] = Some(stack("minecraft:diamond_sword"));
-        for selected in [0, 1, 3, 35, 36, 1000] {
-            // The clone the tick used to make, as the reference.
-            let cloned = inventory.get(selected).cloned().flatten().map(|s| s.item);
-            assert_eq!(held_attack_item(&inventory, selected).cloned(), cloned);
-        }
-        assert_eq!(held_attack_item(&[], 0), None);
     }
 }
