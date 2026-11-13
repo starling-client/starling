@@ -266,7 +266,7 @@ impl Game<'_> {
         self.apply_held_damage(
             amount,
             max,
-            horizon_world::player_inventory::EquipmentSlot::MainHand,
+            horizon_core::equipment_slot::EquipmentSlot::MainHand,
         );
     }
     /// `ItemStack.hurtAndBreak`: apply nonzero processed wear to the acting hand.
@@ -274,7 +274,7 @@ impl Game<'_> {
         &mut self,
         amount: u32,
         max: u32,
-        break_slot: horizon_world::player_inventory::EquipmentSlot,
+        break_slot: horizon_core::equipment_slot::EquipmentSlot,
     ) {
         // ItemStack.hurtAndBreak does not apply damage or break a stack when
         // processDurabilityChange leaves no wear (including Unbreaking).

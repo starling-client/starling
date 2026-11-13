@@ -1581,6 +1581,7 @@ impl Game<'_> {}
 mod tests {
     use super::super::server_travel::TravelCause;
     use super::*;
+use horizon_world::level::flags as level_flags;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicU32, Ordering},

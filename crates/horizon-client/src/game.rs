@@ -12641,12 +12641,6 @@ pub(crate) fn in_own_process(name: &str, body: impl FnOnce()) {
     );
 }
 
-#[cfg(test)]
-mod escape_tests {
-    use super::game_tests::tests::server_game;
-    use horizon_client::items::ItemStack;
-    use horizon_core::random::RandomSource;
-}
 
 impl Game<'_> {
     fn presence_status(&self) -> horizon_client::social::PresenceStatus {

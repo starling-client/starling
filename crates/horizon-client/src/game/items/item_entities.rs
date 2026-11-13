@@ -933,7 +933,7 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod destroyed_contents_tests {
-    use super::super::native_machines::tests::server_game;
+    use crate::native_machines::tests::server_game;
     use super::*;
     use horizon_client::items::ItemStack;
     use horizon_core::random::RandomSource;
@@ -1027,7 +1027,7 @@ mod destroyed_contents_tests {
 
 #[cfg(test)]
 mod escape_tests {
-    use super::super::native_machines::tests::server_game;
+    use crate::native_machines::tests::server_game;
     use horizon_client::chunk::Chunk;
     use horizon_client::items::ItemStack;
     use horizon_core::random::RandomSource;

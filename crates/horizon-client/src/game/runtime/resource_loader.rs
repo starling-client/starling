@@ -7,23 +7,23 @@ use super::*;
 /// CPU-only startup data, owned by one loader generation. No file reads or
 /// model baking are needed when the event loop installs this bundle.
 pub(super) struct GameCpuResources {
-    painting_variants: paintings::PaintingVariants,
-    frame_model: frames::FrameModel,
-    glow_frame_model: frames::FrameModel,
-    map_frame_model: frames::FrameModel,
-    glow_map_frame_model: frames::FrameModel,
-    armor_stand_assets: armor_stands::ArmorStandAssets,
-    waypoint_styles: horizon_client::locator_bar::WaypointStyles,
-    boat_models: boats::BoatModels,
-    cart_models: minecarts::CartModels,
-    crystal_model: Option<horizon_client::mobs::Part>,
-    cushion_model: Option<horizon_client::mobs::Part>,
-    dragon_model: Option<horizon_client::mobs::Part>,
-    arrow_model: Option<horizon_client::mobs::Part>,
-    bee_stinger_model: Option<horizon_client::mobs::Part>,
-    trident_model: Option<horizon_client::mobs::Part>,
-    entity_models: EntityModels,
-    creative_screen: Creative,
+    pub(super) painting_variants: paintings::PaintingVariants,
+    pub(super) frame_model: frames::FrameModel,
+    pub(super) glow_frame_model: frames::FrameModel,
+    pub(super) map_frame_model: frames::FrameModel,
+    pub(super) glow_map_frame_model: frames::FrameModel,
+    pub(super) armor_stand_assets: armor_stands::ArmorStandAssets,
+    pub(super) waypoint_styles: horizon_client::locator_bar::WaypointStyles,
+    pub(super) boat_models: boats::BoatModels,
+    pub(super) cart_models: minecarts::CartModels,
+    pub(super) crystal_model: Option<horizon_client::mobs::Part>,
+    pub(super) cushion_model: Option<horizon_client::mobs::Part>,
+    pub(super) dragon_model: Option<horizon_client::mobs::Part>,
+    pub(super) arrow_model: Option<horizon_client::mobs::Part>,
+    pub(super) bee_stinger_model: Option<horizon_client::mobs::Part>,
+    pub(super) trident_model: Option<horizon_client::mobs::Part>,
+    pub(super) entity_models: EntityModels,
+    pub(super) creative_screen: Creative,
 }
 
 /// Baked layers of entities that may first show up deep into a session. They come from the
@@ -32,17 +32,17 @@ pub(super) struct GameCpuResources {
 #[derive(Default)]
 pub(super) struct EntityModels {
     /// LeashKnotModel.
-    leash_knot: Option<horizon_client::mobs::Part>,
+    pub(super) leash_knot: Option<horizon_client::mobs::Part>,
     /// WindChargeModel.
-    wind_charge: Option<horizon_client::mobs::Part>,
+    pub(super) wind_charge: Option<horizon_client::mobs::Part>,
     /// ShulkerBulletModel.
-    shulker_bullet: Option<horizon_client::mobs::Part>,
+    pub(super) shulker_bullet: Option<horizon_client::mobs::Part>,
     /// SkullModel of the wither skull.
-    wither_skull: Option<horizon_client::mobs::Part>,
+    pub(super) wither_skull: Option<horizon_client::mobs::Part>,
     /// EvokerFangsModel.
-    evoker_fangs: Option<Arc<horizon_client::mobs::Part>>,
+    pub(super) evoker_fangs: Option<Arc<horizon_client::mobs::Part>>,
     /// BannerModel's pole and flag (a raid captain's banner).
-    banner: Option<(horizon_client::mobs::Part, horizon_client::mobs::Part)>,
+    pub(super) banner: Option<(horizon_client::mobs::Part, horizon_client::mobs::Part)>,
 }
 
 impl EntityModels {
@@ -163,22 +163,22 @@ impl GameCpuResources {
 
 /// The data the background loader produces for `Game::new`.
 pub(super) struct Loaded {
-    game_cpu: Option<GameCpuResources>,
+    pub(super) game_cpu: Option<GameCpuResources>,
     /// The one parsed `entity-models.json`, for the handoff `Game::new` does
     /// itself on the synchronous launch.
-    entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
-    renderer_cpu: Option<horizon_client::gfx::PreparedTextures>,
-    root: PathBuf,
-    pack_error: Option<String>,
-    resources: Arc<Resources>,
-    rest_loader: Option<WorldRestLoader>,
+    pub(super) entity_models: Option<Arc<horizon_client::mobs::EntityModelDocument>>,
+    pub(super) renderer_cpu: Option<horizon_client::gfx::PreparedTextures>,
+    pub(super) root: PathBuf,
+    pub(super) pack_error: Option<String>,
+    pub(super) resources: Arc<Resources>,
+    pub(super) rest_loader: Option<WorldRestLoader>,
     /// The client reload listeners' prepared applies, staged by the loader
     /// thread; `start_game` runs them once the game exists.
-    client_applies: Vec<client_reload::PreparedClientReload>,
-    pack: PackResources,
+    pub(super) client_applies: Vec<client_reload::PreparedClientReload>,
+    pub(super) pack: PackResources,
     /// The menu bundle, for the synchronous launch; the loading screen receives
     /// it earlier through its own channel.
-    gui: Option<UiResources>,
+    pub(super) gui: Option<UiResources>,
 }
 
 /// What the background loader publishes: the menu bundle as soon as it is
@@ -208,8 +208,8 @@ pub(super) enum PendingWorldEntry {
 }
 
 pub(super) struct WorldRestLoader {
-    progress: Progress,
-    handle: JoinHandle<std::result::Result<(), String>>,
+    pub(super) progress: Progress,
+    pub(super) handle: JoinHandle<std::result::Result<(), String>>,
 }
 
 impl WorldRestLoader {
