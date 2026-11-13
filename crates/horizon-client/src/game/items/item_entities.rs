@@ -905,11 +905,9 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod escape_tests {
-    use crate::native_machines::tests::server_game;
-    use horizon_client::chunk::Chunk;
+    use super::game_tests::tests::server_game;
     use horizon_client::items::ItemStack;
     use horizon_core::random::RandomSource;
-    use std::sync::Arc;
 
     /// `Entity.moveTowardsClosestSpace` uses the item's own random, never the
     /// level's random. Seeded Java values pin vanilla's float arithmetic (#13043).
