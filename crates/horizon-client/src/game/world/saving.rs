@@ -451,3 +451,29 @@ fn log_when_written(saves: Vec<Arc<SaveDir>>, started: Instant) {
         log::warn!("Horizon: could not wait for the save: {e}");
     }
 }
+
+impl Game<'_> {
+    /// Save the level in place: its changed chunks, its entities and its raids.
+    pub(super) fn save_level(&mut self, wait: bool) -> Result<()> {
+        self.save_border();
+        self.save.save_attachments(&self.world.attachments)?;
+        self.save
+            .save_chunk_tickets(&self.streaming.forced, self.tickets.portal_tickets())?;
+        self.streaming.save(&mut self.world, wait);
+        let now = Instant::now();
+        let keys: Vec<_> = self.world.modified.drain().collect();
+        let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
+        self.save
+            .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))?;
+        // Prepare entities while the chunk writer runs, then use one barrier.
+        if !wait {
+            self.world.modified.autosaved(&keys, now);
+        }
+        self.save_entities(false)?;
+        self.save_raids();
+        if wait {
+            self.save.flush()?;
+        }
+        Ok(())
+    }
+}
