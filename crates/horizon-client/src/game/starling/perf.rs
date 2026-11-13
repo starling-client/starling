@@ -24,6 +24,11 @@ pub(super) struct Perf {
 }
 
 impl Game<'_> {
+    /// The last system sample (memory, temperatures, throttling), taken on the sampler's own
+    /// thread: nothing else of the Stats overlay is gathered.
+    pub(super) fn system_sample(&self) -> horizon_client::system_stats::SystemSample {
+        self.stats_overlay.system.latest()
+    }
     pub(super) fn stats_view(&mut self) -> StatsView {
         let now = Instant::now();
         if let Some(r) = &self.renderer
