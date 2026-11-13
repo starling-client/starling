@@ -1229,6 +1229,8 @@
   "starling.perf.sky": "Sky: %s",
   "starling.perf.occlusion": "Occlusion culling: %s",
   "starling.perf.faces": "Skip hidden faces: %s",
+  "starling.perf.transparency": "Improved transparency: %s",
+  "starling.perf.transparency_off_short": "no improved transparency",
   "starling.perf.auto": "Auto (%s)",
   "starling.perf.on": "On",
   "starling.perf.off": "Off",
