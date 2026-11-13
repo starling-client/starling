@@ -830,37 +830,7 @@ impl Game<'_> {
         // The mouse finger stays the mouse until it lifts, even if the screen closed under it.
         if !self.touch_playing() || self.touch.pointer.owns(t.id) {
             let slop = touch::slop(layout.width, layout.height);
-            // A finger on a scrollbar drags it, as the mouse would. One on an option's button
-            // scrolls the list whichever way it moves: only a tap presses the button.
-            if t.phase == TouchPhase::Started && self.on_scrollbar(p) {
-                self.touch.pointer.prefer_drag();
-            } else if t.phase == TouchPhase::Started
-                && !self.touch.pointer.down()
-                && self.on_options_button(p)
-            {
-                self.touch.pointer.prefer_scroll();
-            } else if t.phase == TouchPhase::Started
-                && !self.touch.pointer.down()
-                && self.on_options_slider(p)
-            {
-                self.touch.pointer.prefer_slider();
-            }
-            // Lists follow the finger one to one at this GUI scale.
-            let gui_scale = HudBatch::new(
-                self.touch_size(),
-                horizon_client::hud::GuiScale {
-                    requested: 0,
-                    unicode: false,
-                },
-            )
-            .scale;
-            self.touch
-                .pointer
-                .set_gui_scale(gui_scale, self.settings.mouse_wheel_sensitivity);
-            for mouse in self.touch.pointer.event(t, slop, Instant::now()) {
-                self.handle_window_event(event_loop, id, mouse, InputOrigin::User);
-            }
-            self.keyboard_after_tap(t, p);
+            self.touch_menu_pointer(event_loop, id, t, p, slop);
             return true;
         }
         self.touch.controls.three_fingers =
@@ -871,6 +841,40 @@ impl Game<'_> {
             .event(&layout, t.id, t.phase, p, Instant::now());
         self.touch_apply(actions);
         true
+    }
+
+    #[cfg(target_os = "android")]
+    pub(super) fn touch_menu_owns(&self, id: u64) -> bool {
+        self.touch.pointer.owns(id)
+    }
+
+    pub(super) fn touch_menu_pointer(
+        &mut self,
+        events: &dyn EventLoopCtl,
+        id: WindowId,
+        t: &winit::event::Touch,
+        p: [f32; 2],
+        slop: f32,
+    ) {
+        // A scrollbar drags like a mouse. A list button only activates on a tap,
+        // and a list slider only takes a tap or a clearly horizontal drag.
+        if t.phase == TouchPhase::Started && !self.touch.pointer.down() {
+            if self.on_scrollbar(p) {
+                self.touch.pointer.prefer_drag();
+            } else if self.on_options_button(p) {
+                self.touch.pointer.prefer_scroll();
+            } else if self.on_options_slider(p) {
+                self.touch.pointer.prefer_slider();
+            }
+        }
+        let gui_scale = HudBatch::new(self.touch_size(), self.settings.gui_scale_inputs()).scale;
+        self.touch
+            .pointer
+            .set_gui_scale(gui_scale, self.settings.mouse_wheel_sensitivity);
+        for mouse in self.touch.pointer.event(t, slop, Instant::now()) {
+            self.handle_window_event(events, id, mouse, InputOrigin::User);
+        }
+        self.keyboard_after_tap(t, p);
     }
 
     /// The catalog is only on Android (`mod_catalog`): elsewhere Back has none to close.
@@ -1229,13 +1233,7 @@ impl Game<'_> {
     /// Whether a finger landing at window pixel `p` is on a scrollbar's track, which it should
     /// drag like a held mouse instead of scrolling the list.
     pub(super) fn on_scrollbar(&self, p: [f32; 2]) -> bool {
-        let batch = HudBatch::new(
-            self.touch_size(),
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
-        );
+        let batch = HudBatch::new(self.touch_size(), self.settings.gui_scale_inputs());
         let (x, y) = (p[0] / batch.scale, p[1] / batch.scale);
         // A custom button's canvas: a finger paints, it doesn't scroll.
         if self.screen == Screen::Options && self.ui.options.painting() {
@@ -1262,13 +1260,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map_or([1280, 720], |r| [r.config.width, r.config.height]);
-        let batch = HudBatch::new(
-            size,
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
-        );
+        let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
         let cursor = (p[0] / batch.scale, p[1] / batch.scale);
         self.ui
             .options
@@ -1285,13 +1277,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map_or([1280, 720], |r| [r.config.width, r.config.height]);
-        let batch = HudBatch::new(
-            size,
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
-        );
+        let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
         let cursor = (p[0] / batch.scale, p[1] / batch.scale);
         self.ui
             .options
@@ -1413,11 +1399,12 @@ impl Game<'_> {
     pub(super) fn touch_sneaking(&self) -> bool {
         #[cfg(target_os = "android")]
         if self.mobile_controls_enabled() {
-            return self
-                .mobile
-                .controls
-                .state()
-                .held(horizon_client::gamepad::Button::RightStick);
+            return self.mobile_sneak_held()
+                || self
+                    .mobile
+                    .controls
+                    .state()
+                    .held(horizon_client::gamepad::Button::RightStick);
         }
         self.touch.sneaking
     }
