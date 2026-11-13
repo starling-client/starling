@@ -22,6 +22,11 @@ brings the library here when it ends, so it is served as any other.
     GITHUB_AT_ONCE         GitHub runs at once, default 8; GITHUB_LINE, waiting here beyond them, 24
     GITHUB_BUILDS_PER_DAY  GitHub builds in any 24 hours, everyone's together, default 300
     CREDENTIALS_DIRECTORY  systemd's LoadCredential: github-token, allowed to run mod-builds' workflows
+    PERF_BYTES             how much of the test builds' performance reports stay, default 256 MiB
+
+The test builds' performance test sends its results here (POST /v1/perf): each report is kept as it
+came, one JSON line in STATE_DIRECTORY/perf/<day>.jsonl, with the time it arrived and nothing about who
+sent it (the address only counts the reports per hour, in memory).
 """
 import base64
 import calendar
@@ -92,6 +97,12 @@ GITHUB_VERSIONS = {v.strip() for v in os.environ.get("GITHUB_VERSIONS", "").spli
 NO_MACHINE = (
     "This version of Starling can't compile native mods anymore: update Starling, then compile again."
 )
+# The test builds' performance reports (`/v1/perf`): one is a few kilobytes.
+PERF_MAX_BODY = 256 << 10
+PERF_PER_HOUR = 30
+PERF_BYTES = int(os.environ.get("PERF_BYTES", str(256 << 20)))
+# Reports per address in the last hour, only here in memory.
+perf_sent = {}
 GITHUB_LOOK_SECONDS = 20
 # Asked for and no run after this, or a run this old: it isn't coming.
 GITHUB_NO_RUN_SECONDS = 15 * 60
@@ -803,6 +814,38 @@ def github_worker():
             print(f"github: {e!r}", flush=True)
 
 
+def perf_refusal(address, now):
+    """Why a performance report from `address` is refused (too many in the last hour), or None."""
+    with lock:
+        if len(perf_sent) > 10_000:
+            for key in [k for k, v in perf_sent.items() if not v or now - v[-1] >= 3600]:
+                del perf_sent[key]
+        times = [t for t in perf_sent.get(address, []) if now - t < 3600]
+        if len(times) >= PERF_PER_HOUR:
+            perf_sent[address] = times
+            return "Too many reports from here in the last hour."
+        times.append(now)
+        perf_sent[address] = times
+    return None
+
+
+def keep_perf(report, now):
+    """Keeps one performance report; False when there is no store or no room left."""
+    if not STORE:
+        return False
+    folder = os.path.join(STORE, "perf")
+    line = json.dumps({"received": int(now), "report": report}, separators=(",", ":")) + "\n"
+    with lock:
+        os.makedirs(folder, exist_ok=True)
+        used = sum(e.stat().st_size for e in os.scandir(folder) if e.is_file())
+        if used + len(line) > PERF_BYTES:
+            return False
+        day = time.strftime("%Y-%m-%d", time.gmtime(now))
+        with open(os.path.join(folder, f"{day}.jsonl"), "a", encoding="utf-8") as f:
+            f.write(line)
+    return True
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "StarlingModGateway"
     timeout = 120
@@ -824,8 +867,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with lock:
             last_activity = time.time()
 
+    def perf(self):
+        size = int(self.headers.get("Content-Length") or 0)
+        if size <= 0 or size > PERF_MAX_BODY:
+            return self.answer(413, {"error": "That report is too big."})
+        try:
+            report = json.loads(self.rfile.read(size))
+        except ValueError:
+            return self.answer(400, {"error": "That is not a report."})
+        if not isinstance(report, dict) or not isinstance(report.get("schema"), int):
+            return self.answer(400, {"error": "That is not a report."})
+        now = time.time()
+        refused = perf_refusal(self.address(), now)
+        if refused:
+            return self.answer(429, {"error": refused})
+        if not keep_perf(report, now):
+            return self.answer(507, {"error": "Reports can't be kept right now."})
+        return self.answer(200, {"ok": True})
+
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
+        if url.path == "/v1/perf":
+            return self.perf()
         if url.path != "/v1/build":
             return self.answer(404, {"error": "No such thing here."})
         size = int(self.headers.get("Content-Length") or 0)

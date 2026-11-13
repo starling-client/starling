@@ -379,6 +379,60 @@ class Stored(unittest.TestCase):
         self.assertEqual(gateway.copying, {})
 
 
+class PerfReports(unittest.TestCase):
+    """The test builds' performance reports (`/v1/perf`), through a real socket."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.gateway = load(STATE_DIRECTORY=self.folder.name)
+        self.door = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self.gateway.Handler)
+        threading.Thread(target=self.door.serve_forever, daemon=True).start()
+        self.addCleanup(self.door.server_close)
+        self.addCleanup(self.door.shutdown)
+
+    def send(self, body, address="203.0.113.7"):
+        c = http.client.HTTPConnection("127.0.0.1", self.door.server_address[1], timeout=20)
+        c.request("POST", "/v1/perf", body, {"X-Forwarded-For": address})
+        response = c.getresponse()
+        return response.status, json.loads(response.read())
+
+    def kept(self):
+        folder = Path(self.folder.name) / "perf"
+        return [json.loads(line) for f in sorted(folder.glob("*.jsonl")) for line in f.read_text().splitlines()]
+
+    def test_a_report_is_kept_without_who_sent_it(self):
+        report = {"schema": 1, "device": {"gpu": "Mali-G57"}, "setups": []}
+        self.assertEqual(self.send(json.dumps(report).encode()), (200, {"ok": True}))
+        [line] = self.kept()
+        self.assertEqual(line["report"], report)
+        self.assertIsInstance(line["received"], int)
+        self.assertNotIn("203.0.113.7", json.dumps(line))
+
+    def test_what_is_not_a_report_is_refused(self):
+        for body in (b"not json", b"[1, 2]", json.dumps({"setups": []}).encode()):
+            self.assertEqual(self.send(body)[0], 400)
+        self.assertEqual(self.send(b"x" * (self.gateway.PERF_MAX_BODY + 1))[0], 413)
+        self.assertEqual(self.kept(), [])
+
+    def test_an_address_sends_a_few_an_hour(self):
+        body = json.dumps({"schema": 1}).encode()
+        for _ in range(self.gateway.PERF_PER_HOUR):
+            self.assertEqual(self.send(body)[0], 200)
+        self.assertEqual(self.send(body)[0], 429)
+        self.assertEqual(self.send(body, "198.51.100.9")[0], 200)
+
+    def test_a_full_store_keeps_no_more(self):
+        self.gateway.PERF_BYTES = 200
+        body = json.dumps({"schema": 1, "pad": "x" * 100}).encode()
+        self.assertEqual(self.send(body)[0], 200)
+        self.assertEqual(self.send(body)[0], 507)
+        self.assertEqual(len(self.kept()), 1)
+
+    def test_without_a_store_nothing_is_kept(self):
+        self.assertFalse(load().keep_perf({"schema": 1}, 1000.0))
+
+
 class KeptAwake(unittest.TestCase):
     def test_the_machine_stays_on_until_the_time_asked(self):
         with tempfile.TemporaryDirectory() as store:
