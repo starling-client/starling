@@ -445,7 +445,7 @@ impl Game<'_> {
                 .is_none_or(|t| now.duration_since(t) >= THERMAL_EVERY)
             {
                 self.perf_lab.thermal = Some(now);
-                let system = self.stats_view().system;
+                let system = self.system_sample();
                 if let Some(s) = self
                     .perf_lab
                     .current
