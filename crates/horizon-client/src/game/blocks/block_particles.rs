@@ -115,11 +115,7 @@ impl Game<'_> {
         particle.scale(0.6);
         self.particles.push(particle);
     }
-    pub(super) fn particle_sprite(
-        &self,
-        state: BlockStateId,
-        pos: [i32; 3],
-    ) -> Option<(String, u32)> {
+    pub(super) fn particle_sprite(&self, state: BlockStateId, pos: [i32; 3]) -> Option<(String, u32)> {
         let sprite = Self::block_particle_sprite(&self.pack, state)?;
         let chunks = &self.world.chunks;
         let (cx, cz) = (pos[0] >> 4, pos[2] >> 4);
@@ -141,16 +137,20 @@ impl Game<'_> {
                 world_biomes!(self),
                 self.streaming.biome_zoom,
                 self.streaming.biome_blend,
+                self.streaming.nether_shading,
             )
             .unwrap_or(0xFFFFFF);
         Some((sprite, tint))
     }
     /// `BlockTransformer.TransformParticle.send`: its level event.
     pub(super) fn transform_particle(&mut self, particle: &str, pos: [i32; 3]) {
+        let source = self
+            .lan_acting_uuid
+            .map(horizon_world::level::LevelEventPlayer);
         match particle {
-            "scrape" => self.level_event_at(3005, pos, 0),
-            "wax_on" => self.level_event_at(3003, pos, 0),
-            "wax_off" => self.level_event_at(3004, pos, 0),
+            "scrape" => self.level_event_from(source, 3005, pos, 0),
+            "wax_on" => self.level_event_from(source, 3003, pos, 0),
+            "wax_off" => self.level_event_from(source, 3004, pos, 0),
             _ => {}
         }
     }
