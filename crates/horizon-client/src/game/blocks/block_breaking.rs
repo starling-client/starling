@@ -22,7 +22,7 @@ impl Game<'_> {
             hardness != 0.0
         };
         if wears && per_block > 0 && max > 0 {
-            self.damage_held_with_max(per_block, max);
+            self.damage_held(per_block);
         }
         self.award_stat("used", &stack.item, 1);
     }
@@ -106,14 +106,12 @@ impl Game<'_> {
         self.level_event_at(id, pos, direction as i32);
     }
 
-    /// `LevelRenderer.destroyBlockProgress`: a player's crack on a block (0..=9), or none
-    /// (any other progress). Cracks not updated for 400 ticks are dropped.
+    /// `LevelRenderer.destroyBlockProgress`: any stage outside 0..10 clears the breaker.
     pub(crate) fn destroy_block_progress(&mut self, breaker: i32, pos: [i32; 3], progress: i32) {
-        let now = self.world.game_time;
-        self.destroying
-            .retain(|_, c| now.saturating_sub(c.2) <= 400);
+        self.expire_client_cracks();
         if (0..10).contains(&progress) {
-            self.destroying.insert(breaker, (pos, progress as u8, now));
+            self.destroying
+                .insert(breaker, (pos, progress as u8, self.world.game_time));
         } else {
             self.destroying.remove(&breaker);
         }
