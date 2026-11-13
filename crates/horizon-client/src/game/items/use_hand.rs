@@ -547,65 +547,113 @@ impl Game<'_> {
         self.apply_use_cooldown(&stack);
         Ok(true)
     }
-    pub(super) fn apply_consume_effect(&mut self, effect: &horizon_client::items::ConsumeEffect) {
+    pub(super) fn apply_consume_effect(
+        &mut self,
+        consumed: &horizon_client::items::ItemStack,
+        effect: &horizon_client::items::ConsumeEffect,
+        mob: Option<mod_api::LivingRef>,
+    ) -> Option<bool> {
         use horizon_client::items::ConsumeEffect;
-        match effect {
+        Some(match effect {
             ConsumeEffect::ApplyEffects {
                 effects,
                 probability,
             } => {
-                // ApplyStatusEffectsConsumeEffect.apply: the user's random
-                // (the level's stands in, as for every player draw) is drawn
-                // even at probability 1.
-                if self.world.random.next_float() < *probability {
-                    for eff in effects {
-                        if let Some(def) = horizon_client::brewing::effect(&eff.id) {
-                            if def.instant {
-                                if let Some(a) =
-                                    horizon_client::effects::instant(def.id, eff.amplifier, 1.0)
-                                {
-                                    self.apply_effect_action(a);
-                                }
-                            } else {
-                                let mut instance = horizon_client::effects::EffectInstance::new(
-                                    def.id,
-                                    eff.duration,
-                                    eff.amplifier,
-                                );
-                                instance.ambient = eff.ambient;
-                                instance.visible = eff.show_particles;
-                                instance.show_icon = eff.show_icon;
-                                self.add_player_effect(instance);
-                            }
-                        }
+                // ApplyStatusEffectsConsumeEffect draws from the user's random,
+                // even at probability 1. The level random stands in for a player's.
+                let draw = match mob {
+                    Some(living) => {
+                        let commands::Target::Mob(id) = self.native_living_target(living)? else {
+                            return None;
+                        };
+                        self.mobs
+                            .iter_mut()
+                            .find(|m| m.id == id)?
+                            .random
+                            .next_float()
+                    }
+                    None => self.world.random.next_float(),
+                };
+                if draw >= *probability {
+                    return Some(false);
+                }
+                let mut changed = false;
+                for eff in effects {
+                    let Some(def) = horizon_client::brewing::effect(&eff.id) else {
+                        continue;
+                    };
+                    if let Some(living) = mob {
+                        let effect = mod_api::ActiveEffect::new(
+                            mod_api::__private::effect_key_by_index(def.index)
+                                .expect("effects resolved at load"),
+                            eff.duration,
+                            eff.amplifier,
+                            eff.ambient,
+                            eff.show_particles,
+                            eff.show_icon,
+                        );
+                        changed |= self.living_add_effect(living, &effect);
+                    } else {
+                        let mut instance = horizon_client::effects::EffectInstance::new(
+                            def.id,
+                            eff.duration,
+                            eff.amplifier,
+                        );
+                        instance.ambient = eff.ambient;
+                        instance.visible = eff.show_particles;
+                        instance.show_icon = eff.show_icon;
+                        changed |= self.add_player_effect(instance);
                     }
                 }
+                changed
             }
-            ConsumeEffect::ClearAllEffects => {
-                self.potions.effects.clear();
-                self.apply_effect_status();
-            }
-            ConsumeEffect::RemoveEffects(to_remove) => {
-                for target in to_remove {
-                    let id = target.trim_start_matches("minecraft:");
-                    self.potions.effects.list.retain(|e| e.id != id);
+            ConsumeEffect::ClearAllEffects => match mob {
+                Some(living) => self.living_remove_all_effects(living),
+                None => self.remove_player_effects(None),
+            },
+            ConsumeEffect::RemoveEffects(effects) => {
+                let mut changed = false;
+                for effect in effects {
+                    changed |= match mob {
+                        Some(living) => horizon_client::brewing::effect(effect)
+                            .and_then(|def| mod_api::__private::effect_key_by_index(def.index))
+                            .is_some_and(|key| self.living_remove_effect(living, key)),
+                        None => horizon_client::brewing::effect(effect)
+                            .is_some_and(|def| self.remove_player_effects(Some(def.index))),
+                    };
                 }
-                self.apply_effect_status();
+                changed
             }
-            ConsumeEffect::TeleportRandomly(teleport) => self.teleport_randomly(teleport),
+            ConsumeEffect::TeleportRandomly(teleport) => {
+                if mob.is_some() {
+                    return None;
+                }
+                self.teleport_randomly(teleport, consumed)
+            }
             ConsumeEffect::PlaySound(sound) => {
-                // PlaySoundConsumeEffect: at the user's block position.
-                let at = self.player.as_ref().map(|p| {
-                    let b = horizon_core::position::BlockPos::containing(p.position);
-                    [b.x, b.y, b.z].map(|v| f64::from(v) + 0.5)
-                });
-                self.audio.play(sound, at, 1.0, 1.0);
+                let at = match mob {
+                    Some(living) => {
+                        let commands::Target::Mob(id) = self.native_living_target(living)? else {
+                            return None;
+                        };
+                        self.mobs.iter().find(|m| m.id == id).map(|m| m.position)?
+                    }
+                    None => self.player.as_ref()?.position,
+                };
+                let b = horizon_core::position::BlockPos::containing(at);
+                let at = [b.x, b.y, b.z].map(|v| f64::from(v) + 0.5);
+                let level = self.level(self.dim.id())?;
+                let source = match mob {
+                    Some(living) => self.entity_sound_source(living.entity())?,
+                    None => mod_api::SoundSource::Players,
+                };
+                self.native_queue_sound(level, sound, at, source, 1.0, 1.0, None)?;
+                true
             }
-            // A mod's own kind: the owning mod's hook answers.
             ConsumeEffect::Native { kind, data } => {
-                self.native_consume_effect(kind, data);
+                consume_effect_dispatch::dispatch(kind, || self.native_consume_effect(kind, data))
             }
-        }
+        })
     }
     /// BowItem.releaseUsing: power from charge time, arrows at power * 3.
     pub(super) fn release_bow(&mut self, stack: &ItemStack, ticks: u32) {
@@ -650,12 +698,11 @@ impl Game<'_> {
             a.set_owner(Some(horizon_client::mobs::Who::Player));
             a.fired_from_weapon = weapon;
         }
-        // Flame: the arrow is spawned burning (EnchantmentHelper.onProjectileSpawned).
-        self.ignite_spawned_arrow(stack, &mut arrow);
         let (velocity, on_ground) = self.player.as_ref().map_or((Vec3::ZERO, true), |pl| {
             (self.known_player_movement(), pl.ground.on_ground)
         });
         arrow.shoot_from_rotation(
+            &mut self.world.random,
             self.pitch,
             self.yaw,
             0.0,
@@ -664,7 +711,7 @@ impl Game<'_> {
             velocity,
             on_ground,
         );
-        self.add_projectile(arrow);
+        self.spawn_projectile(arrow, &ammo);
         let (player, name, projectile) = (
             horizon_client::lan::playerdata::ints_uuid(self.acting_player_uuid()),
             self.acting_player_name().to_owned(),
