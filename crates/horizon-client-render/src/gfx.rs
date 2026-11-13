@@ -1397,6 +1397,9 @@ pub struct Renderer {
     solid_cutout: SolidPipeline,
     /// Cheaper pipelines for those two passes, on Adreno's Vulkan (`solid_paths`).
     solid_paths: Option<solid_paths::SolidPaths>,
+    solid_settled_single: Option<wgpu::RenderPipeline>,
+    settled_single_on: bool,
+    pub settled_single_active: bool,
     translucent: wgpu::RenderPipeline,
     translucent_mark: wgpu::RenderPipeline,
     /// Flat section draws (`flat`), where multi-draw is emulated.
@@ -5371,6 +5374,47 @@ impl Renderer {
                 )
             })
             .flatten();
+        let solid_settled_single = (cfg!(target_os = "android")
+            && info.backend == wgpu::Backend::Vulkan
+            && info.vendor == 0x13b5
+            && !splits_solid(&info))
+        .then(|| {
+            let constants = [
+                plain_constants[0],
+                plain_constants[1],
+                plain_constants[2],
+                ("SETTLED_TERRAIN", 1.0),
+            ];
+            let terrain = adreno::TerrainModule {
+                kept: &kept,
+                shader: &shader,
+                format: frame_format,
+                constants: &constants,
+            };
+            let pulled_layout = flat.as_ref().map(|flat| {
+                kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Settled terrain layout (pulled)"),
+                    bind_group_layouts: &[Some(&bindings), Some(&flat.draw_layout)],
+                    ..Default::default()
+                })
+            });
+            let origins = [None, terrain_buffers[1].clone()];
+            let (layout, vertex, buffers) = match pulled_layout.as_ref() {
+                Some(layout) => (layout, "vs_section", origins.as_slice()),
+                None => (&layout, "vs_terrain", terrain_buffers.as_slice()),
+            };
+            terrain.pipeline(
+                layout,
+                "Settled terrain single pass",
+                vertex,
+                "fs_cutout_static",
+                buffers,
+                Some(wgpu::Face::Back),
+                true,
+                None,
+            )
+        })
+        .flatten();
         // Without indirect draws (OpenGL before 4.0 without indirect execution, or
         // before 4.2 + GL_ARB_shader_draw_parameters without indirect first instance)
         // even creating an indirect buffer fails; one draw per section reads
@@ -5497,6 +5541,9 @@ impl Renderer {
             solid_opaque,
             solid_cutout,
             solid_paths,
+            solid_settled_single,
+            settled_single_on: false,
+            settled_single_active: false,
             translucent,
             translucent_mark,
             flat_on: flat.is_some(),
@@ -6115,10 +6162,14 @@ impl Renderer {
     }
     /// Whether frames that may take it draw whole sections through less work (`solid_paths`).
     pub fn settled_terrain_on(&self) -> bool {
-        self.solid_paths.as_ref().is_some_and(|p| p.settled_on)
+        self.settled_single_on || self.solid_paths.as_ref().is_some_and(|p| p.settled_on)
     }
     /// Switches drawing whole sections through less work, for A/B checks.
     pub fn set_settled_terrain(&mut self, on: bool) -> Result<()> {
+        if self.solid_settled_single.is_some() {
+            self.settled_single_on = on;
+            return Ok(());
+        }
         match &mut self.solid_paths {
             Some(paths) => paths.settled_on = on,
             None if on => return Err("the cheaper terrain shaders are off on this device".into()),
@@ -11128,7 +11179,23 @@ impl Renderer {
             .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
         // Without HDR output, the solid shaders without its lighting (`SolidPipeline`).
         let hdr = self.hdr.is_some();
-        let solid_pipeline = material.map_or(self.solid.get(hdr), |(m, _)| &m.solid);
+        let settled_single = self.solid_settled_single.as_ref().filter(|_| {
+            self.settled_single_on
+                && !hdr
+                && !frame.title
+                && !flat_frame
+                && !gpu_frame
+                && self.native.is_none()
+                && self.pack_post.is_none()
+                && cull.is_none()
+                && phase1_draws > 0
+                && solid_paths::can_use_settled(&self.origins, self.texture_filtering)
+        });
+        self.settled_single_active = settled_single.is_some();
+        let solid_pipeline = material.map_or(
+            settled_single.unwrap_or_else(|| self.solid.get(hdr)),
+            |(m, _)| &m.solid,
+        );
         // Two solid passes only where a discard costs the GPU its hidden surface
         // removal: Apple's tiled GPUs, behind Metal, and Adreno's Vulkan (`splits_solid`).
         // Elsewhere the second pass would double the solid draw calls and vertex work.

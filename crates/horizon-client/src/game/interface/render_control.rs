@@ -31,7 +31,8 @@ impl Game<'_> {
             Some(other) => return Err(format!("unknown settled terrain mode {other}").into()),
         }
         Ok(Some(
-            json!({ "ok": true, "settled_terrain": r.settled_terrain_on() }),
+            json!({ "ok": true, "settled_terrain": r.settled_terrain_on(),
+                "single_pass_active": r.settled_single_active }),
         ))
     }
     /// Parse `name[k=v,...]` into a registry state (defaults for missing properties).
