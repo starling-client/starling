@@ -36,6 +36,7 @@ impl Game<'_> {
             gui,
             self.renderer.as_ref(),
             None,
+            None,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
             &self.settings.horizon,

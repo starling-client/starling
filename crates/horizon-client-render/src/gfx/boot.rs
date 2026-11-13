@@ -3,7 +3,7 @@
 //! `Renderer::new` builds every pipeline the world will ever need before it returns, and the
 //! loading screen used to wait for all of them: on a PowerVR B-Series that is 11 seconds before
 //! anything reaches the screen, and the window stays on whatever was behind it. What the loading
-//! screen actually draws is a cube and some text — `loading_frame` hands the renderer a `Frame`
+//! screen actually draws is a cube and some text â€” `loading_frame` hands the renderer a `Frame`
 //! with `title: true` and every other field empty.
 //!
 //! So this opens the device itself, keeps the two pipelines it draws with, and hands the open
@@ -21,7 +21,7 @@ use crate::hud::{HudBatch, HudRenderer};
 use winit::window::Window;
 
 /// What the loading screen draws with, and what it hands on afterwards.
-pub(crate) struct BootRenderer {
+pub struct BootRenderer {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     surface: wgpu::Surface<'static>,
@@ -35,14 +35,71 @@ pub(crate) struct BootRenderer {
     panorama: panorama::Panorama,
     depth: wgpu::TextureView,
     /// Kept so the atlas and glint views stay alive for the HUD's bind group.
-    _textures: [wgpu::Texture; 3],
+    textures: [wgpu::Texture; 3],
+}
+
+/// What the boot screen draws with, made again when the menu bundle replaces the boot atlas.
+struct Drawing {
+    hud: HudRenderer,
+    panorama: panorama::Panorama,
+    textures: [wgpu::Texture; 3],
+}
+
+impl Drawing {
+    fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        gl: bool,
+        atlas: (&[u8], u32, u32),
+        faces: Arc<panorama::Faces>,
+    ) -> Result<Self> {
+        let (atlas_pixels, atlas_width, atlas_height) = atlas;
+        let atlas_texture = texture(
+            device,
+            queue,
+            "Boot HUD atlas",
+            atlas_pixels,
+            atlas_width,
+            atlas_height,
+        );
+        // The loading screen draws nothing enchanted, so one transparent pixel stands in for
+        // both glint textures; the HUD's bind group still wants them.
+        static NO_GLINT: [u8; 4] = [0; 4];
+        let glint_texture = texture(device, queue, "Boot glint", &NO_GLINT, 1, 1);
+        let glint_armor_texture = texture(device, queue, "Boot armor glint", &NO_GLINT, 1, 1);
+        let glint_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Boot glint"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let mut hud = HudRenderer::new(
+            device,
+            format,
+            &atlas_texture.create_view(&Default::default()),
+            &glint_texture.create_view(&Default::default()),
+            &glint_armor_texture.create_view(&Default::default()),
+            &glint_sampler,
+            // The coverage layer is the world's; the loading screen draws straight to the window.
+            false,
+        )?;
+        hud.atlas_texture = Some(atlas_texture.clone());
+        Ok(Self {
+            hud,
+            panorama: panorama::Panorama::new(device, format, faces, gl),
+            textures: [atlas_texture, glint_texture, glint_armor_texture],
+        })
+    }
 }
 
 impl BootRenderer {
     /// Opens the device for the window and builds the two pipelines the loading screen draws
     /// with. `atlas` is the boot screen's HUD atlas (the menu bundle's, once it has come);
     /// `faces` the title panorama, a flat colour until then.
-    pub(crate) async fn new(
+    pub async fn new(
         window: Arc<Window>,
         atlas: (&[u8], u32, u32),
         faces: Arc<panorama::Faces>,
@@ -66,41 +123,12 @@ impl BootRenderer {
             _ => return Err("the boot renderer needs a window surface".into()),
         };
         let _pipelines = crate::spans::startup::step("boot.pipelines");
-        let (atlas_pixels, atlas_width, atlas_height) = atlas;
-        let atlas_texture = texture(
-            &device,
-            &queue,
-            "Boot HUD atlas",
-            atlas_pixels,
-            atlas_width,
-            atlas_height,
-        );
-        // The boot screen draws nothing enchanted, so one transparent pixel stands in for both
-        // glint textures; the HUD's bind group still wants them.
-        static NO_GLINT: [u8; 4] = [0; 4];
-        let glint_texture = texture(&device, &queue, "Boot glint", &NO_GLINT, 1, 1);
-        let glint_armor_texture = texture(&device, &queue, "Boot armor glint", &NO_GLINT, 1, 1);
-        let glint_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Boot glint"),
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let mut hud = HudRenderer::new(
-            &device,
-            config.format,
-            &atlas_texture.create_view(&Default::default()),
-            &glint_texture.create_view(&Default::default()),
-            &glint_armor_texture.create_view(&Default::default()),
-            &glint_sampler,
-            // The coverage layer is the world's; the loading screen draws straight to the window.
-            false,
-        )?;
-        hud.atlas_texture = Some(atlas_texture.clone());
         let gl = adapter.get_info().backend == wgpu::Backend::Gl;
-        let panorama = panorama::Panorama::new(&device, config.format, faces, gl);
+        let Drawing {
+            hud,
+            panorama,
+            textures,
+        } = Drawing::new(&device, &queue, config.format, gl, atlas, faces)?;
         let depth = super::Renderer::depth(&device, &config);
         let uploads = upload::Uploads::new(&device);
         Ok(Self {
@@ -116,11 +144,35 @@ impl BootRenderer {
             uploads,
             panorama,
             depth,
-            _textures: [atlas_texture, glint_texture, glint_armor_texture],
+            textures,
         })
     }
 
-    pub(crate) fn resize(&mut self, width: u32, height: u32) {
+    /// The menu bundle has come: its atlas and title panorama replace the boot screen's. The
+    /// world's renderer was built again here, for an atlas and a cube â€” two pipelines on a device
+    /// that is already open, which is what this costs instead.
+    pub fn set_ui(&mut self, atlas: (&[u8], u32, u32), faces: Arc<panorama::Faces>) -> Result<()> {
+        let _step = crate::spans::startup::step("boot.set_ui");
+        let gl = self.adapter.get_info().backend == wgpu::Backend::Gl;
+        let Drawing {
+            hud,
+            panorama,
+            textures,
+        } = Drawing::new(
+            &self.device,
+            &self.queue,
+            self.config.format,
+            gl,
+            atlas,
+            faces,
+        )?;
+        self.hud = hud;
+        self.panorama = panorama;
+        self.textures = textures;
+        Ok(())
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
         let max = self.device.limits().max_texture_dimension_2d;
         let (width, height) = (width.clamp(1, max), height.clamp(1, max));
         if (width, height) == (self.config.width, self.config.height) {
@@ -133,7 +185,7 @@ impl BootRenderer {
     }
 
     /// One frame of the loading screen: the panorama behind, the batch over it.
-    pub(crate) fn render(&mut self, batch: &HudBatch, yaw: f32) -> Result<()> {
+    pub fn render(&mut self, batch: &HudBatch, yaw: f32) -> Result<()> {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,

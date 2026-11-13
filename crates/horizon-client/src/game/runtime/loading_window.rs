@@ -41,6 +41,8 @@ pub(super) fn build_renderer(
     pack: &PackResources,
     gui: &UiResources,
     previous: Option<&Renderer>,
+    // The loading screen's renderer, where it opened the device this one takes over.
+    boot: Option<horizon_client::gfx::boot::BootRenderer>,
     prepared: Option<horizon_client::gfx::PreparedTextures>,
     api: horizon_client::graphics::GraphicsApi,
     translucent_batching: bool,
@@ -91,6 +93,7 @@ pub(super) fn build_renderer(
         gui.panorama.clone(),
         prepared,
         previous,
+        boot,
         api,
         translucent_batching,
         shader_pack.draws_flat,
@@ -183,6 +186,7 @@ pub(super) fn loading_renderer(
         panorama,
         None,
         previous,
+        None,
         api,
         // It draws no terrain.
         false,

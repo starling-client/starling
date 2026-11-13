@@ -641,6 +641,9 @@ impl Loading {
                 &loaded.pack,
                 &gui,
                 self.renderer.as_ref(),
+                // The loading screen still builds its own renderer here; `BootRenderer` takes
+                // that over in the next change, and this is where it is handed on.
+                None,
                 loaded.renderer_cpu,
                 self.settings.horizon.api,
                 self.settings.horizon.translucent_batching,

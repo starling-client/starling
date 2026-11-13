@@ -468,6 +468,7 @@ impl Game<'_> {
                     &pack,
                     &gui,
                     self.renderer.as_ref(),
+                    None,
                     Some(textures),
                     self.settings.horizon.api,
                     self.settings.horizon.translucent_batching,

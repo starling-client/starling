@@ -14141,6 +14141,7 @@ impl Game<'_> {
             &self.gui,
             None,
             None,
+            None,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
             &self.settings.horizon,
