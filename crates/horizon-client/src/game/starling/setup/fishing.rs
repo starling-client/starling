@@ -471,7 +471,13 @@ impl Fishing {
             // tall), its right edge on the button's.
             let count = format!("Caught: {}", self.caught);
             let cw = ui.measure(Face::Semibold, 15.0, &count);
-            pill(ui, w - 16.0 - cw / 2.0 - 16.0, 16.0 + 36.0 + 8.0, &count, true);
+            pill(
+                ui,
+                w - 16.0 - cw / 2.0 - 16.0,
+                16.0 + 36.0 + 8.0,
+                &count,
+                true,
+            );
         }
     }
 }
