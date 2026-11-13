@@ -1409,6 +1409,7 @@ pub struct Renderer {
     visbuf: Option<visbuffer::Visbuffer>,
     /// `flat` draws this frame's sections (off: the per-section draws).
     flat_on: bool,
+    pub flat_quad_cache_on: bool,
     /// Occlusion culling of solid section draws, where the GPU's instance
     /// counts reach a multi-draw's entries (Vulkan, Metal).
     cull: Option<cull::Cull>,
@@ -5500,6 +5501,7 @@ impl Renderer {
             translucent,
             translucent_mark,
             flat_on: flat.is_some(),
+            flat_quad_cache_on: true,
             packed_quads,
             cull_on,
             sides_on: true,
@@ -10584,6 +10586,12 @@ impl Renderer {
                 let lods = &self.lods;
                 let sorted = &self.sorted_indices;
                 let phase2 = self.cull.as_ref().filter(|_| culling).map(|c| &c.phase2);
+                let cache_quads = self.flat_quad_cache_on
+                    && adreno::adreno_vulkan(&self.info)
+                    && self.native.is_none()
+                    && self.pack_post.is_none()
+                    && self.hdr.is_none()
+                    && phase2.is_none();
                 crate::spans::time("flatten", || {
                     flat.prepare(
                         &self.device,
@@ -10613,6 +10621,7 @@ impl Renderer {
                                 Some((id, lod::instance(v.origin, v.fade)))
                             })),
                         |page| sorted.buffer(page).clone(),
+                        cache_quads,
                         self.own_timing.as_mut(),
                     )
                 })
@@ -12675,6 +12684,10 @@ impl Renderer {
                 Some(copy_frame(&self.device, &mut encoder, &texture, size))
             });
         let first_frame = self.first_frame == FirstFrame::Submit;
+        if flat_frame && let Some(flat) = &mut self.flat {
+            // From here the encoder is submitted either locally or in queue order.
+            flat.submitted();
+        }
         // Finished, submitted and presented on the submit thread when nothing after the
         // submission needs this one: screenshots' readbacks, the error scopes (one per
         // thread), the first frame's startup log, VSync's frame callback, a reconfigure.
