@@ -72,17 +72,3 @@ impl Game<'_> {
         out
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn stack(item: &str) -> ItemStack {
-        ItemStack {
-            item: item.into(),
-            count: 1,
-            damage: 0,
-            extra: None,
-        }
-    }
-}

@@ -589,8 +589,3 @@ impl Game<'_> {
         rain
     }
 }
-
-#[cfg(test)]
-mod crumbling_sprite_tests {
-    use super::*;
-}
