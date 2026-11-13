@@ -136,6 +136,13 @@ impl Game<'_> {
         }
         false
     }
+    /// GoY's virtual Shift is independent of Android's physical modifier reports.
+    pub(in crate::game) fn mobile_sneak_held(&self) -> bool {
+        self.screen == Screen::Playing
+            && self.title.is_none()
+            && (self.mobile.custom_keys.contains(&KeyCode::ShiftLeft)
+                || self.mobile.custom_keys.contains(&KeyCode::ShiftRight))
+    }
     pub(in crate::game) fn mobile_shift_down(&self) -> bool {
         (matches!(self.screen, Screen::Inventory | Screen::Creative)
             && self.mobile.controls.inventory_shift)
@@ -391,13 +398,11 @@ impl Game<'_> {
     ) {
         self.mobile_init();
         let [w, h] = self.touch_size();
-        let mut b = HudBatch::new(
-            [w, h],
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
-        );
+        if self.touch_menu_owns(t.id) {
+            self.android_menu_touch(t, events, id);
+            return;
+        }
+        let mut b = HudBatch::new([w, h], self.settings.gui_scale_inputs());
         let p = [t.location.x as f32 / b.scale, t.location.y as f32 / b.scale];
         let n = [
             t.location.x as f32 / w.max(1) as f32,
@@ -494,12 +499,10 @@ impl Game<'_> {
                 return;
             }
         }
-        if in_menu
-            && self.mobile.controls.consume_ignored(
-                t.id,
-                matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled),
-            )
-        {
+        if self.mobile.controls.consume_ignored(
+            t.id,
+            matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled),
+        ) {
             return;
         }
         if in_menu {
@@ -791,7 +794,9 @@ impl Game<'_> {
                     self.physical_keys.remove(&key);
                     self.keys.remove(&key);
                 }
-                self.toggles.0[slot].set_down(down, false);
+                if slot == 1 {
+                    self.toggles.0[slot].set_down(down, false);
+                }
                 self.sync_toggle(slot);
                 if slot == 1
                     && !down
@@ -920,7 +925,9 @@ impl Game<'_> {
                 self.keys.remove(&key);
             }
             let slot = usize::from(matches!(key, KeyCode::ControlLeft | KeyCode::ControlRight));
-            self.toggles.0[slot].set_down(down, false);
+            if slot == 1 {
+                self.toggles.0[slot].set_down(down, false);
+            }
             self.sync_toggle(slot);
             if slot == 1
                 && !down
@@ -1238,6 +1245,7 @@ impl Game<'_> {
         if t.phase == TouchPhase::Ended
             && let Some((right, last)) = self.mobile.ui.release_mouse(t.id)
         {
+            self.mobile.controls.consume_ignored(t.id, true);
             if last {
                 self.android_menu_mouse(events, id, right, false)?;
             }
@@ -1249,6 +1257,7 @@ impl Game<'_> {
             return Ok(true);
         }
         if t.phase == TouchPhase::Ended && self.mobile.ui.owns_key(t.id) {
+            self.mobile.controls.consume_ignored(t.id, true);
             if let Some(key) = self.mobile.ui.key_up(t.id) {
                 self.android_key_up(key);
             }
@@ -1261,13 +1270,7 @@ impl Game<'_> {
         } else {
             return Ok(false);
         };
-        let mut b = HudBatch::new(
-            [size.width, size.height],
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
-        );
+        let mut b = HudBatch::new([size.width, size.height], self.settings.gui_scale_inputs());
         // The hub as `mobile_draw` lays it out: clear of the camera cutout's strips, beside the
         // utility keys (#166).
         let [left, _, right, _] = self.safe_gui_insets(b.scale);
@@ -1618,16 +1621,13 @@ impl Game<'_> {
             return Ok(false);
         }
         // The utility keys as `mobile_draw` lays them out, clear of the cutout's strips.
-        let [left, _, right, _] = self.safe_gui_insets(b.scale);
         if t.phase == TouchPhase::Started
             && !self.mobile.ui.owns_relative(t.id)
             && !self.mobile.ui.owns_gesture(t.id)
-            && let Some(action) = self.mobile.ui.action(
-                b.width - left - right,
-                b.height,
-                [p[0] - left, p[1]],
-                self.pad_in_menu(),
-            )
+            && let Some(action) = self
+                .mobile
+                .ui
+                .action(b.width, b.height, p, self.pad_in_menu())
         {
             {
                 self.mobile.controls.clear();
@@ -1648,7 +1648,6 @@ impl Game<'_> {
                     Action::Pick => {
                         self.play_mouse(MouseButton::Middle, true)?;
                         self.play_mouse(MouseButton::Middle, false)?;
-                        self.mobile.ui.expanded = false;
                     }
                     Action::DebugCombo(key) => {
                         let held = self.mobile.ui.key_held(KeyCode::F3);
@@ -1660,7 +1659,6 @@ impl Game<'_> {
                         if !held {
                             self.debug_key(KeyCode::F3, KeyAction::Release);
                         }
-                        self.mobile.ui.expanded = false;
                     }
                     Action::MouseButton(right) => {
                         if self.mobile.ui.press_mouse(t.id, right) {
@@ -1696,9 +1694,6 @@ impl Game<'_> {
                         }
                     }
                     Action::Key(key) => {
-                        if key != KeyCode::F3 && !self.mobile.ui.key_held(KeyCode::F3) {
-                            self.mobile.ui.expanded = false;
-                        }
                         if key == KeyCode::Escape {
                             mobile_platform::hide();
                             self.pad_back()?;
@@ -1824,6 +1819,16 @@ impl Game<'_> {
         id: WindowId,
     ) {
         self.android_sync_pointer();
+        if self.touch_menu_owns(t.id)
+            || (self.screen == Screen::Options && !self.mobile.ui.virtual_mouse)
+        {
+            let point = [t.location.x as f32, t.location.y as f32];
+            let [w, h] = self.touch_size();
+            let slop = horizon_client::touch::slop(w as f32, h as f32);
+            self.touch_menu_pointer(events, id, t, point, slop);
+            self.android_menu_touch_release(t.phase);
+            return;
+        }
         if self.mobile.ui.virtual_mouse {
             self.android_virtual_touch(t, events, id);
             return;
@@ -1832,9 +1837,6 @@ impl Game<'_> {
             return;
         };
         let p = [t.location.x as f32 / b.scale, t.location.y as f32 / b.scale];
-        if t.phase == TouchPhase::Started && self.screen == Screen::Options {
-            // Starling tracks list and slider presses through its window events.
-        }
         let track = self.on_scrollbar([t.location.x as f32, t.location.y as f32]);
         let direct = self.mobile.ui.direct_pointer(t.id, p, t.phase, track);
         self.handle_window_event(

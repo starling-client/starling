@@ -83,14 +83,7 @@ impl Game<'_> {
         if CREATIVE_SHIFT.get() == 0.0 {
             return;
         }
-        let width = HudBatch::new(
-            self.touch_size(),
-            horizon_client::hud::GuiScale {
-                requested: 0,
-                unicode: false,
-            },
-        )
-        .width;
+        let width = HudBatch::new(self.touch_size(), self.settings.gui_scale_inputs()).width;
         self.bedrock_show(slot < Creative::DISPLAY, width);
     }
     /// Where the creative screen's window, or both of Bedrock Inventory's, start and end across.

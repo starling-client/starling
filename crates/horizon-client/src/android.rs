@@ -1164,6 +1164,7 @@ fn max_refresh_rate() -> f32 {
 #[derive(Default)]
 struct HintState {
     session: usize,
+    session_attempted: bool,
     target_ns: i64,
     window: usize,
     voted: f32,
@@ -1184,10 +1185,12 @@ pub fn frame_hint(cpu: std::time::Duration, fps_limit: i32) {
     let cap = (fps_limit < 260).then(|| fps_limit.clamp(10, 240));
     let target_ns = 1_000_000_000 / i64::from(cap.unwrap_or(120));
     HINT_STATE.with_borrow_mut(|state| {
-        if state.session == 0
+        if !state.session_attempted
             && hints.manager != 0
             && let Some(create) = hints.create
         {
+            // Some Android builds expose ADPF but reject sessions. Do not retry every frame.
+            state.session_attempted = true;
             // SAFETY: the manager came from APerformanceHint_getManager; one thread id, this one.
             state.session = unsafe {
                 let tid = gettid();

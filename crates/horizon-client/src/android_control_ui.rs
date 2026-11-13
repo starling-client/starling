@@ -887,11 +887,15 @@ impl TouchUi {
             }
         }
         let p = [p[0] - if self.hub_visible { 0. } else { 36. }, p[1]];
-        if self.expanded && (3.0..203.0).contains(&p[0]) && (27.0..219.0).contains(&p[1]) {
-            let i = ((p[1] - 27.0) / 24.0) as usize * 4 + ((p[0] - 3.0) / 50.0) as usize;
-            if i == 28 {
-                return Some(Action::LatchF3);
+        if self.expanded && (3.0..51.0).contains(&p[0]) && (195.0..215.0).contains(&p[1]) {
+            return Some(Action::LatchF3);
+        }
+        if self.expanded && (3.0..203.0).contains(&p[0]) && (27.0..195.0).contains(&p[1]) {
+            let (x, y) = (p[0] - 3.0, p[1] - 27.0);
+            if x % 50.0 >= 48.0 || y % 24.0 >= 20.0 {
+                return None;
             }
+            let i = (y / 24.0) as usize * 4 + (x / 50.0) as usize;
             return KEYS.get(i).map(|(_, k)| match i {
                 23 => Action::Pick,
                 24.. => Action::DebugCombo(*k),
@@ -8191,6 +8195,13 @@ mod tests {
         assert!(matches!(
             ui.action(400.0, 240.0, [160.0, 30.0], false),
             Some(Action::Key(KeyCode::F4))
+        ));
+        assert!(ui.action(400., 240., [52., 30.], false).is_none());
+        assert!(ui.action(400., 240., [10., 48.], false).is_none());
+        assert!(ui.action(400., 240., [70., 200.], false).is_none());
+        assert!(matches!(
+            ui.action(400., 240., [10., 200.], false),
+            Some(Action::LatchF3)
         ));
         ui.expanded = false;
         ui.goy_mode = true;
