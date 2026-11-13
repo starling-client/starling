@@ -215,11 +215,14 @@ impl Game<'_> {
             .replace(now)
             .map_or(0., |at| now.duration_since(at).as_secs_f32().min(0.2));
         let in_menu = self.pad_in_menu();
+        // The F3+F4 switcher opens while F3 is held and picks the mode when F3 is let go: going
+        // into it lets go of nothing, else the cancelled F3 closed it the next frame (#461).
         if self
             .mobile
             .was_in_menu
             .replace(in_menu)
             .is_some_and(|old| old != in_menu)
+            && self.screen != Screen::GameModeSwitcher
         {
             self.android_release_touch_keys(true);
             self.pad.set_touch_state(Default::default());
