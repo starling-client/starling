@@ -258,11 +258,11 @@ def apply(row, upstream):
         block = "\nimpl Game<'_> {\n" + "".join(
             chosen[name] if chosen[name].endswith("\n") else chosen[name] + "\n" for name in split(row["functions"])
         ) + "}\n"
-        dest.write_text(dest.read_text().rstrip("\n") + "\n" + block)
+        dest.write_text(dest.read_text().rstrip("\n") + "\n" + block, newline="\n")
     else:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(up_text)
-    game_file.write_text(delete_spans(game_text, spans))
+        dest.write_text(up_text, newline="\n")
+    game_file.write_text(delete_spans(game_text, spans), newline="\n")
     by_file = {}
     for path, name in fork_copies(row):
         by_file.setdefault(path, []).append(name)
@@ -283,7 +283,7 @@ def apply(row, upstream):
         if is_empty_module(text):
             subprocess.run(["git", "-C", str(ROOT), "rm", "-q", str(file)], check=True)
         else:
-            file.write_text(text)
+            file.write_text(text, newline="\n")
 
 
 def with_visibility(fork_text, upstream_text):
@@ -324,7 +324,7 @@ def reapply(row, upstream, fork_ref):
                 print(f"{name}: {len(o_k)} fork {kind} item(s) against upstream's {len(t_k)}: settle by hand")
     for start, end, body in sorted(replace, reverse=True):
         text = text[:start] + (body if body.endswith("\n") else body + "\n") + text[end:]
-    dest.write_text(text)
+    dest.write_text(text, newline="\n")
 
 
 def list_rows(upstream):
