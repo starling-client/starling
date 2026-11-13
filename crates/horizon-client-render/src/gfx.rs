@@ -548,6 +548,11 @@ pub struct Frame<'a> {
     pub additive: &'a [Vertex],
     /// Name tags over everything, without depth (`TEXT_SEE_THROUGH`).
     pub see_through: &'a [Vertex],
+    /// `render.set-post-world-text2`'s quads, drawn billboarded on top of the finished
+    /// image: after the world post pass (a shader pack's composite), before the hand.
+    /// Without depth, like `see_through` (`native-hooks.json` has `world_drawn` for native
+    /// mods; this is the WASM counterpart).
+    pub post_world_text: &'a [Vertex],
     /// Opaque entity quads only a native pack's shadow pass draws (the local player in first
     /// person).
     pub shadow_only: &'a [Vertex],
@@ -783,6 +788,8 @@ pub struct Renderer {
     hand_globals: wgpu::Buffer,
     entity_buffer: wgpu::Buffer,
     entity_capacity: u64,
+    post_world_buffer: wgpu::Buffer,
+    post_world_capacity: u64,
     entity_batch: EntityBatch,
     group: wgpu::BindGroup,
     globals: wgpu::Buffer,
@@ -3542,6 +3549,13 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let post_world_capacity = 1 << 10;
+        let post_world_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Post-world text vertices"),
+            size: post_world_capacity * std::mem::size_of::<Vertex>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let flat_wanted = flat::wanted(&adapter, &device);
         // Readable as storage where flat draws run: a shader pack's terrain program reads them.
         let arena = arena::Arena::new(
@@ -3777,6 +3791,8 @@ impl Renderer {
             hand_globals,
             entity_buffer,
             entity_capacity,
+            post_world_buffer,
+            post_world_capacity,
             entity_batch: EntityBatch::default(),
             group,
             globals,
@@ -7083,6 +7099,25 @@ impl Renderer {
         let additive_quads = (frame.additive.len() / 4) as u32 - self.entity_batch.moved_additive;
         let see_through_quads = (frame.see_through.len() / 4) as u32;
         let shadow_only_quads = (frame.shadow_only.len() / 4) as u32;
+        let post_world_quads = (frame.post_world_text.len() / 4) as u32;
+        if post_world_quads > 0 {
+            let post_vertices = frame.post_world_text.len() as u64;
+            if post_vertices > self.post_world_capacity {
+                self.post_world_capacity = post_vertices.next_power_of_two();
+                self.post_world_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Post-world text vertices"),
+                    size: self.post_world_capacity * std::mem::size_of::<Vertex>() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            self.uploads.buffer(
+                &mut encoder,
+                &self.post_world_buffer,
+                0,
+                bytemuck::cast_slice(frame.post_world_text),
+            );
+        }
         let entity_vertices = all_entities.len() as u64;
         if entity_vertices > self.entity_capacity {
             self.entity_capacity = entity_vertices.next_power_of_two();
@@ -7131,6 +7166,7 @@ impl Renderer {
         let max_quads =
             (world_quads + additive_quads + hand_quads + see_through_quads + shadow_only_quads)
                 .max(cloud_quads)
+                .max(post_world_quads)
                 .max(if frame.lightning.bolts.is_empty() {
                     0
                 } else {
@@ -8536,6 +8572,37 @@ impl Renderer {
                 atlas: self.hud.atlas_texture.as_ref(),
                 quad_indices: &self.indices,
             });
+        }
+        if post_world_quads > 0 && !frame.title {
+            // `render.set-post-world-text2`: the world-aligned pass a shader pack does not
+            // claim. It draws over the composited image, without depth, like `see_through`.
+            let attachments = [Some(wgpu::RenderPassColorAttachment {
+                view: &view_target,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Post-world text"),
+                color_attachments: &attachments,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.see_through_pipeline);
+            pass.set_bind_group(0, &self.entity_group, &[]);
+            pass.set_vertex_buffer(0, self.post_world_buffer.slice(..));
+            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..post_world_quads * 6, 0, 0..1);
         }
         if let Some(hdr) = &self.hdr {
             hdr.keep_world(&mut encoder);

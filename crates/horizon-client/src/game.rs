@@ -175,6 +175,8 @@ mod lightning;
 mod llamas;
 mod locator_bar;
 mod loom;
+#[cfg(all(feature = "mods", target_os = "android"))]
+mod lyrics;
 mod mace;
 mod machines;
 mod maps;
@@ -187,6 +189,8 @@ mod mod_input;
 #[cfg(feature = "mods")]
 mod mod_panel;
 mod mod_render;
+#[cfg(feature = "mods")]
+mod mod_world_text;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -2280,6 +2284,9 @@ struct Game<'a> {
     luminance: Option<horizon_client::dynamic_light::Luminance>,
     /// Name tags drawn over everything (`RenderPipelines.TEXT_SEE_THROUGH`).
     see_through_vertices: Vec<Vertex>,
+    /// `render.set-post-world-text2`'s quads, drawn over the finished image
+    /// (after a shader pack's composite), not in the world pass.
+    post_world_text_vertices: Vec<Vertex>,
     /// The first-person player's model, which only a native pack's shadow pass draws.
     shadow_only_vertices: std::cell::RefCell<Vec<Vertex>>,
     /// Runs of `entity_vertices` by entity, for a shader pack's per-entity draws; recorded only
@@ -10561,6 +10568,15 @@ impl Game<'_> {
         self.test_instance_marker_geometry(camera, &mut out, &mut see_through);
         self.debug_renderer_geometry(camera, &mut out);
         self.text_display_geometry(camera, alpha, &mut out, &mut see_through);
+        #[cfg(feature = "mods")]
+        self.mod_world_text_geometry(camera, &mut out, &mut see_through);
+        #[cfg(feature = "mods")]
+        {
+            let mut post = std::mem::take(&mut self.post_world_text_vertices);
+            post.clear();
+            self.mod_post_world_text_geometry(camera, &mut post);
+            self.post_world_text_vertices = post;
+        }
         self.see_through_vertices = see_through;
         // Entity shadows (EntityRenderer.extractShadow).
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
@@ -15233,6 +15249,7 @@ impl Game<'_> {
         let mut entities = std::mem::take(&mut self.entity_vertices);
         entities.clear();
         self.see_through_vertices.clear();
+        self.post_world_text_vertices.clear();
         self.glowing_vertices.get_mut().clear();
         self.shadow_only_vertices.get_mut().clear();
         let skip_world = title || skip_world_for_blur;
@@ -15301,6 +15318,7 @@ impl Game<'_> {
             .then(|| self.border_draw(camera.to_array(), alpha as f32))
             .flatten();
         let see_through = std::mem::take(&mut self.see_through_vertices);
+        let post_world_text = std::mem::take(&mut self.post_world_text_vertices);
         if skip_world {
             self.dynamic_lights.clear();
         } else {
@@ -15411,6 +15429,7 @@ impl Game<'_> {
             },
             additive: &additive,
             see_through: &see_through,
+            post_world_text: &post_world_text,
             shadow_only: &shadow_only,
             celestial: if self.settings.horizon.sky || title {
                 &celestial
@@ -15486,6 +15505,7 @@ impl Game<'_> {
         *self.glowing_vertices.get_mut() = glowing;
         *self.shadow_only_vertices.get_mut() = shadow_only;
         self.see_through_vertices = see_through;
+        self.post_world_text_vertices = post_world_text;
         result
     }
     /// The frame shows the title's panorama, not a level: the title screen, or a
@@ -18554,6 +18574,7 @@ impl<'a> Game<'a> {
             dynamic_lights: Vec::new(),
             luminance: None,
             see_through_vertices: Vec::new(),
+            post_world_text_vertices: Vec::new(),
             shadow_only_vertices: Default::default(),
             entity_spans: Default::default(),
             glowing_vertices: Default::default(),
@@ -20146,6 +20167,7 @@ pub(crate) fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         lightning: Default::default(),
         additive: &[],
         see_through: &[],
+        post_world_text: &[],
         shadow_only: &[],
         celestial: &[],
         stars: None,

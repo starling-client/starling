@@ -88,6 +88,7 @@ Deprecations and breaking changes are in bold. The release notes of the game rel
 | Part | Level | Version |
 | --- | --- | --- |
 | Content mods (`registries`: data-driven blocks, items, mob effects, thrown entity types and menu types) | preview | manifest `api = "0.2"` |
+| Code mods (WebAssembly components in `.hmod`, manifest `api = "0.1"`; level 8 adds `lyrics` and `render.set-world-text`; level 9 adds `render.set-world-text2`; level 10 adds `render.set-post-world-text2`) | experimental | the `horizon-mod-api-level:0010;` mark |
 | Native mods (horizon-mixins bundles, [native-mods.md](../native-mods.md)) | experimental | the pinned revisions |
 | `cargo horizon-mod` (`new`, `build`, `run`, `check`) | preview | none yet (unversioned) |
 | Shader API | not started | |

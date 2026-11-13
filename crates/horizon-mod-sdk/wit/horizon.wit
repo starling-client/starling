@@ -432,6 +432,83 @@ interface render {
     /// Distance setting, when on, wins. One far terrain shows at a time: the
     /// first loaded mod's.
     set-far-terrain: func(far-terrain: option<far-terrain>);
+    /// A line of text in the world. `set-world-text` draws it.
+    record world-text {
+        /// Up to 256 characters, one line.
+        text: string,
+        /// Where it hangs, in world blocks (the game billboards it to the
+        /// camera; a scale of 1.0 draws the letters about 0.23 blocks
+        /// tall, like a name tag).
+        at: tuple<f32, f32, f32>,
+        /// Scale: 1.0 is a name tag's letters; the mod multiplies for bigger.
+        scale: f32,
+        /// 0xAARRGGBB.
+        color: u32,
+        /// 0xAARRGGBB; the letters fade from `color` to this, left to right.
+        gradient: option<u32>,
+        /// Every letter through the rainbow, cycling with the frame time.
+        rainbow: bool,
+        /// Heavier glyphs (the font's bold).
+        bold: bool,
+        /// A dark drop shadow behind the glyphs.
+        shadow: bool,
+        /// A coloured halo around the glyphs (the `color`, glowing).
+        glow: bool,
+        /// Small stars twinkling and drifting near the glyphs.
+        sparkle: bool,
+        /// Drawn over everything: the glyphs ignore the depth of the world.
+        see-through: bool,
+    }
+    /// Replaces the mod's world texts, drawn billboarded to the camera
+    /// until replaced (an empty list removes them). At most 64; the rest
+    /// are dropped.
+    set-world-text: func(texts: list<world-text>);
+    /// `world-text` with the level-9 styling knobs.
+    record world-text2 {
+        text: string,
+        /// Where it hangs, in world blocks.
+        at: tuple<f32, f32, f32>,
+        /// Scale: 1.0 is a name tag's letters (~0.23 blocks tall).
+        scale: f32,
+        /// 0xAARRGGBB.
+        color: u32,
+        /// 0xAARRGGBB; the letters fade from `color` to this, left to right.
+        gradient: option<u32>,
+        rainbow: bool,
+        bold: bool,
+        shadow: bool,
+        glow: bool,
+        sparkle: bool,
+        see-through: bool,
+        /// Extra advance per glyph, in GUI pixels: 0 is the font's own.
+        letter-spacing: f32,
+        /// Rotation of the line in its billboard plane, in degrees.
+        roll: f32,
+        /// Outline colour; none for no outline. The outline is drawn as
+        /// `outline-thickness` offset copies of the line behind it.
+        outline: option<u32>,
+        /// Outline thickness in GUI pixels: 0.5 to 2.
+        outline-thickness: f32,
+        /// Background box colour behind the line; none for none.
+        background: option<u32>,
+        /// Halo colour instead of the text colour for `glow`; this colour's
+        /// alpha scales the halo (low for soft, full for strong).
+        glow-color: option<u32>,
+        /// Multiplier for the number and size of sparkles: 0 is none,
+        /// 1 the normal amount.
+        sparkle-amount: f32,
+    }
+    /// Replaces the mod's world texts, drawn billboarded to the camera
+    /// until replaced (an empty list removes them). At most 64; the rest
+    /// are dropped.
+    set-world-text2: func(texts: list<world-text2>);
+    /// Like `set-world-text2`, but drawn after the world post pass (a
+    /// shader pack's composite), so the text stays visible with a pack
+    /// picked. The text is world-aligned and billboarded like the other
+    /// hooks, drawn on top of the finished image without depth testing:
+    /// it is not occluded, not depth tested and not re-lit by the pack.
+    /// An empty list removes them.
+    set-post-world-text2: func(texts: list<world-text2>);
 }
 
 /// What the game calls. Only the hooks `init` asks for are ever called.
@@ -539,6 +616,71 @@ interface recipes {
     /// selected slot first, then the hotbar, then the inventory. The count
     /// is cut to one stack of the item (64, 16 or 1).
     give: func(stack: stack) -> result<_, string>;
+}
+
+/// Capability `lyrics` (experimental: the manifest needs
+/// `experimental = ["lyrics"]`): what plays on this device, and the lyrics
+/// of it. A media session publishes only its metadata (title, artist,
+/// album, length, position and the cover art); notification contents are
+/// never read. Android needs notification access: `get-now-playing`
+/// answers none until it is granted; `request-notification-access` opens
+/// the system screen for it. Other platforms always answer none.
+interface lyrics {
+    /// One media session, as its app publishes it.
+    record now-playing {
+        title: string,
+        artist: string,
+        album: string,
+        duration-ms: u64,
+        /// The playback position as of `position-at-ms`; `now-ms` is when
+        /// this snapshot was taken. While `playing`, add the time since
+        /// `now-ms` to `position-ms` to estimate where the track is.
+        position-ms: u64,
+        position-at-ms: u64,
+        now-ms: u64,
+        /// False while paused.
+        playing: bool,
+        /// The package name of the app publishing the session (for
+        /// example `com.spotify.music`), "" otherwise.
+        app: string,
+        /// 0xAARRGGBB of the cover art's vibrant colour; none when the
+        /// app published no bitmap.
+        art-color: option<u32>,
+    }
+    record lyric-line {
+        /// Milliseconds from the track's start.
+        start-ms: u64,
+        text: string,
+    }
+    /// The lyrics of one track.
+    record fetch {
+        /// Where the lyrics came from (lrclib.net), "" when there were none.
+        source: string,
+        /// True when the lines carry timestamps; false for instrumental tracks.
+        synced: bool,
+        /// True for a track with no sung words.
+        instrumental: bool,
+        lines: list<lyric-line>,
+    }
+    /// Whether the player granted notification access; without it every
+    /// answer about media is none.
+    notification-access: func() -> bool;
+    /// Opens the system screen where the player grants notification
+    /// access. On other platforms: does nothing.
+    request-notification-access: func();
+    /// The active media session (the playing one, else the most recent
+    /// paused one), none when none or when notification access is not
+    /// granted.
+    get-now-playing: func() -> option<now-playing>;
+    /// Fetches the lyrics of one track from lrclib.net: only the title,
+    /// artist, album and length are sent, and only when a new track
+    /// starts. One fetch runs at a time; asking again replaces the
+    /// previous one.
+    start-fetch: func(title: string, artist: string, album: string, duration-seconds: f64);
+    /// The finished fetch, once per `start-fetch`; none while it runs or
+    /// before one is asked for. The error is a short human-readable
+    /// reason.
+    poll-fetch: func() -> option<result<fetch, string>>;
 }
 
 /// Capability `ui` (experimental): a recipe viewer's panel beside the
@@ -818,6 +960,7 @@ world horizon-ui-mod {
     import input;
     import recipes;
     import browser;
+    import lyrics;
     export ui-events;
 }
 
@@ -837,4 +980,9 @@ world render-host {
 world recipes-host {
     import recipes;
     import browser;
+}
+
+/// The game's side of capability `lyrics` (imports only).
+world lyrics-host {
+    import lyrics;
 }

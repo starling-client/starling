@@ -1444,6 +1444,22 @@ impl HudBatch {
     ) -> f32 {
         self.styled_text(atlas, text, x, y, color, shadow, true)
     }
+    /// Like [`Self::styled_text`], with extra advance per glyph (GUI pixels)
+    /// for the world text's letter spacing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_styled_spaced(
+        &mut self,
+        atlas: &HudAtlas,
+        text: &crate::text::Text,
+        x: f32,
+        y: f32,
+        color: u32,
+        shadow: bool,
+        spacing: f32,
+        world: bool,
+    ) -> f32 {
+        self.styled_text_spaced(atlas, text, x, y, color, shadow, spacing, world)
+    }
     #[allow(clippy::too_many_arguments)]
     fn styled_text(
         &mut self,
@@ -1453,6 +1469,20 @@ impl HudBatch {
         y: f32,
         color: u32,
         shadow: bool,
+        world: bool,
+    ) -> f32 {
+        self.styled_text_spaced(atlas, text, x, y, color, shadow, 0.0, world)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn styled_text_spaced(
+        &mut self,
+        atlas: &HudAtlas,
+        text: &crate::text::Text,
+        x: f32,
+        y: f32,
+        color: u32,
+        shadow: bool,
+        spacing: f32,
         world: bool,
     ) -> f32 {
         // StringDecomposer.iterateFormatted inside Font.drawInternal:
@@ -1503,7 +1533,7 @@ impl HudBatch {
                 rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, alpha)
             });
             let bold = object.is_none() && style.is_bold();
-            let advance = g.advance + if bold { g.offset } else { 0.0 };
+            let advance = g.advance + if bold { g.offset } else { 0.0 } + spacing;
             glyphs.push((
                 cursor,
                 g,

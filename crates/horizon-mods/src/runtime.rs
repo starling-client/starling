@@ -101,6 +101,16 @@ pub use recipes_bindings::horizon::mods::recipes::{
     Item as RecipeItem, Kind as RecipeKind, Recipe, Stack as RecipeStack,
 };
 use recipes_bindings::{RecipesHost, horizon::mods::browser, horizon::mods::recipes};
+/// Capability `lyrics`'s imports (docs/mods.md): what plays on this device and the lyrics of it (Android only).
+mod lyrics_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "lyrics-host",
+    });
+}
+/// What capability `lyrics` reads (WIT `interface lyrics`).
+pub use lyrics_bindings::horizon::mods::lyrics::{Fetch as LyricsFetch, LyricLine, NowPlaying};
+use lyrics_bindings::{LyricsHost, horizon::mods::lyrics};
 
 /// A mod's linear memory cap.
 const MEMORY: usize = 64 << 20;
@@ -410,6 +420,14 @@ struct State {
     shapes: Vec<Shape>,
     /// Capability `render`'s corner panel.
     corner: Option<CornerPanel>,
+    /// Capability `render`'s world texts, drawn in the world until replaced.
+    world_text: Vec<WorldTextShape>,
+    /// Capability `render`'s level-9 world texts (`world-text2`).
+    world_text2: Vec<WorldTextShape2>,
+    /// Capability `render`'s level-10 world texts (`post-world-text2`).
+    world_texts_post2: Vec<WorldTextShape2>,
+    /// Capability `lyrics`'s platform, lent by the game.
+    lyrics: Arc<dyn LyricsPlatform>,
     /// Capability `render`'s zoom, when the mod zooms.
     zoom: Option<ModZoom>,
     /// Capability `render`'s minimap, when the mod shows one.
@@ -431,7 +449,6 @@ struct State {
 
 /// The installed mods and the engine running them. `Mods::default()` is
 /// the state with none: no engine, and every hook a no-op.
-#[derive(Default)]
 pub struct Mods {
     engine: Option<(Engine, Linker<State>)>,
     entries: Vec<Entry>,
@@ -441,12 +458,38 @@ pub struct Mods {
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
+    /// The platform capability `lyrics` reads, lent by the game.
+    lyrics: Arc<dyn LyricsPlatform>,
+}
+
+impl Default for Mods {
+    fn default() -> Self {
+        Self {
+            engine: None,
+            entries: Vec::new(),
+            snapshot: Arc::new(Snapshot::default()),
+            out: Vec::new(),
+            world: Arc::new(Mutex::new(None)),
+            generation: 0,
+            lyrics: Arc::new(SilentLyrics::default()),
+        }
+    }
 }
 
 impl Mods {
     /// Changes whenever the running mods (so their commands) change.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    /// Lends capability `lyrics` its platform; mods started later use it,
+    /// and running mods get it too. With none lent, the capability
+    /// answers "nothing playing" everywhere.
+    pub fn set_lyrics(&mut self, platform: Arc<dyn LyricsPlatform>) {
+        // Running mods share the platform with the next ones.
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            run.store.data_mut().lyrics = platform.clone();
+        }
+        self.lyrics = platform;
     }
     /// Whether a running mod may use capability `world`: only then is a
     /// view worth lending.
@@ -548,6 +591,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            LyricsHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -587,6 +632,7 @@ impl Mods {
             .collect();
         let snapshot = self.snapshot.clone();
         let world = self.world.clone();
+        let lyrics = self.lyrics.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -616,6 +662,10 @@ impl Mods {
             ui: UiState::default(),
             shapes: Vec::new(),
             corner: None,
+            world_text: Vec::new(),
+            world_text2: Vec::new(),
+            world_texts_post2: Vec::new(),
+            lyrics,
             zoom: None,
             minimap: None,
             far_terrain: None,
@@ -958,6 +1008,28 @@ impl Mods {
         self.entries
             .iter()
             .filter_map(|e| e.run.as_ref()?.store.data().corner.as_ref())
+    }
+    /// The running mods' world texts (capability `render`), in load order.
+    pub fn world_texts(&self) -> impl Iterator<Item = &WorldTextShape> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|run| run.store.data().world_text.iter())
+    }
+    /// The running mods' level-9 world texts (capability `render`), in load order.
+    pub fn world_texts2(&self) -> impl Iterator<Item = &WorldTextShape2> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|run| run.store.data().world_text2.iter())
+    }
+    /// The running mods' level-10 world texts, drawn after the world post
+    /// pass (a shader pack's composite), in load order.
+    pub fn world_texts_post2(&self) -> impl Iterator<Item = &WorldTextShape2> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|run| run.store.data().world_texts_post2.iter())
     }
     /// Some running mod calls `game.raycast`: the snapshot needs a
     /// [`Snapshot::view_hit`].
@@ -1745,6 +1817,194 @@ pub struct CornerPanel {
     pub shapes: Vec<Shape>,
 }
 
+/// One text a mod put in the world (capability `render`, WIT
+/// `world-text`), clipped and ready for the game's renderer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldTextShape {
+    pub text: String,
+    pub at: [f32; 3],
+    /// Scale: 1.0 is a name tag's letters (~0.23 blocks tall).
+    pub scale: f32,
+    /// 0xAARRGGBB.
+    pub color: u32,
+    /// 0xAARRGGBB; a left-to-right gradient from `color` to this.
+    pub gradient: Option<u32>,
+    pub rainbow: bool,
+    pub bold: bool,
+    pub shadow: bool,
+    pub glow: bool,
+    pub sparkle: bool,
+    pub see_through: bool,
+}
+/// The `world-text`s one mod may keep.
+const WORLD_TEXTS: usize = 64;
+/// Characters of one `world-text`'s line.
+const WORLD_TEXT_CHARS: usize = 256;
+/// `set-world-text`'s scale bounds.
+const WORLD_TEXT_SCALE: (f32, f32) = (0.05, 16.0);
+
+/// One text a mod put in the world, with the level-9 styling knobs:
+/// letter spacing, billboard-plane rotation, an outline and a background
+/// box, a glow in its own colour, and a sparkle multiplier.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldTextShape2 {
+    pub text: String,
+    pub at: [f32; 3],
+    /// Scale: 1.0 is a name tag's letters (~0.23 blocks tall).
+    pub scale: f32,
+    /// 0xAARRGGBB.
+    pub color: u32,
+    pub gradient: Option<u32>,
+    pub rainbow: bool,
+    pub bold: bool,
+    pub shadow: bool,
+    pub glow: bool,
+    pub sparkle: bool,
+    pub see_through: bool,
+    /// Extra advance per glyph, in GUI pixels (0 is the font's own).
+    pub letter_spacing: f32,
+    /// Rotation of the line in its billboard plane, in degrees.
+    pub roll: f32,
+    pub outline: Option<u32>,
+    /// Outline thickness in GUI pixels, 0.5 to 2.
+    pub outline_thickness: f32,
+    pub background: Option<u32>,
+    pub glow_color: Option<u32>,
+    /// Multiplier for the number and size of sparkles (0 is none).
+    pub sparkle_amount: f32,
+}
+/// Characters of one `world-text2`'s line.
+const WORLD_TEXT_LINE: usize = WORLD_TEXT_CHARS;
+/// `world-text2`'s extra knobs' limits.
+const WORLD_TEXT_LETTER_SPACING: f32 = 4.0;
+const WORLD_TEXT_OUTLINE: (f32, f32) = (0.5, 2.0);
+const WORLD_TEXT_SPARKLE: (f32, f32) = (0.0, 2.0);
+const WORLD_TEXT_ROLL: f32 = 180.0;
+
+fn clip_world_text2(
+    shapes: Vec<render_bindings::horizon::mods::render::WorldText2>,
+) -> Vec<WorldTextShape2> {
+    shapes
+        .into_iter()
+        .take(WORLD_TEXTS)
+        .map(|t| {
+            let clamp_finite =
+                |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { 0.0 };
+            let scale = if t.scale.is_finite() {
+                t.scale.clamp(WORLD_TEXT_SCALE.0, WORLD_TEXT_SCALE.1)
+            } else {
+                1.0
+            };
+            WorldTextShape2 {
+                text: t.text.chars().take(WORLD_TEXT_LINE).collect(),
+                at: [t.at.0, t.at.1, t.at.2].map(|v| if v.is_finite() { v } else { 0.0 }),
+                scale,
+                color: t.color,
+                gradient: t.gradient,
+                rainbow: t.rainbow,
+                bold: t.bold,
+                shadow: t.shadow,
+                glow: t.glow,
+                sparkle: t.sparkle,
+                see_through: t.see_through,
+                letter_spacing: clamp_finite(t.letter_spacing, 0.0, WORLD_TEXT_LETTER_SPACING),
+                roll: clamp_finite(t.roll, -WORLD_TEXT_ROLL, WORLD_TEXT_ROLL),
+                outline: t.outline,
+                outline_thickness: clamp_finite(t.outline_thickness, WORLD_TEXT_OUTLINE.0, WORLD_TEXT_OUTLINE.1),
+                background: t.background,
+                glow_color: t.glow_color,
+                sparkle_amount: clamp_finite(t.sparkle_amount, WORLD_TEXT_SPARKLE.0, WORLD_TEXT_SPARKLE.1),
+            }
+        })
+        .filter(|t| !t.text.trim().is_empty())
+        .collect()
+}
+
+fn clip_world_text(
+    shapes: Vec<render_bindings::horizon::mods::render::WorldText>,
+) -> Vec<WorldTextShape> {
+    shapes
+        .into_iter()
+        .take(WORLD_TEXTS)
+        .map(|t| {
+            let scale = if t.scale.is_finite() {
+                t.scale.clamp(WORLD_TEXT_SCALE.0, WORLD_TEXT_SCALE.1)
+            } else {
+                1.0
+            };
+            WorldTextShape {
+                text: t.text.chars().take(WORLD_TEXT_CHARS).collect(),
+                at: [t.at.0, t.at.1, t.at.2].map(|v| if v.is_finite() { v } else { 0.0 }),
+                scale,
+                color: t.color,
+                gradient: t.gradient,
+                rainbow: t.rainbow,
+                bold: t.bold,
+                shadow: t.shadow,
+                glow: t.glow,
+                sparkle: t.sparkle,
+                see_through: t.see_through,
+            }
+        })
+        // Empty lines draw nothing; the game skips them.
+        .filter(|t| !t.text.trim().is_empty())
+        .collect()
+}
+
+/// What capability `lyrics` needs of the platform, lent by the game
+/// ([`Mods::set_lyrics`]): an Android game with notification access lends
+/// its view of the media sessions (and its lrclib.net fetcher); every
+/// other game, and a game that lends none, answers "nothing playing".
+pub trait LyricsPlatform: Send + Sync {
+    /// Notification access is granted; without it, every answer about the
+    /// media is none.
+    fn access(&self) -> bool;
+    /// Opens the system screen where the player grants notification
+    /// access. Other platforms: a no-op.
+    fn request(&self);
+    /// The active media session, extrapolated to this instant; none when
+    /// none, or without access.
+    fn now_playing(&self) -> Option<NowPlaying>;
+    /// Starts a background fetch of the lyrics of one track (lrclib.net:
+    /// only the title, artist, album and length are sent, and only when a
+    /// new track starts). The result is handed to [`Self::poll_fetch`].
+    /// One fetch runs at a time; asking again replaces the previous one.
+    fn start_fetch(&self, title: &str, artist: &str, album: &str, duration_seconds: f64);
+    /// The finished fetch, at most once per `start_fetch`; none while it
+    /// runs or before one is asked for. The error is a short
+    /// human-readable reason.
+    fn poll_fetch(&self) -> Option<Result<LyricsFetch, String>>;
+}
+/// The platform when the game lent none: no access, nothing playing.
+struct SilentLyrics {
+    /// `poll-fetch` answers once, so a mod is not stuck on "finding".
+    answered: std::sync::atomic::AtomicBool,
+}
+impl Default for SilentLyrics {
+    fn default() -> Self {
+        Self {
+            answered: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+impl LyricsPlatform for SilentLyrics {
+    fn access(&self) -> bool {
+        false
+    }
+    fn request(&self) {}
+    fn now_playing(&self) -> Option<NowPlaying> {
+        None
+    }
+    fn start_fetch(&self, _: &str, _: &str, _: &str, _: f64) {}
+    fn poll_fetch(&self) -> Option<Result<LyricsFetch, String>> {
+        if self.answered.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            None
+        } else {
+            Some(Err("lyrics are not available on this device".into()))
+        }
+    }
+}
+
 fn clip_shapes(shapes: Vec<Shape>) -> Vec<Shape> {
     shapes
         .into_iter()
@@ -1831,6 +2091,15 @@ impl render::Host for State {
             ..f
         });
     }
+    fn set_world_text(&mut self, shapes: Vec<render::WorldText>) {
+        self.world_text = clip_world_text(shapes);
+    }
+    fn set_world_text2(&mut self, shapes: Vec<render::WorldText2>) {
+        self.world_text2 = clip_world_text2(shapes);
+    }
+    fn set_post_world_text2(&mut self, shapes: Vec<render::WorldText2>) {
+        self.world_texts_post2 = clip_world_text2(shapes);
+    }
     fn frame_stats(&mut self) -> FrameRate {
         let (fps, min, low) = self.snapshot.frame;
         FrameRate { fps, min, low }
@@ -1880,6 +2149,38 @@ impl command::Host for State {
                 lines: lines.into_iter().take(room).map(clip).collect(),
             });
         }
+    }
+}
+impl lyrics::Host for State {
+    fn notification_access(&mut self) -> bool {
+        self.lyrics.access()
+    }
+    fn request_notification_access(&mut self) {
+        self.lyrics.request()
+    }
+    fn get_now_playing(&mut self) -> Option<NowPlaying> {
+        if self.lyrics.access() {
+            self.lyrics.now_playing()
+        } else {
+            None
+        }
+    }
+    fn start_fetch(&mut self, title: String, artist: String, album: String, duration_seconds: f64) {
+        const TEXT: usize = 512;
+        let clip = |s: String| s.chars().take(TEXT).collect::<String>();
+        self.lyrics.start_fetch(
+            &clip(title),
+            &clip(artist),
+            &clip(album),
+            if duration_seconds.is_finite() {
+                duration_seconds.clamp(0.0, 24.0 * 3600.0)
+            } else {
+                0.0
+            },
+        )
+    }
+    fn poll_fetch(&mut self) -> Option<Result<lyrics::Fetch, String>> {
+        self.lyrics.poll_fetch()
     }
 }
 impl hud::Host for State {

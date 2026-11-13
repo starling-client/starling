@@ -313,6 +313,7 @@ pub(super) enum Action {
     WorldFiles,
     GameFiles,
     StarlingDownload,
+    NotificationAccess,
     WorkerLimit,
     ChooseWorkerLimit(u32),
     PerformanceHints,
@@ -982,6 +983,18 @@ fn draw_my3_progress_view(
 }
 
 impl Launcher {
+    /// Whether the app's notification listener is granted, cached for a
+    /// second so the frame does not query the secure settings every draw.
+    pub(super) fn notification_access_cached(&mut self) -> bool {
+        if let Some((at, granted)) = &self.notification_access
+            && at.elapsed() < std::time::Duration::from_secs(1)
+        {
+            return *granted;
+        }
+        let granted = crate::platform::notification_access();
+        self.notification_access = Some((std::time::Instant::now(), granted));
+        granted
+    }
     /// The same spatial focus algorithm as the game's controller menus.
     pub(super) fn navigate(&mut self, key: &KeyEvent) -> bool {
         self.navigate_key(&key.logical_key)
@@ -1489,7 +1502,42 @@ impl Launcher {
                     Action::WorldFiles,
                     false,
                 );
-                let btn_y = (h - 92.0).max(card_y + card_h + 12.0);
+                // The mod API's media access: a media session is visible to
+                // mods only through the notification listener, which Android
+                // grants only in Settings. Asked here on the start-up menu.
+                let access = self.notification_access_cached();
+                let access_y = card_y + card_h + 10.0;
+                let access_h = 38.0;
+                ui.rounded(content_x, access_y, content_w, access_h, 12.0, my3_surface());
+                ui.border(content_x, access_y, content_w, access_h, 12.0, my3_border());
+                let access_label = if access {
+                    "Media lyrics: notification access granted"
+                } else {
+                    "Media lyrics: notification access needed"
+                };
+                let fitted = ui.fit_text(
+                    Face::Medium,
+                    12.5,
+                    access_label,
+                    (content_w - 136.0).max(60.0),
+                );
+                ui.text(
+                    Face::Medium,
+                    12.5,
+                    content_x + 14.0,
+                    access_y + 13.0,
+                    if access { my3_muted() } else { my3_text() },
+                    &fitted,
+                );
+                button(
+                    &mut ui,
+                    &mut self.targets,
+                    [content_x + content_w - 112.0, access_y + 6.0, 100.0, 26.0],
+                    if access { "Settings" } else { "Enable" },
+                    Action::NotificationAccess,
+                    !access,
+                );
+                let btn_y = (h - 92.0).max(access_y + access_h + 8.0);
                 let play_w = content_w.min(256.0);
                 let is_launching = self.launching || self.session_worker.is_some();
                 if is_launching && installed {
@@ -5959,6 +6007,14 @@ impl Launcher {
                 self.catalog.status = if crate::platform::open_documents(crate::document_store::ROOT) {
                     "Game files opened. Worlds, mods, packs, shaders and reports are available here."
                 } else { "Open system Files > Horizon Android." }.into();
+            }
+            Some(Action::NotificationAccess) => {
+                self.notification_access = None;
+                self.catalog.status = if crate::platform::request_notification_listener() {
+                    "Notification access: find Horizon in the list and turn on Allow notification access. Needed once for media lyrics.".into()
+                } else {
+                    "Could not open Android's notification access screen.".into()
+                };
             }
             Some(Action::WorldFiles) => {
                 let id = crate::document_store::folder_id(self.catalog.config.profile, "worlds");

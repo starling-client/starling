@@ -70,6 +70,9 @@ pub(super) struct Launcher {
     pub(super) launching: bool,
     pub(super) launch_pending_tick: bool,
     pub(super) diagnostics_modal_open: bool,
+    /// Cached `Settings.Secure` read for the notification access row,
+    /// so the frame does not query it every draw.
+    pub(super) notification_access: Option<(std::time::Instant, bool)>,
     focus: Option<usize>,
     diagnostic_export: Option<mpsc::Receiver<std::result::Result<String, String>>>,
 }
@@ -248,6 +251,7 @@ impl Launcher {
             launching: false,
             launch_pending_tick: false,
             diagnostics_modal_open: false,
+            notification_access: None,
             focus: None,
             diagnostic_export: None,
         }

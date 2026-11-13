@@ -409,6 +409,14 @@ impl Game<'_> {
                 && !native.iter().any(|n| n.id == id)
         };
         let mods = Mods::load_for(self.mod_runs(), &paths, on, vanilla_command);
+        // Capability `lyrics`: the media session view and the lrclib.net
+        // fetcher (Android only; elsewhere the capability answers none).
+        #[cfg(all(feature = "mods", target_os = "android"))]
+        let mods = {
+            let mut mods = mods;
+            mods.set_lyrics(super::lyrics::platform());
+            mods
+        };
         self.mods.mods = mods;
         let chosen = &self.settings.mods;
         self.mods.mods.set_bindings(|id| chosen.keys_of(id));
