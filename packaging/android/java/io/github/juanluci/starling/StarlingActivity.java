@@ -431,13 +431,11 @@ public class StarlingActivity extends NativeActivity {
 
     /**
      * Buzz the phone itself for `millis` ms at its default strength: the touch controls'
-     * feedback (a block broken, a stack split), as Bedrock's. A phone without a motor stays still.
+     * feedback (a block broken, a stack split), as Bedrock's. A phone without a motor stays still;
+     * 0 stops a buzz under way (vibration just turned off).
      */
     @SuppressWarnings("deprecation")
     public void vibrate(int millis) {
-        if (millis <= 0) {
-            return;
-        }
         Vibrator motor;
         if (Build.VERSION.SDK_INT >= 31) {
             VibratorManager motors =
@@ -446,7 +444,12 @@ public class StarlingActivity extends NativeActivity {
         } else {
             motor = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         }
-        if (motor != null && motor.hasVibrator()) {
+        if (motor == null || !motor.hasVibrator()) {
+            return;
+        }
+        if (millis <= 0) {
+            motor.cancel();
+        } else {
             motor.vibrate(VibrationEffect.createOneShot(millis, VibrationEffect.DEFAULT_AMPLITUDE));
         }
     }
