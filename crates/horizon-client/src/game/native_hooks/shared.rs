@@ -1206,6 +1206,8 @@ impl Game<'_> {
         &mut self,
         packet: &horizon_protocol::packets::play::Clientbound,
     ) {
+        // Starling: the old hook, which mods made for Horizon's API read the decoded packet in.
+        self.native_client_packet_old(packet);
         if !mod_api::__private::listened(mod_api::HookId::ClientPacket) {
             return;
         }
@@ -2202,8 +2204,11 @@ impl Game<'_> {
         self.draw_mod_gui_layers(Some(layer), batch);
         let mut canceled = false;
         self.native_gui_layer_pre(layer, batch, &mut canceled);
+        // Starling: the hooks Horizon's mods have, with `&mut self` (starling/native_compat.rs).
+        self.native_gui_layer_pre_old(layer, batch, &mut canceled);
         let drawn = (!canceled).then(|| draw(self, batch));
         self.native_gui_layer_post(layer, batch);
+        self.native_gui_layer_post_old(layer, batch);
         drawn
     }
     /// `GuiLayerManager.renderInner` for the mods' layers (`native_register_gui_layers`) not
@@ -2231,10 +2236,12 @@ impl Game<'_> {
             };
             let mut canceled = false;
             self.native_gui_layer_pre(layer, batch, &mut canceled);
+            self.native_gui_layer_pre_old(layer, batch, &mut canceled);
             if !canceled {
                 self.native_gui_layer_draw(layer, batch);
             }
             self.native_gui_layer_post(layer, batch);
+            self.native_gui_layer_post_old(layer, batch);
         }
         // Past `until` itself: it is drawn next, by `gui_layer`.
         self.hud_layer_next = Some(next.max(end + usize::from(until.is_some())));

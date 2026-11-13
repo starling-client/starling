@@ -299,12 +299,16 @@ impl Game<'_> {
             }
         }
         self.pad.set_touch_state(state);
-        if chat {
-            self.pad
-                .touch_tap(horizon_client::gamepad::Button::DPadRight);
-        }
-        if perspective {
-            self.pad.touch_tap(horizon_client::gamepad::Button::DPadUp);
+        // The chat and camera buttons act as their mappings, not as the D-pad buttons that held
+        // them: Horizon's controller layout moved chat to D-pad up and the radial menu to right.
+        for (requested, action) in [(chat, "key.chat"), (perspective, "key.togglePerspective")] {
+            if requested
+                && let Err(e) = self
+                    .pad_action(action, true)
+                    .and_then(|()| self.pad_action(action, false))
+            {
+                log::warn!("Starling: touch {action}: {e:#}");
+            }
         }
         if debug {
             self.debug_key(KeyCode::F3, KeyAction::Press);
@@ -344,23 +348,26 @@ impl Game<'_> {
             return;
         }
         let tc = &self.mobile.controls;
-        tc.draw(b, &self.gui.atlas);
-        ui::draw_goy_hud(
-            tc,
-            b,
-            &self.gui.atlas,
-            self.pad_in_menu(),
-            self.mobile.ui.virtual_mouse,
-        );
+        // Starling: while editing, only Horizon Android's editor draws. `TouchControls::draw`
+        // would add Horizon's own editor (Done, Grid, Add buttons...) under its canvas, seen
+        // through it but never reached by a touch.
         if tc.editor.is_none() {
-            // Out of the camera cutout's strips with the controls (#166); `android_aux_touch`
-            // reads them there.
+            tc.draw(b, &self.gui.atlas);
+            ui::draw_goy_hud(
+                tc,
+                b,
+                &self.gui.atlas,
+                self.pad_in_menu(),
+                self.mobile.ui.virtual_mouse,
+            );
+            // Out of the camera cutout's strips with the controls (#166), the hub with the keys
+            // beside it; `android_aux_touch` and `floating_menu_touch` read them there.
             self.draw_clear_of_cutout(b, |b, _| {
                 self.mobile.ui.draw(b, &self.gui.atlas, self.pad_in_menu());
+                self.mobile
+                    .ui
+                    .draw_floating_menu(b, &self.gui.atlas, &tc.settings);
             });
-            self.mobile
-                .ui
-                .draw_floating_menu(b, &self.gui.atlas, &tc.settings);
         }
         ui::draw_hud_editor(tc, b, &self.gui.atlas, &tc.settings.preset_id, None);
         self.mobile.ui.draw_keyboard(b, &self.gui.atlas);
@@ -1258,7 +1265,14 @@ impl Game<'_> {
                 unicode: false,
             },
         );
-        let p = [t.location.x as f32 / b.scale, t.location.y as f32 / b.scale];
+        // The hub as `mobile_draw` lays it out: clear of the camera cutout's strips, beside the
+        // utility keys (#166).
+        let [left, _, right, _] = self.safe_gui_insets(b.scale);
+        b.width = (b.width - left - right).max(0.0);
+        let p = [
+            t.location.x as f32 / b.scale - left,
+            t.location.y as f32 / b.scale,
+        ];
         if !self.mobile.ui.owns_relative(t.id)
             && !self.mobile.ui.owns_gesture(t.id)
             && let Some(menu_act) = self.mobile.ui.floating_menu_touch(

@@ -8,6 +8,7 @@
 //! here; the old types are in `horizon_client::starling_mod_api`.
 //!
 //! Hook bodies have no `cfg` and no macros: horizon-mixins refuses a target with either.
+use super::native_hooks::{NativeRecipeLayout, NativeRecipeResult, NativeRecipeView};
 use super::{Game, GameLevel, LevelDimension, lan::LanHost};
 use horizon_client::lan::data::component_nbt;
 use horizon_client::lan::guest::Guest;
@@ -86,6 +87,20 @@ impl Game<'_> {
     pub(in crate::game) fn native_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         let _ = (batch, corners);
     }
+    /// Before one of the HUD's layers, as `native_gui_layer_pre` is, with the game to change: Horizon's
+    /// had `&mut self`, the split's has `&self`. Set `canceled` to hide the layer.
+    pub(in crate::game) fn native_gui_layer_pre_old(
+        &mut self,
+        layer: &str,
+        draw: &mut HudBatch,
+        canceled: &mut bool,
+    ) {
+        let _ = (layer, draw, canceled);
+    }
+    /// After one of the HUD's layers, as `native_gui_layer_post` is, with the game to change.
+    pub(in crate::game) fn native_gui_layer_post_old(&mut self, layer: &str, draw: &mut HudBatch) {
+        let _ = (layer, draw);
+    }
     /// A key or mouse button went down or up, by its vanilla name
     /// (`key.keyboard.z`, `key.mouse.left`): keys on any screen (check
     /// `native_playing`), mouse buttons while playing. Repeats are left out.
@@ -154,6 +169,15 @@ impl Game<'_> {
     /// click: set `claimed` to take the use (Horizon's `use_item` takes a call now).
     pub(in crate::game) fn native_use_item_old(&mut self, stack: &ItemStack, claimed: &mut bool) {
         let _ = (stack, claimed);
+    }
+    /// A play packet from the server reached the window's game, decoded, just before the game
+    /// handles it: Horizon's `native_client_packet`, whose split successor shows only the
+    /// packet's id and a custom payload. Read-only.
+    pub(in crate::game) fn native_client_packet_old(
+        &mut self,
+        packet: &horizon_protocol::packets::play::Clientbound,
+    ) {
+        let _ = packet;
     }
     /// After a successful authoritative server level tick pass of `dimension`
     /// (`minecraft:overworld`); Horizon's `level_tick_post` names the level by a handle now.
@@ -424,6 +448,82 @@ impl Game<'_> {
     pub(in crate::game) fn native_text_width_old(&self, text: &str) -> f32 {
         HudBatch::text_width(&self.gui.atlas, text)
     }
+    /// The most recently extracted world frame's camera (Horizon's `native_camera`, the split's
+    /// `camera`): during the GUI the current frame's, bob, spin and FOV included.
+    pub(in crate::game) fn native_camera(&self) -> Option<::mod_api::Camera> {
+        self.camera()
+    }
+    /// Whether Shift is held (live modifier state).
+    pub(in crate::game) fn native_has_shift_down(&self) -> bool {
+        self.has_shift_down()
+    }
+    /// Whether Control is held (live modifier state).
+    pub(in crate::game) fn native_has_control_down(&self) -> bool {
+        self.has_control_down()
+    }
+    /// Whether Alt is held (live modifier state).
+    pub(in crate::game) fn native_has_alt_down(&self) -> bool {
+        self.has_alt_down()
+    }
+    /// Whether a physical key is held now.
+    pub(in crate::game) fn native_is_key_down(&self, key: KeyCode) -> bool {
+        self.physical_keys.contains(&key)
+    }
+    /// The text of language key `key`, or `fallback` when the language has none: Horizon's
+    /// `Game::translate`, which takes only the key now and answers `None`.
+    pub(in crate::game) fn translate_or(&self, key: &str, fallback: &str) -> String {
+        horizon_client::lang::get_or(key, fallback)
+    }
+    /// `AbstractContainerMenu.clicked` on the open menu: Horizon's `Game::menu_click`, which the
+    /// split calls `click_open_inventory` (its own `menu_click` takes a menu reference now).
+    pub(in crate::game) fn menu_click_old(
+        &mut self,
+        slot: Option<usize>,
+        button: i32,
+        input: horizon_client::menu::Input,
+    ) -> bool {
+        self.click_open_inventory(slot, button, input)
+    }
+    /// The inventory screen's slot of menu `menu`'s slot `slot`: Horizon's `Game::menu_slot`,
+    /// the split's `inventory_screen_slot`.
+    pub(in crate::game) fn menu_slot_old(menu: &str, slot: i32) -> Option<usize> {
+        Self::inventory_screen_slot(menu, slot)
+    }
+    /// Draws GUI sprite `name`'s `src` part into `dst`, untinted: Horizon's `native_sprite`
+    /// before it took a tint. False when the sprite isn't in the atlas.
+    pub(in crate::game) fn native_sprite_old(
+        &self,
+        batch: &mut HudBatch,
+        name: &str,
+        src: [f32; 4],
+        dst: [f32; 4],
+    ) -> bool {
+        self.native_sprite(batch, name, src, dst, None)
+    }
+    /// Plays sound event `sound` for this player only, at `at`, after `delay` ticks (0 to 1200):
+    /// false, with nothing played, on a server or for a value out of range. Horizon's
+    /// `native_play_local_sound` (API 83), which the split left out.
+    pub(in crate::game) fn native_play_local_sound(
+        &mut self,
+        sound: &str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        delay: i32,
+    ) -> bool {
+        let fine = crate::game::native_hooks::sound_id(sound)
+            && at.iter().all(|v| v.is_finite() && v.abs() <= 30_000_000.0)
+            && volume.is_finite()
+            && volume >= 0.0
+            && pitch.is_finite()
+            && pitch >= 0.0
+            && (0..=1200).contains(&delay);
+        if !self.native_window() || !fine {
+            return false;
+        }
+        self.audio.play_after(sound, at, volume, pitch, delay);
+        true
+    }
     /// Asks for the blur behind the open screen this frame; false when it was already asked.
     pub(in crate::game) fn native_apply_screen_blur(&self) -> bool {
         self.apply_screen_blur()
@@ -503,7 +603,47 @@ impl Game<'_> {
     }
     /// The items mod `mod_id`'s panel shows; an item the game doesn't know is left out.
     pub(in crate::game) fn native_panel_items(&mut self, mod_id: &str, items: Vec<NativeStack>) {
-        let items = items
+        let items = self.api_stacks(items);
+        self.panel_items(mod_id, items);
+    }
+    /// The recipes mod `mod_id`'s panel shows, as Horizon's `native_panel_recipes` took them before
+    /// a result could have a chance and a recipe fluids: stacks by item id, each result alone in
+    /// its slot. An item the game doesn't know is left out.
+    pub(in crate::game) fn native_panel_recipes_old(
+        &mut self,
+        mod_id: &str,
+        title: &str,
+        tabs: Vec<NativeStack>,
+        tab: u32,
+        views: Vec<NativeRecipeViewOld>,
+    ) {
+        let tabs = self.api_stacks(tabs);
+        let views = views
+            .into_iter()
+            .map(|v| NativeRecipeView {
+                layout: v.layout,
+                width: v.width,
+                height: v.height,
+                slots: v.slots.into_iter().map(|s| self.api_stacks(s)).collect(),
+                results: v
+                    .results
+                    .into_iter()
+                    .map(|s| NativeRecipeResult {
+                        stacks: self.api_stacks(vec![s]),
+                        chance: None,
+                    })
+                    .collect(),
+                fluid_inputs: Vec::new(),
+                fluid_outputs: Vec::new(),
+                note: v.note,
+                action: v.action,
+            })
+            .collect();
+        self.native_panel_recipes(mod_id, title, tabs, tab, views);
+    }
+    /// Old stacks by item id as the mod API's; an item the game doesn't know is left out.
+    fn api_stacks(&self, stacks: Vec<NativeStack>) -> Vec<::mod_api::Stack> {
+        stacks
             .into_iter()
             .filter_map(|stack| {
                 let id = ::mod_api::Identifier::parse(&stack.item).ok()?;
@@ -513,8 +653,7 @@ impl Game<'_> {
                     components: stack.components,
                 })
             })
-            .collect();
-        self.panel_items(mod_id, items);
+            .collect()
     }
     /// The most of `item` one stack holds.
     pub(in crate::game) fn native_max_stack_size(&self, item: &str) -> Option<u32> {
@@ -703,5 +842,81 @@ impl Game<'_> {
     /// The items mod `mod_id` handles the use of itself.
     pub(in crate::game) fn native_claim_items(&mut self, mod_id: &str, ids: &[String]) {
         self.claim_items(mod_id, ids);
+    }
+    /// The tab list's players, each with the skin this client draws for them (Horizon's
+    /// `native_client_profiles`): empty off a server and in a server's own game.
+    pub(in crate::game) fn native_client_profiles(&mut self) -> Vec<NativeClientProfile> {
+        if !self.native_window() {
+            return Vec::new();
+        }
+        let Some((players, _, _)) = self.remote_tab_players() else {
+            return Vec::new();
+        };
+        players
+            .into_iter()
+            .map(|p| NativeClientProfile {
+                skin: self.face_skin(p.uuid, &p.skin),
+                uuid: p.uuid,
+                name: p.name,
+            })
+            .collect()
+    }
+    /// The health HUD's state (Horizon's `native_health_hud_state`), for a mod answering
+    /// `native_health_hud`: `layout` draws its rows and moves their frame state on (the hearts'
+    /// blink, the bubble pop), so call it at most once a frame.
+    pub(in crate::game) fn native_health_hud_state(
+        &mut self,
+    ) -> &mut horizon_client::hud_layout::HealthHud {
+        &mut self.health_hud
+    }
+    /// Where the next row above the hotbar would go, in GUI pixels up from the view's bottom: the
+    /// larger of `Hud.leftHeight` and `rightHeight`, which Horizon's health HUD kept until 26.3's.
+    /// The status rows' top as the HUD keeps room for them, 39 (the first row's) without rows.
+    pub(in crate::game) fn status_rows_height_old(&self) -> i32 {
+        let room = &self.ui.room;
+        let rows = room.height() - room.bottom();
+        if rows > 0.0 {
+            rows.round() as i32 + 10
+        } else {
+            39
+        }
+    }
+}
+
+/// A recipe the panel shows as Horizon's API had it before results could have a chance and recipes
+/// fluids (`native_panel_recipes_old`): stacks by item id, one per result. Only mods build one.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NativeRecipeViewOld {
+    pub(crate) layout: NativeRecipeLayout,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) slots: Vec<Vec<NativeStack>>,
+    pub(crate) results: Vec<NativeStack>,
+    pub(crate) note: String,
+    pub(crate) action: Option<bool>,
+}
+
+/// A player of the tab list as Horizon's `native_client_profiles` gives one.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default)]
+pub(in crate::game) struct NativeClientProfile {
+    pub uuid: u128,
+    pub name: String,
+    /// The skin this client draws for the player.
+    pub skin: String,
+}
+
+#[allow(dead_code)]
+impl super::Dim {
+    /// The number a dimension had when the three were all there was (`dim as u8`): 0, 1 and 2,
+    /// and 3 for one past them.
+    pub(in crate::game) fn old_number(self) -> u8 {
+        match self {
+            Self::Overworld => 0,
+            Self::Nether => 1,
+            Self::End => 2,
+            Self::Extra(_) => 3,
+        }
     }
 }

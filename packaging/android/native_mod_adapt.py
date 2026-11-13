@@ -24,7 +24,13 @@ FOLDERS = ("crates/horizon-client-render/src/", "crates/horizon-client-core/src/
 OLD_FOLDER = "crates/horizon-client/src/"
 OLD_ROOT = OLD_FOLDER + "lib.rs"
 # What Horizon renamed since, and takes the same arguments.
-RENAMED = {"horizon_client::game::titles::Game<'_>::draw_titles": "horizon_client::game::titles::Game<'_>::draw_title"}
+RENAMED = {
+    "horizon_client::game::titles::Game<'_>::draw_titles": "horizon_client::game::titles::Game<'_>::draw_title",
+    # The packet decoded, which Horizon's hook gives and the split's (an id and a payload) doesn't.
+    "horizon_client::game::native_hooks::Game<'_>::native_client_packet": (
+        "horizon_client::game::native_hooks::Game<'_>::native_client_packet_old"
+    ),
+}
 MODULE = re.compile(r"^\s*(?:pub(?:\(crate\))? )?mod (\w+)\s*(?:;|\{)", re.M)
 # Calls with the arguments they took (a call, how many, what the new ones are).
 CALLS = (
@@ -33,14 +39,24 @@ CALLS = (
     ("ui::slider(", 9, "false"),
     ("super::build_renderer(", 7, "false, false"),
     ("content_root(", 3, "None, &mut |_| {}"),
-    # A batch is laid out with the view's GUI scale settings now (the game's, in a mod's helper).
-    ("HudBatch::new(", 1, "game.settings.gui_scale_inputs()"),
 )
 # What became something else. Some of it gives a little up: a LAN guest as the F3 target, `/dh` in the
 # chat's completion, a camera's own eye height, the bounds of a dimension lower than the overworld, a
 # world's own set of mods and the note about preparing them when a mod calls `content_root` again.
 CHANGED = (
     (r"GuestUse::Entity\(Hand::Main\)", "GuestUse::Entity(Hand::Main, _)"),
+    # A text's hover is shared now.
+    (r"(\bhover:\s*Some\(\s*)Box::new\(", r"\1std::sync::Arc::new("),
+    # The mob aimed at also gives the point hit.
+    (r"Some\(\((\w+),\s*(\w+)\)\)(\s*=\s*[\w.]+\.mob_hit\(\))", r"Some((\1, \2, _))\3"),
+    # A player reference keeps its UUID behind a method.
+    (r"(\.native_acting_player\(\)\s*\.map\(\|(\w+)\|\s*\2\.uuid)(?!\()", r"\1()"),
+    (r"\bhorizon_world::player_inventory::EquipmentSlot\b", "horizon_core::equipment_slot::EquipmentSlot"),
+    # An item's hover name reads the names themselves, not a lookup closure.
+    (
+        r"let names = \|id: &str\| ([\w.]+)\.pack\.names\.display_item\(id\);",
+        r"let names = &\1.pack.names;",
+    ),
     (r"Slots::Ender => Vec::new\(\),", "_ => Vec::new(),"),
     (r"\b[\w.]*\.dim\.min_y\(\)", "(-64)"),
     (r"\b[\w.]*\.dim\.max_y\(\)", "319"),
@@ -78,11 +94,103 @@ CHANGED = (
         r"\1 animated_layers: from.animated_layers.clone(), full_faces: from.full_faces.clone(),"
         r" solid: from.solid.clone(),\2",
     ),
+    # An item's custom name is its NBT text now.
+    (r"\.custom_name = Some\(([\w:]+)\.to_owned\(\)\);", r".custom_name = Some(horizon_core::nbt::Tag::String(\1.into()));"),
     (
-        r"d\.custom_name = Some\(bc::ITEM_NAME\.to_owned\(\)\);",
-        "d.custom_name = Some(horizon_world::nbt::Tag::String(bc::ITEM_NAME.into()));",
+        r"\.and_then\(\|(\w+)\| \1\.custom_name\.as_deref\(\)\)\s*==\s*Some\(([\w:]+)\)",
+        r".and_then(|\1| \1.custom_name.as_ref()) == Some(&horizon_core::nbt::Tag::String(\2.into()))",
     ),
+    # A mob's gear is one `Equipment` (stacks by `EquipmentSlot` ordinal), and what is stuck in
+    # it is `stuck`.
+    (r"(\.extra)\.arrow_count\b", r"\1.stuck.arrows"),
+    (r"(\.extra)\.stinger_count\b", r"\1.stuck.stingers"),
+    (r"(\.extra)\.saddled\b(?!\s*\()", r"\1.saddled()"),
+    (r"(\.extra)\.saddle_stack\b", r"\1.equipment[horizon_items::equipment::SADDLE]"),
+    (r"(\.extra)\.armor\[(\d)\]", r"\1.equipment[horizon_items::equipment::ARMOR[\2]]"),
+    (
+        r"(\.extra)\.(main_hand|off_hand|head|chest|legs|feet|body)\b(?!\s*(?:=(?!=)|\())",
+        lambda m: f"{m[1]}.equipment.get(horizon_items::equipment::{EQUIPMENT_SLOTS[m[2]]}).map(|s| &*s.item)",
+    ),
+    (r"let \[(\w+), (\w+), \.\.\] = &([\w.]+)\.equipment;", r"let (\1, \2) = (&\3.equipment[0], &\3.equipment[1]);"),
+    # The dragon's fireballs are projectiles of their kind.
+    (
+        r"\bgame\.dragon_fireballs\.iter\(\)",
+        "game.creatures.projectiles.iter()"
+        ".filter(|p| p.kind == horizon_client::projectiles::ProjectileKind::DragonFireball)",
+    ),
+    # A system toast goes through the toast hook with its title and message.
+    (
+        r"(SystemToast::new\()(\w+), Some\((\w+)\)\)",
+        r"\1horizon_client::text::Text::literal(\2), Some(horizon_client::text::Text::literal(\3)))",
+    ),
+    (
+        r"if game\.toast_allowed\(\"system\", \"\w+\"\) \{\s*game\.server_packs\.load_fail = Some\(new\);\s*\}",
+        "if let Some(new) = game.add_system_toast(new) { game.server_packs.load_fail = Some(new); }",
+    ),
+    # Horizon's HUD kept the status rows' heights until 26.3's (`Hud.leftHeight`, `rightHeight`).
+    (
+        r"game\s*\.health_hud\s*\.left_height\s*\.max\(\s*game\s*\.health_hud\s*\.right_height\s*,?\s*\)",
+        "game.status_rows_height_old()",
+    ),
+    # Options went back to the game, not the pause menu, after the HDR page's key had opened it.
+    (r"\b\w+\.options_to_game = ([^;]+);", r"let _ = \1;"),
+    (r"\b\w+\.options_to_game\b", "false"),
+    # A dimension can be a mod's now: the number the three had.
+    (r"\b((?:game|self)\.dim) as (u8|u16|u32|u64|usize|i32|i64)\b", r"\1.old_number() as \2"),
+    # Whether an item or a projectile glows, by its id (`entity_glowing` takes a handle now).
+    (r"\.entity_glowing\((\w+)\.id\)", r".tracked_entity_glowing(\1.id)"),
+    # The far terrain's update aims at a zoom now.
+    (
+        r"(\blod\s*\.update\(\s*\[camera\[0\] \+ lead\[0\], camera\[1\], camera\[2\] \+ lead\[1\]\],"
+        r"\s*detail,\s*distance,\s*covered\.clone\(\),)",
+        r"\1 None,",
+    ),
+    # A map slot always, as the old claim gave one.
+    (r"let \((\w+), (\w+)\) = ([\w.]+\.slots)\.claim\(", r"let (\1, \2) = \3.claim_old("),
+    # A mob's layers with `render_with`'s parameters (the split's also hands back posed parts).
+    (r"\bhorizon_client::mobs::render::render_layers\b(?!\s*\()", "horizon_client::starling_mod_api::render_layers_old"),
+    # A text keeps its spans to itself now: built with `Span::new` and `Text::from_spans`, joined with
+    # `push`, coloured underneath with `with_color` (each span's own colour stays).
+    (
+        r"(\w+)\.spans\.push\(\s*Span\s*\{\s*text(?::\s*([^,]+?))?,\s*style:\s*([^}]+?),?\s*\}\s*\);",
+        lambda m: f"{m[1]}.push(Text::from_spans(vec![Span::new({m[2] or 'text'}, {m[3].strip()})]));",
+    ),
+    (r"(\w+)\.spans\.extend\((\w+)\.spans\.iter\(\)\.cloned\(\)\);", r"\1.push(\2.clone());"),
+    (r"(\w+)\.spans\.extend\((\w+)\.spans\);", r"\1.push(\2);"),
+    (
+        r"for (\w+) in &mut (\w+)\.spans \{\s*if \1\.style\.color\.is_none\(\) \{\s*\1\.style\.color = Some\((\w+)\);\s*\}\s*\}",
+        r"\2 = \2.with_color(\3);",
+    ),
+    # A block hit says whether the ray started inside it; the tick's hit is a `Cell`; a use is a
+    # press or a repeat.
+    (
+        r"(crate::game::Hit \{\s*pos: [^,{}]+,\s*face: [^,{}]+,\s*point: [^,{}]+,)(\s*\})",
+        r"\1 inside: false,\2",
+    ),
+    (r"\b(\w+)\.tick_hit\.replace\(Some\((\w+)\)\)", r"\1.tick_hit.replace(Some(Some(\2)))"),
+    (r"\b(\w+)\.tick_hit = (\w+);", r"\1.tick_hit.set(\2);"),
+    (r"\b(\w+)\.remote_use\(\)", r"\1.remote_use(::mod_api::InteractionAttempt::Press)"),
+    # A Studio replay plays in `replay.driver`; the first-person arm is posed at the frame's tick.
+    (r"\bgame\.studio_replay\.is_some\(\)", "game.replay.driver.is_some()"),
+    (r"\bgame\.first_person_arm\((\w+), (\w+), (\w+), (\w+)\)", r"game.first_person_arm(\1, \2, \3, 1.0, \4)"),
+    # An experience orb's value is signed now.
+    (
+        r"if cfg\.experience_value \{\s*orb\.value\s*\} else \{\s*amount\s*\}",
+        "if cfg.experience_value { orb.value.max(0) as u32 } else { amount }",
+    ),
+    # A tooltip's display from the game's stack (the mod API's `for_stack` takes the API's).
+    (r"\b(\w+::item_tooltip)::TooltipDisplay::for_stack\(", r"\1::tooltip_display("),
 )
+# `Mob.extra`'s old item ids by name, as `Equipment` slots.
+EQUIPMENT_SLOTS = {
+    "main_hand": "MAINHAND",
+    "off_hand": "OFFHAND",
+    "head": "HEAD",
+    "chest": "CHEST",
+    "legs": "LEGS",
+    "feet": "FEET",
+    "body": "BODY",
+}
 
 
 def with_arguments(text, call, count, new):
@@ -106,7 +214,22 @@ def with_arguments(text, call, count, new):
 
 # Calls of a helper whose new shape takes other arguments, by how many they pass: the old shape
 # Starling keeps as `<name>_old` (game/starling/native_compat.rs).
-OLD_SHAPES = ((".native_text_width(", 1, ".native_text_width_old("),)
+OLD_SHAPES = (
+    (".native_text_width(", 1, ".native_text_width_old("),
+    # Untinted, before it took a tint.
+    (".native_sprite(", 4, ".native_sprite_old("),
+    # A batch is laid out with its view's GUI scale settings now; the old constructor takes the last
+    # batch's (hud.rs `HudBatch::new_old`), whatever the code around it can reach.
+    ("HudBatch::new(", 1, "HudBatch::new_old("),
+    # With a fallback (`translate` takes only the key now and answers `None`).
+    (".translate(", 2, ".translate_or("),
+    # A slot, a button and an input: the menu engine's click (`menu_click` takes a menu reference
+    # now), and the inventory screen's slot of a menu's.
+    (".menu_click(", 3, ".menu_click_old("),
+    ("Game::menu_slot(", 2, "Game::menu_slot_old("),
+    # Inventory.add, the stack that did not fit back: `give` takes an item key and a count now.
+    (".give(", 1, ".add_stack_to_inventory("),
+)
 
 
 def count_arguments(text, first):
@@ -142,12 +265,65 @@ def old_api(text):
     return re.sub(r"\b(horizon_client|crate)::mod_api\b", r"\1::starling_mod_api", text)
 
 
+def modded_fluids(text):
+    """A block's fluid can be a mod's now (`Fluid::Modded`): in code that never names it, the arm
+    for no fluid takes it too, so a `match` over water, lava and none still covers every fluid."""
+    if "Modded" in text or re.search(r"\benum\s+Fluid\b", text):
+        return text
+    return re.sub(
+        r"\b((?:[\w:]*::)?Fluid::)None(\s*=>)",
+        lambda m: f"{m[1]}None | {m[1]}Modded{m[2]}",
+        text,
+    )
+
+
+GUEST_LOOP = re.compile(r"for (\w+) in ([\w.]+\.guests)\.iter_mut\(\)(?:\.filter\(\|(\w+)\| ([^{};]*?)\))? \{")
+
+
+def guest_loops(text):
+    """A loop that changes a hub's guests: the list lends no mutable row now (it indexes them), so
+    the loop's body becomes `update_all`'s callback. A body that can leave early (`continue`,
+    `break`, `return`, `?`) is left as it is: a callback can't."""
+    out, at = [], 0
+    for m in GUEST_LOOP.finditer(text):
+        if m.start() < at:
+            continue
+        depth, i = 1, m.end()
+        while depth and i < len(text):
+            depth += (text[i] == "{") - (text[i] == "}")
+            i += 1
+        body = text[m.end() : i - 1]
+        var, guests, param, condition = m.groups()
+        if re.search(r"\b(?:continue|break|return)\b|\?(?=[\s;).,])", body) or (param and param != var):
+            continue
+        guard = f" if !({condition}) {{ return; }}" if condition else ""
+        out += [text[at : m.start()], f"{guests}.update_all(|{var}| {{{guard}{body}}});"]
+        at = i
+    return "".join(out + [text[at:]])
+
+
+def old_panel(text):
+    """A recipe panel made before a result could have a chance and a recipe fluids (it builds
+    `NativeRecipeView` without `fluid_inputs`): its views and recipe calls take the old shape
+    Starling keeps (game/starling/native_compat.rs), and the stacks its events bring come by item id
+    as they did."""
+    if not re.search(r"\bNativeRecipeView\s*\{", text) or "fluid_inputs" in text:
+        return text
+    text = re.sub(r"\bNativeRecipeView\b", "NativeRecipeViewOld", text)
+    text = re.sub(r"\.native_panel_recipes\(", ".native_panel_recipes_old(", text)
+    return re.sub(
+        r"(\bstack:\s*)(stack_of|stack)\((\w+)\)",
+        r"\1\2(&horizon_client::starling_mod_api::native_stack_old(\3))",
+        text,
+    )
+
+
 def code(text):
     for call, count, new in CALLS:
         text = with_arguments(text, call, count, new)
     for old, new in CHANGED:
         text = re.sub(old, new, text)
-    return old_api(old_shapes(text))
+    return old_api(old_shapes(modded_fluids(old_panel(guest_loops(text)))))
 
 
 def owners(source):
@@ -163,7 +339,7 @@ def adapt(text, source, modules):
     def target(match):
         path = match[2]
         for old, new in RENAMED.items():
-            path = path.replace(old, new)
+            path = re.sub(re.escape(old) + r"\b", new, path)
         path = re.sub(
             r"\bhorizon_client::(\w+)",
             lambda m: f"{modules[m[1]]}::{m[1]}" if m[1] in modules else m[0],
@@ -427,7 +603,7 @@ def rebind(text, tree, hooks):
         if not split or split[0] not in tree:
             continue
         module, spelled, kind, name = split
-        names = tree[module].parameters.get((kind, name), ("", []))[1]
+        receiver, names = tree[module].parameters.get((kind, name), ("", []))
         for old, new in RENAMED_PARAMETERS.items():
             if old in names or new not in names:
                 continue
@@ -436,12 +612,14 @@ def rebind(text, tree, hooks):
                 lambda m, o=old, n=new: m[1] + re.sub(rf"\b{o}\b", n, m[2]) + m[3],
                 block,
             )
-        # Bindings to parameters the function no longer has, when Starling keeps the old one
-        # beside it as `<name>_old` (game/starling/native_compat.rs): the old one.
+        # Bindings to parameters the function no longer has, or the game borrowed to change
+        # (`&mut *self`) where the function only reads it now (`&self`), when Starling keeps the
+        # old one beside it as `<name>_old` (game/starling/native_compat.rs): the old one.
         used = set()
         for value in re.findall(r'value\s*=\s*"([^"]*)"', block):
             used.update(re.findall(r"\b([a-z_]\w*)\b", value))
-        if kind and target and (used - set(names) - {"self", "mut"}):
+        changes_self = receiver == "&self" and re.search(r'value\s*=\s*"&\s*mut\s*\*\s*self\b', block)
+        if kind and target and ((used - set(names) - {"self", "mut"}) or changes_self):
             old_target = relocate(f"{module}::{spelled}::{name}_old", tree)
             old_split = split_target(old_target)
             if old_split and old_split[0] in tree and (kind, f"{name}_old") in tree[old_split[0]].methods:

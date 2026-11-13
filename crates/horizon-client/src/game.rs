@@ -15351,7 +15351,9 @@ impl Game<'_> {
         let depth_far =
             horizon_client::camera::depth_far(terrain_distance, self.settings.cloud_range);
         // Only native mods read it: no matrices or allocation per frame without one.
-        let mods_read_camera = !mod_api::__private::mods().is_empty();
+        // Starling: and the mods made for Horizon's own API (`native_camera`,
+        // starling/native_compat.rs), which that list doesn't hold.
+        let mods_read_camera = true;
         self.screen_blur_requested.set(false);
         self.native_camera_frame = (mods_read_camera && !title).then(|| {
             let partial = camera_alpha as f32;

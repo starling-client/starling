@@ -2338,6 +2338,9 @@ pub struct GuiScale {
     pub requested: u32,
     pub unicode: bool,
 }
+/// Starling: the scale inputs of the last batch laid out (`HudBatch::new`), the requested scale in
+/// the low bits and Force Unicode in the top one, for [`HudBatch::new_old`].
+static LAST_GUI_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// One frame of overlay geometry in GUI pixels.
 pub struct HudBatch {
     pub pictures: Vec<Arc<pictures::Picture>>,
@@ -2403,9 +2406,26 @@ impl HudBatch {
     /// Window.calculateScale: the largest scale keeping >= 320x240 GUI pixels,
     /// capped by the GUI Scale option (0 = auto).
     pub fn new(window: [u32; 2], inputs: GuiScale) -> Self {
+        LAST_GUI_SCALE.store(
+            (inputs.requested & 0x7fff_ffff) | (u32::from(inputs.unicode) << 31),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let gui =
             horizon_client_input::window::GuiSize::new(window, inputs.requested, inputs.unicode);
         Self::with_gui_size(gui)
+    }
+    /// Starling: the one-argument constructor native mods made for Horizon before each view had
+    /// its own scale settings, laid out with the last batch's (`HudBatch::new`); auto before any.
+    /// `native_mod_adapt.py` points their `HudBatch::new(size)` here.
+    pub fn new_old(window: [u32; 2]) -> Self {
+        let bits = LAST_GUI_SCALE.load(std::sync::atomic::Ordering::Relaxed);
+        Self::new(
+            window,
+            GuiScale {
+                requested: bits & 0x7fff_ffff,
+                unicode: bits >> 31 == 1,
+            },
+        )
     }
     /// An offscreen or test batch, independent of the active view's settings.
     pub fn scratch(window: [u32; 2]) -> Self {

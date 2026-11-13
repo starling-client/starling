@@ -4084,7 +4084,8 @@ impl Game<'_> {
     }
 
     /// Map a menu slot to Horizon's inventory screen slot ids.
-    pub(super) fn inventory_screen_slot(menu: &str, slot: i32) -> Option<usize> {
+    // Starling: open to the game, for the old helper native mods call (`menu_slot_old`).
+    pub(in crate::game) fn inventory_screen_slot(menu: &str, slot: i32) -> Option<usize> {
         let s = usize::try_from(slot).ok()?;
         // A container of `n` slots, then the inventory and the hotbar.
         let slots = |n: usize| -> Option<usize> {

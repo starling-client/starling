@@ -5,9 +5,12 @@
 use super::{Game, Screen, native_mob_draw::PlayerRender, shoulders::shoulder_variants};
 use horizon_client::{
     blocks::BlockFacts,
-    camera::{CameraEntity, CameraType, LivingCamera},
+    camera::{CameraEntity, LivingCamera},
     collisions::SceneCollisions,
 };
+// Starling: open to the crate, as native mods made for Horizon import it from here
+// (`use super::perspective::CameraType`).
+pub(crate) use horizon_client::camera::CameraType;
 use horizon_client::{
     hud::HudBatch,
     mobs::{Anim, Brain, Mob, MobType},

@@ -467,9 +467,11 @@ impl Fishing {
             pill(ui, w / 2.0, hint_y, hint, false);
         }
         if self.caught > 0 {
+            // Under the Diagnostics button the setup keeps in the top right corner (16 down, 36
+            // tall), its right edge on the button's.
             let count = format!("Caught: {}", self.caught);
             let cw = ui.measure(Face::Semibold, 15.0, &count);
-            pill(ui, w - 16.0 - cw / 2.0 - 16.0, 16.0, &count, true);
+            pill(ui, w - 16.0 - cw / 2.0 - 16.0, 16.0 + 36.0 + 8.0, &count, true);
         }
     }
 }

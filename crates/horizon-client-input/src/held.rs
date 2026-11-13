@@ -42,6 +42,11 @@ impl HeldKeys {
     pub fn raw(&self, key: &KeyCode) -> bool {
         self.held.contains_key(key)
     }
+    /// Starling: [`HeldKeys::raw`] under the name native mods made for Horizon use, from when the
+    /// held keys were a `HashSet<KeyCode>` (`game.keys.contains(&KeyCode::ShiftLeft)`).
+    pub fn contains(&self, key: &KeyCode) -> bool {
+        self.raw(key)
+    }
     /// `source` holds `key`. True when nothing held it before.
     pub fn press(&mut self, key: KeyCode, source: Source) -> bool {
         let sources = self.held.entry(key).or_insert(0);
