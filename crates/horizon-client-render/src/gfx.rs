@@ -362,6 +362,8 @@ fn packed_wanted() -> bool {
 mod adreno;
 pub(crate) mod animate;
 mod arena;
+/// The loading screen's own small renderer, which hands this one its open device.
+pub(crate) mod boot;
 pub mod capture;
 pub mod compositor;
 pub(crate) mod core_lines;
@@ -2332,8 +2334,9 @@ fn renders_depth(features: wgpu::TextureFormatFeatures) -> bool {
         .allowed_usages
         .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
 }
-/// A device and what it came from.
-struct Opened {
+/// A device and what it came from. `pub(crate)` so the loading screen's own renderer
+/// (`boot::BootRenderer`) can hand this one the device it already opened.
+pub(crate) struct Opened {
     instance: wgpu::Instance,
     surface: Option<wgpu::Surface<'static>>,
     adapter: wgpu::Adapter,
