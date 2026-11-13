@@ -8,33 +8,24 @@ impl Game<'_> {
     pub(super) fn inventory_quick_move(&mut self, slot: usize) -> bool {
         self.click_open_inventory(Some(slot), 0, horizon_client::menu::Input::QuickMove)
     }
-    /// `AbstractContainerMenu.clicked` on the open inventory, crafting table,
-    /// chest, hopper, dispenser or furnace menu, run by the verified menu
-    /// engine (`horizon_client::menu`). `slot` None is outside the window.
-    /// False when the open screen is not one the engine models.
-    pub(super) fn menu_click(
-        &mut self,
-        slot: Option<usize>,
-        button: i32,
-        input: horizon_client::menu::Input,
-    ) -> bool {
-        if let Some(slot) = slot
-            && slot >= Creative::DISPLAY
-            && self.creative_tab_open()
-        {
-            self.creative_display_click(slot, button, input);
-            return true;
+    /// Submit clicks on the local player's live menu through normal prediction
+    /// and `ContainerClick`. Slots use the same menu order as `slot`; `None`
+    /// is outside (-999). All clicks are validated before any prediction or send.
+    /// A drag expands to one complete quick-craft gesture.
+    /// Refuses stale menus, invalid slots/hotbar indices, spectators, non-client hosts,
+    /// the creative inventory screen and empty batches without changing items.
+    /// True means submitted, not accepted by the server: its corrections win.
+    pub(super) fn menu_click(&mut self, menu: MenuRef, clicks: &[MenuClick]) -> bool {
+        if self.is_logical_server() || self.screen == super::Screen::Creative || self.spectator() {
+            return false;
         }
-        if let Some(slot) = slot
-            && input == horizon_client::menu::Input::Throw
-            && self.carried.is_some()
-            && self.remote.is_some()
-            && ((slot < 9 && self.creative_tab_open()) || self.creative_inventory_open())
-        {
-            self.creative_throw_carrying(slot, button);
-            return true;
-        }
-        self.menu_ops(&[(slot, button, input)])
+        let Some(name) = self.native_client_menu_name(menu) else {
+            return false;
+        };
+        let Some(ops) = client_click_ops(name, clicks, self.instabuild()) else {
+            return false;
+        };
+        self.remote_menu_ops(&ops)
     }
     /// `CreativeModeInventoryScreen.slotClicked`: THROW while a stack is carried, on an item
     /// tab's hotbar slot or any slot of the Survival Inventory tab. The menu's own THROW needs an

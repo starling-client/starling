@@ -80,30 +80,17 @@ impl Game<'_> {
         out
     }
 
-    /// Inventory.add: returns the stack that did not fit.
-    pub(super) fn give(&mut self, mut stack: ItemStack) -> Option<ItemStack> {
-        let tutorial_item = matches!(
-            self.tutorial.step,
-            tutorial::Step::FindTree | tutorial::Step::PunchTree | tutorial::Step::CraftPlanks
-        )
-        .then(|| stack.clone());
-        let max = self
-            .res
-            .items()
-            .get(&stack.item)
-            .map_or(64, |i| i.max_stack);
-        let before = stack.count;
-        let left = inventory_add(
-            &mut self.inventory,
-            &mut self.offhand,
-            self.selected,
-            max,
-            &mut stack,
-        );
-        if stack.count < before {
-            self.tutorial_get_item(tutorial_item.as_ref());
-        }
-        left.then_some(stack)
+    /// Creative mode only: gives the player `count` of `item`
+    /// (`minecraft:diamond`) as taking it from the creative inventory does
+    /// (`ServerboundSetCreativeModeSlot`): the selected slot first, then the
+    /// hotbar, then the inventory. The count is cut to one stack.
+    pub(in crate::game) fn give(
+        &mut self,
+        item: mod_api::ItemKey,
+        count: u32,
+    ) -> Result<(), String> {
+        let item = mod_api::__private::item_key_id(item).ok_or("unknown item key")?;
+        self.recipe_give(item, count)
     }
 }
 

@@ -4,80 +4,80 @@ use super::*;
 
 #[derive(Clone)]
 pub(crate) struct Options {
-    resources: PathBuf,
-    distance: i32,
-    distance_override: Option<i32>,
-    seed: i64,
-    developer_single_player: bool,
-    creative: bool,
-    test_terrain: bool,
+    pub(super) resources: PathBuf,
+    pub(super) distance: i32,
+    pub(super) distance_override: Option<i32>,
+    pub(super) seed: i64,
+    pub(super) developer_single_player: bool,
+    pub(super) creative: bool,
+    pub(super) test_terrain: bool,
     /// `--pregen`: enable the command even when the saved Extras switch is off.
-    pregen: bool,
-    frames: Option<u64>,
+    pub(super) pregen: bool,
+    pub(super) frames: Option<u64>,
     /// A splitscreen player: the split window paces every player's frames, not each its own.
-    paced_by_split: bool,
+    pub(super) paced_by_split: bool,
     /// A splitscreen player other than P1: its windows are the split's (P1 alone decides
     /// fullscreen; this game neither asks for it nor adopts it into its options).
-    split_guest: bool,
+    pub(super) split_guest: bool,
     /// A splitscreen guest drawn in Window 1, the game's own window: its F11 leaves that
     /// window to P1.
-    split_in_main_window: bool,
+    pub(super) split_in_main_window: bool,
     /// `--world-frames N`: exit after N frames drawn in the world (smoke runs; the world may load slowly).
-    world_frames: Option<u64>,
-    screenshot_after: Option<u64>,
-    timeout: Option<Duration>,
-    report: Option<PathBuf>,
-    world: Option<String>,
-    look: Option<(f32, f32)>,
-    time: Option<i64>,
-    weather: Option<String>,
-    dimension: Option<String>,
+    pub(super) world_frames: Option<u64>,
+    pub(super) screenshot_after: Option<u64>,
+    pub(super) timeout: Option<Duration>,
+    pub(super) report: Option<PathBuf>,
+    pub(super) world: Option<String>,
+    pub(super) look: Option<(f32, f32)>,
+    pub(super) time: Option<i64>,
+    pub(super) weather: Option<String>,
+    pub(super) dimension: Option<String>,
     /// Options.pauseOnLostFocus off (F3+P), for scripted testing.
-    no_pause: bool,
+    pub(super) no_pause: bool,
     /// Control socket path (`--control`), for `horizon-ctl`.
-    control: Option<PathBuf>,
+    pub(super) control: Option<PathBuf>,
     /// `HORIZON_SPIKES=MS`: print the timed spans of frames slower than MS.
-    spikes: Option<f32>,
+    pub(super) spikes: Option<f32>,
     /// Render into a texture instead of the window (`--offscreen`), so a
     /// GPU the display cannot present from can still be benchmarked. The
     /// window stays hidden and never grabs the system pointer.
-    offscreen: bool,
+    pub(super) offscreen: bool,
     /// `--headless` (#4951): no display, no window and no renderer. The game runs its own
     /// loop (`game/runtime/headless.rs`) instead of winit's, so it starts where no display server
     /// is (an SSH session, a server). It counts as `offscreen` for everything else (an
     /// automated run that never shows a window or grabs the pointer).
-    headless: bool,
+    pub(super) headless: bool,
     /// `--width` and `--height` (vanilla's own arguments): the window's
     /// starting size, 1280x720 by default.
-    window_size: [u32; 2],
+    pub(super) window_size: [u32; 2],
     /// Multiplayer: `--server HOST[:PORT]` joins at start; `--name` is the offline player name.
-    server: Option<String>,
+    pub(super) server: Option<String>,
     /// `--name`, `HORIZON_PLAYER_NAME` or the signed-in account's name; else
     /// [`Options::player_name`] uses the kept offline name.
-    player_name: Option<String>,
+    pub(super) player_name: Option<String>,
     /// `--dedicated`: run as a dedicated server; vanilla's server arguments
     /// (`--nogui`, `--port`, `--world`, `--universe`, `--initSettings`) follow.
-    dedicated: Option<Vec<String>>,
+    pub(super) dedicated: Option<Vec<String>>,
     /// `--transfers SETTINGS`: a dedicated server takes a proxy's hand-over requests
     /// (`server.toml`'s `[transfer]`, which horizon-server passes; lan/arrivals.rs).
-    transfers: Option<horizon_client::lan::arrivals::Settings>,
+    pub(super) transfers: Option<horizon_client::lan::arrivals::Settings>,
     /// `--benchmark SCENARIO`: run the benchmark, write its report and quit.
-    benchmark: Option<String>,
+    pub(super) benchmark: Option<String>,
     /// Content selection and the compiled native runtime shared with resource loaders.
-    mods: mods::ModsState,
+    pub(super) mods: mods::ModsState,
     /// What this Game executes; independent of its current server connection.
-    execution_role: execution_role::ExecutionRole,
+    pub(super) execution_role: execution_role::ExecutionRole,
     /// `--fullscreen` (vanilla's): the window opens fullscreen whatever options.txt says,
     /// as vanilla's DisplayData does, without saving it there.
-    fullscreen: bool,
+    pub(super) fullscreen: bool,
     /// `--game-dir DIR`: the folder `read` makes the working directory (saves, options.txt...);
     /// none for a splitscreen player's game, which shares P1's working directory.
-    game_dir: Option<PathBuf>,
+    pub(super) game_dir: Option<PathBuf>,
     /// `--quickPlaySingleplayer`, checked once the game folder is known.
-    quick_play: Option<String>,
-    session_file: Option<String>,
+    pub(super) quick_play: Option<String>,
+    pub(super) session_file: Option<String>,
     /// `--session-stdin`: the session file's JSON comes on standard input instead.
-    session_stdin: bool,
+    pub(super) session_stdin: bool,
 }
 
 impl Options {
@@ -88,7 +88,7 @@ impl Options {
     }
     /// The name to join servers with: the one given, else the offline name kept
     /// next to options.txt (created on first use).
-    fn player_name(&self) -> String {
+    pub(super) fn player_name(&self) -> String {
         self.player_name
             .clone()
             .or_else(crate::accounts::player_name)
@@ -106,7 +106,7 @@ impl Options {
     /// The command line alone: no file is read and nothing changes. `None` for `--help` and
     /// `--launch-api`, which print and end the run.
     #[cfg(test)]
-    fn parse(args: impl Iterator<Item = String>) -> Result<Option<Self>> {
+    pub(super) fn parse(args: impl Iterator<Item = String>) -> Result<Option<Self>> {
         Self::from_launch(LaunchArguments::parse(
             args,
             &std::env::current_dir()?,
@@ -114,7 +114,7 @@ impl Options {
             std::env::var_os("HORIZON_HOME").as_deref(),
         )?)
     }
-    fn from_launch(LaunchArguments { context, rest }: LaunchArguments) -> Result<Option<Self>> {
+    pub(super) fn from_launch(LaunchArguments { context, rest }: LaunchArguments) -> Result<Option<Self>> {
         let sibling = std::env::current_exe()?
             .parent()
             .ok_or("missing executable directory")?

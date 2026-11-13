@@ -20,110 +20,191 @@ impl Game<'_> {
     /// then `useItem`. Whether the click ends here (it acted or failed).
     pub(super) fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
         self.use_failed = false;
+        // The click's target as it was decided, before the adventure gate
+        // below may drop the block for the item's own use.
+        let aimed_at_block = block_hit.is_some();
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
         let sneaking = self.keys.held(Mapping::Sneak);
         let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
         let mut anchor_passed = false;
-        // Native mods, where ServerPlayerGameMode.useItemOn starts: a
-        // canceled click does nothing (a guest's block is sent back).
-        // A slow tick's line names the phase of a use that took it (#8669): the mods' hook,
-        // the block's own use, then the item's.
+        // Native mods, where ServerPlayerGameMode.useItemOn starts
+        // (RightClickBlock): a cancel answers for the block and the item, and
+        // its PASS goes on to Item.use, which a guest's UseItem asks for.
+        // A slow tick's line names the phase of a use that took it (#8669): the
+        // mods' hook, the block's own use, then the item's.
+        use mod_api::InteractionResult as Answer;
+        use mod_api::TriState;
+        let on_block = matches!(self.guest_use, Some(GuestUse::OnBlock(_)));
+        let mut block_hit = block_hit;
+        let (mut use_block, mut use_item) = (TriState::Default, TriState::Default);
+        let block_phase = horizon_client::spans::guard("use_block");
         if let Some(hit) = block_hit {
-            let mut canceled = false;
-            horizon_client::spans::time("use_mods", || {
-                self.native_right_click_block(hit.pos, hit.face, &mut canceled);
-                let hand = self.hand;
-                self.native_right_click_block_v2(hit.pos, hit.face, hand, &mut canceled);
+            let held = self.held().cloned();
+            let answer = horizon_client::spans::time("use_mods", || {
+                self.right_click_block(hit, self.hand, held.as_ref())
             });
-            if canceled {
-                // Nothing was used, so nothing consumed the action.
-                self.use_failed = true;
-                return Ok(true);
+            match answer {
+                native_hooks::BlockClickAnswer::Go {
+                    use_block: block,
+                    use_item: item,
+                } => (use_block, use_item) = (block, item),
+                native_hooks::BlockClickAnswer::Canceled(answer)
+                    if answer.consumes_action() || answer == Answer::Fail =>
+                {
+                    if matches!(answer, Answer::Success | Answer::SuccessServer) {
+                        self.swing_arm();
+                    }
+                    self.use_failed = answer == Answer::Fail;
+                    return Ok(true);
+                }
+                native_hooks::BlockClickAnswer::Canceled(_) => {
+                    (use_block, use_item) = (TriState::False, TriState::False);
+                }
             }
         }
-        // MultiPlayerGameMode.useItemOn: blocks react first.
-        let block_phase = horizon_client::spans::guard("use_block");
-        if !(sneaking && hands_full)
+        // ServerPlayerGameMode.useItemOn: the held item's onItemUseFirst, when
+        // RightClickBlock didn't deny the item, ahead of the sneak gate and
+        // every block behaviour. Its answer ends the click for this hand.
+        if use_item.or(true)
+            && let Some(hit) = block_hit
+            && let Some(held) = self.held().cloned()
+            && let Some(answer) = self.item_use_first(hit, self.hand, &held)
+        {
+            if matches!(answer, Answer::Success | Answer::SuccessServer) {
+                self.swing_arm();
+            }
+            self.use_failed = answer == Answer::Fail;
+            return Ok(answer.consumes_action() || answer == Answer::Fail);
+        }
+        // ServerPlayerGameMode.useItemOn: after the spectator and sneak gates,
+        // BlockState.useItemOn runs before every block-specific behaviour.
+        if use_block.or(!(sneaking && hands_full))
             && let Some(hit) = block_hit
         {
             let held = self.held().cloned();
-            if self.use_lectern(hit.pos, held.as_ref()) {
+            // Create's arm in hand marks what it works with (arms.rs).
+            if self.use_arm_item(hit.pos) {
                 self.swing_arm();
                 return Ok(true);
             }
-            if self.use_sign_applicator(hit.pos, held.as_ref()) {
+            // A content mod's machine (Create's depot, millstone: processing.rs).
+            if self.use_machine(hit.pos, hit.face) {
                 self.swing_arm();
                 return Ok(true);
             }
-            if self.use_golem_statue(hit.pos, held.as_ref()) {
+            // Create's belt connector on a shaft (belts.rs).
+            if self.use_belt_connector(hit.pos, sneaking) {
                 self.swing_arm();
                 return Ok(true);
             }
-            if self.use_jukebox(hit.pos, held.as_ref()) {
-                self.swing_arm();
-                return Ok(true);
+            let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+            let mut block_answer =
+                self.use_item_on_block(hit, self.hand, held.as_ref(), mod_api::UsePhase::Block);
+            if block_answer.is_none()
+                && mod_api::__private::has_part_hook(mod_api::HookId::UseItemOn)
+                && api_values::block_state::block_listens(mod_api::HookId::UseItemOn, state)
+                && let Ok(snapshot) = held.try_into_api()
+            {
+                let click = self.block_click(hit, self.hand, snapshot.as_ref());
+                self.native_use_item_on(state, &click, &mut block_answer);
             }
-            if let Some(swings) = self.use_shelf(hit) {
-                let used = held.unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
-                self.trigger_block("minecraft:item_used_on_block", hit.pos, &used);
-                if swings {
-                    self.swing_arm();
-                }
-                return Ok(true);
-            }
-            if let Some(swings) = self.use_chiseled_bookshelf(hit, held.as_ref()) {
-                if swings {
-                    self.swing_arm();
-                }
-                return Ok(true);
-            }
-            if self.use_composter(hit.pos, held.as_ref()) {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_vault(hit.pos, held.as_ref())? {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_decorated_pot(hit.pos, held.as_ref()) {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_pumpkin(hit.pos, hit.face, held.as_ref())? {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_beehive(hit.pos, held.as_ref())? {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_campfire_douse(hit.pos, held.as_ref())? {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_redstone_ore(hit.pos, held.as_ref())? {
-                self.swing_arm();
-                return Ok(true);
-            }
-            match self.use_respawn_anchor(hit.pos, held.as_ref())? {
-                respawn_anchor::AnchorUse::Charged => {
+            let mut chains_sign = false;
+            if block_answer.is_none() {
+                if self.use_on_cauldron(hit.pos)? {
                     self.swing_arm();
                     return Ok(true);
                 }
-                // The main hand passes; its item is used, then the off hand's glowstone.
-                respawn_anchor::AnchorUse::Pass => anchor_passed = true,
-                respawn_anchor::AnchorUse::Other => {}
+                if let Some(placed) = self.use_on_campfire(hit.pos)? {
+                    if placed {
+                        self.swing_arm();
+                    }
+                    return Ok(true);
+                }
+                if self.use_lectern(hit.pos, held.as_ref()) {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_sign_applicator(hit.pos, held.as_ref()) {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_golem_statue(hit.pos, held.as_ref()) {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if let Some(swings) = self.use_shelf(hit) {
+                    let used = held.unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
+                    self.trigger_block("minecraft:item_used_on_block", hit.pos, &used);
+                    if swings {
+                        self.swing_arm();
+                    }
+                    return Ok(true);
+                }
+                if self.use_composter(hit.pos, held.as_ref()) {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_vault(hit.pos, held.as_ref())? {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_pumpkin(hit.pos, hit.face, held.as_ref())? {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_beehive(hit.pos, held.as_ref())? {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_campfire_douse(hit, held.as_ref())? {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                block_answer = self.use_redstone_ore(hit.pos, held.as_ref())?;
+                match self.use_respawn_anchor(hit.pos, held.as_ref())? {
+                    respawn_anchor::AnchorUse::Charged => {
+                        self.swing_arm();
+                        return Ok(true);
+                    }
+                    // The main hand passes; its item is used, then the off hand's glowstone.
+                    respawn_anchor::AnchorUse::Pass => anchor_passed = true,
+                    respawn_anchor::AnchorUse::Other => {}
+                }
+                // CeilingHangingSignBlock.useItemOn: a hanging sign aimed at the
+                // underside passes, so the next sign chains below instead of
+                // opening the editor, unless the side has click commands to run
+                // (`shouldTryToChainAnotherHangingSign`).
+                chains_sign = hit.face == [0, -1, 0]
+                // `instanceof HangingSignItem`, independent of the item's name.
+                && held.as_ref().is_some_and(|s| {
+                    self.res.behaviours().item_binding(&s.item)
+                        .is_some_and(|i| i.kind == horizon_world::level::ItemKind::HangingSign)
+                })
+                && self
+                    .res
+                    .facts()
+                    .get(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]))
+                    .has_class("CeilingHangingSignBlock")
+                && matches!(
+                    self.world
+                        .block_entities
+                        .get(&(hit.pos[0], hit.pos[1], hit.pos[2])),
+                    Some(BlockEntity::Sign(_))
+                )
+                && !self.sign_can_execute_click_commands((hit.pos[0], hit.pos[1], hit.pos[2]));
             }
-            // HangingSignBlock.useItemOn, on a ceiling sign's underside or a
-            // wall sign's edge: the hanging sign in hand chains a new sign
-            // there, so the block's own use is skipped, unless the side the
-            // player faces has click commands to run
-            // (`shouldTryToChainAnotherHangingSign`).
-            let chains_sign = self.chains_hanging_sign(hit.pos, hit.face, held.as_ref());
+            if block_answer.is_none() {
+                use horizon_world::level::UseBranch::ItemOn;
+                block_answer = self
+                    .use_jukebox(hit.pos, state, held.as_ref(), ItemOn)
+                    .or_else(|| self.use_decorated_pot(hit.pos, state, held.as_ref(), ItemOn))
+                    .or_else(|| self.use_chiseled_bookshelf(hit, state, held.as_ref(), ItemOn));
+            }
             // TRY_WITH_EMPTY_HAND: only the main hand's turn uses the block
-            // itself (useWithoutItem).
-            if !anchor_passed && !chains_sign && self.hand == Hand::Main {
+            // itself (useWithoutItem). The block's item behaviour hears both hands.
+            if !anchor_passed && !chains_sign && (self.hand == Hand::Main || block_answer.is_some())
+            {
                 let face = match hit.face {
                     [0, 1, 0] => Direction::Up,
                     [0, -1, 0] => Direction::Down,
@@ -133,31 +214,81 @@ impl Game<'_> {
                     _ => Direction::East,
                 };
                 let player = self.use_context();
-                let at = Vec3::new(hit.point[0], hit.point[1], hit.point[2]);
+                let block_hit = horizon_core::geometry::BlockHit {
+                    block: BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
+                    direction: face,
+                    location: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
+                    inside: hit.inside,
+                };
                 let item = held.as_ref().map(|s| s.item.to_string());
-                let cake = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-                let adds_candle =
-                    self.with_level(|b, _, _| b.cake_candle_state(cake, item.as_deref()).is_some());
+                let adds_candle = self
+                    .with_level(|b, _, _| b.cake_candle_state(state, item.as_deref()).is_some());
                 let pots_flower = self
-                    .with_level(|b, _, _| b.potted_flower_state(cake, item.as_deref()).is_some());
-                // Read before the use runs: a sign's click commands execute in
-                // `process_level_events` and may change or remove the sign, but
-                // vanilla keeps the click consumed (`executedClickCommand`).
-                let sign_consumes = self.sign_consumes_click(hit.pos);
-                let (result, branch) = self.with_level(|b, level, ticks| {
-                    b.use_item_on_branch(
-                        level,
-                        ticks,
-                        BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
-                        face,
-                        at,
-                        player,
-                        item.as_deref(),
-                    )
-                });
+                    .with_level(|b, _, _| b.potted_flower_state(state, item.as_deref()).is_some());
+                use horizon_world::level::{InteractionResult, UseBranch};
+                let item_result = match block_answer {
+                    Some(answer) => native_hooks::block_use_result(answer),
+                    None => self.with_level(|b, level, ticks| {
+                        b.block_use_item_on(level, ticks, state, block_hit, player, item.as_deref())
+                    }),
+                };
+                let mut empty_template_ran = false;
+                let (result, branch) = if let Some(result) = item_result {
+                    (result, UseBranch::ItemOn)
+                } else if self.hand == Hand::Main {
+                    let mut empty_answer = None;
+                    if mod_api::__private::has_part_hook(mod_api::HookId::UseWithoutItem)
+                        && api_values::block_state::block_listens(
+                            mod_api::HookId::UseWithoutItem,
+                            state,
+                        )
+                        && let Ok(snapshot) = self.held().try_into_api()
+                    {
+                        let click = self.block_click(hit, self.hand, snapshot.as_ref());
+                        self.native_use_without_item(state, &click, &mut empty_answer);
+                    }
+                    if empty_answer.is_none()
+                        && self
+                            .res
+                            .behaviours()
+                            .data(state)
+                            .is(horizon_world::level::classes::Class::Fence)
+                        && self.use_knot(hit.pos, false)
+                    {
+                        self.trigger_default_block_use(hit.pos);
+                        return Ok(true);
+                    }
+                    let answer = empty_answer.or_else(|| {
+                        self.use_jukebox(hit.pos, state, None, UseBranch::WithoutItem)
+                            .or_else(|| {
+                                self.use_decorated_pot(hit.pos, state, None, UseBranch::WithoutItem)
+                            })
+                            .or_else(|| {
+                                self.use_chiseled_bookshelf(
+                                    hit,
+                                    state,
+                                    None,
+                                    UseBranch::WithoutItem,
+                                )
+                            })
+                    });
+                    let result = if let Some(answer) = answer {
+                        native_hooks::block_use_result(answer).unwrap_or(InteractionResult::Pass)
+                    } else {
+                        empty_template_ran = true;
+                        let player = self.use_context();
+                        self.with_block_use_level(|b, level, ticks| {
+                            b.use_without_item(level, ticks, state, block_hit, player)
+                        })
+                    };
+                    (result, UseBranch::WithoutItem)
+                } else {
+                    (InteractionResult::Pass, UseBranch::ItemOn)
+                };
                 self.process_level_events()?;
                 // CakeBlock.useItemOn: the candle is used up and counted.
-                if adds_candle
+                if block_answer.is_none()
+                    && adds_candle
                     && result == horizon_world::level::InteractionResult::Success
                     && let Some(used) = held.as_ref()
                 {
@@ -165,7 +296,8 @@ impl Game<'_> {
                     self.consume_held();
                 }
                 // FlowerPotBlock.useItemOn: the plant is potted, used up, and counted.
-                if pots_flower
+                if block_answer.is_none()
+                    && pots_flower
                     && result == horizon_world::level::InteractionResult::Success
                     && let Some(used) = held.as_ref()
                 {
@@ -180,8 +312,9 @@ impl Game<'_> {
                         );
                     }
                 }
-                // NoteBlock.useWithoutItem (tuned) and BellBlock.onHit (rung).
-                if result == horizon_world::level::InteractionResult::Success {
+                // These effects belong to the vanilla method, not its Part replacement.
+                if empty_template_ran && result == horizon_world::level::InteractionResult::Success
+                {
                     let name = self
                         .res
                         .facts()
@@ -195,15 +328,7 @@ impl Game<'_> {
                         _ => {}
                     }
                 }
-                // SignBlock.useWithoutItem answers PASS for a sign that is
-                // not waxed, has no click action to run and that nobody may
-                // build on: ServerPlayerGameMode.useItemOn goes on to
-                // ItemStack.useOn, so an adventure-mode `can_place_on` stack
-                // still places against the sign.
-                let sign_passes = branch == horizon_world::level::UseBranch::WithoutItem
-                    && self.res.facts().get(cake).sign_form().is_some()
-                    && !sign_consumes;
-                if result.consumes_action() && !sign_passes {
+                if result.consumes_action() {
                     // ServerPlayerGameMode.useItemOn: ITEM_USED_ON_BLOCK with
                     // the stack before the use, or DEFAULT_BLOCK_USE.
                     match branch {
@@ -218,7 +343,7 @@ impl Game<'_> {
                     if result.should_swing() {
                         // SUCCESS swings on the client too; the beds, light,
                         // respawn anchor and sign's own uses are SUCCESS_SERVER.
-                        if server_only_block_use(self.res.facts().get(cake), branch) {
+                        if server_only_block_use(self.res.facts().get(state), branch) {
                             self.swing_arm();
                         } else {
                             self.swing_arm_predicted();
@@ -227,6 +352,14 @@ impl Game<'_> {
                     return Ok(true);
                 }
             }
+        }
+        // RightClickBlock's useItem FALSE: no ItemStack.useOn, so only
+        // Item.use is left (a guest's UseItem asks for it).
+        if !use_item.or(true) {
+            if on_block {
+                return Ok(false);
+            }
+            block_hit = None;
         }
         drop(block_phase);
         let _item_phase = horizon_client::spans::guard("use_item");
@@ -237,29 +370,98 @@ impl Game<'_> {
             return Ok(false);
         };
         // ServerPlayerGameMode.useItem and useItemOn: an item on cooldown is
-        // not used (PASS, so the other hand may still act).
-        if self
-            .cooldowns
-            .is_on_cooldown(&horizon_client::cooldowns::group(
-                &stack,
-                info.use_cooldown.as_ref(),
-            ))
+        // not used (PASS, so the other hand may still act), unless
+        // RightClickBlock's useItem TRUE forces a block click's useOn.
+        let forced = on_block && use_item == TriState::True;
+        if !forced
+            && self
+                .cooldowns
+                .is_on_cooldown(&horizon_client::cooldowns::group(
+                    &stack,
+                    info.use_cooldown.as_ref(),
+                ))
         {
             return Ok(false);
+        }
+        // ItemStack.useOn: adventure's predicate selects Item.useOn before
+        // its event and Part, not just before the eventual block placement.
+        if let Some(hit) = block_hit
+            && !self.may_build()
+            && !self.can_place_on_in_adventure(hit.pos)
+        {
+            if on_block {
+                return Ok(false);
+            }
+            block_hit = None;
         }
         // Native mods, where ItemStack.useOn and Item.use start: the block
         // aimed at had its turn, and the item is off cooldown. A guest's
         // UseItemOn reaches only useOn, its UseItem only use.
-        let on_block = matches!(self.guest_use, Some(GuestUse::OnBlock(_)));
         let mut claimed = false;
+        // Starling: the old hook first, for the mods made for it (native_compat.rs): a claimed
+        // use swings the hand, and neither the item's useOn nor its use runs.
         if let Some(hit) = block_hit {
-            self.native_use_item_on(&stack, hit.pos, hit.face, &mut claimed);
+            self.native_use_item_on_old(&stack, hit.pos, hit.face, &mut claimed);
+            if claimed {
+                self.swing_arm();
+                return Ok(true);
+            }
+        }
+        if let Some(hit) = block_hit {
+            if let Some(answer) = self.use_item_on_block(
+                hit,
+                self.hand,
+                Some(&stack),
+                mod_api::UsePhase::ItemAfterBlock,
+            ) {
+                if answer.consumes_action() {
+                    self.trigger_block("minecraft:item_used_on_block", hit.pos, &stack);
+                    if matches!(answer, Answer::Success | Answer::SuccessServer) {
+                        self.swing_arm();
+                    }
+                    return Ok(true);
+                }
+                if answer == Answer::Fail {
+                    self.use_failed = true;
+                    return Ok(true);
+                }
+                if on_block {
+                    return Ok(false);
+                }
+                block_hit = None;
+            } else if mod_api::__private::has_part_hook(mod_api::HookId::UseOn)
+                && let Ok(snapshot) = stack.try_into_api()
+            {
+                let (player, player_entity_id) = self.native_clicker();
+                let (hand, at) = (self.hand, hit.native());
+                self.native_use_on(mod_api::__private::UseOnCall {
+                    stack: &snapshot,
+                    pos: hit.pos,
+                    face: hit.face,
+                    hand,
+                    hit: at,
+                    player,
+                    player_entity_id,
+                    claimed: &mut claimed,
+                });
+            }
         }
         if !claimed && !on_block {
-            self.native_use_item(&stack, &mut claimed);
+            if let Some(answer) = self.right_click_item(self.hand, &stack, aimed_at_block) {
+                if matches!(answer, Answer::Success | Answer::SuccessServer) {
+                    self.swing_arm();
+                }
+                return Ok(answer.consumes_action());
+            }
+            self.use_item_in_hand(&stack, &mut claimed);
         }
         if claimed {
             self.swing_arm();
+            return Ok(true);
+        }
+        // LeadItem.useOn follows the block and the item's override, including
+        // when sneaking bypassed the block's useWithoutItem.
+        if block_hit.is_some() && &*stack.item == "minecraft:lead" && self.interact_knot() {
             return Ok(true);
         }
         // ItemStack.useOn: after the block's own useItemOn/useWithoutItem
@@ -422,8 +624,9 @@ impl Game<'_> {
         // PlaceOnWaterBlockItem.use: the lily pad and frogspawn aim at the block
         // or water source the SOURCE_ONLY ray meets and are placed on the
         // position above it.
+        let water_placement = matches!(&*stack.item, "minecraft:lily_pad" | "minecraft:frogspawn");
         let water_hit;
-        let hit = if matches!(&*stack.item, "minecraft:lily_pad" | "minecraft:frogspawn") {
+        let hit = if water_placement {
             let Some(h) = self.pick_fluid() else {
                 return Ok(false);
             };
@@ -441,8 +644,8 @@ impl Game<'_> {
         if info.block.is_none() {
             return Ok(false);
         }
-        if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
-            // ItemStack.useOn passes in adventure mode; useItem eats.
+        if water_placement && !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
+            // The fluid-ray placement has its own target, selected by Item.use.
             return Ok(!on_block && self.start_eating(&info));
         }
         let face = match hit.face {
@@ -454,25 +657,23 @@ impl Game<'_> {
             _ => Direction::East,
         };
         // BlockItem.place through the vanilla placement rules.
+        let (yaw, pitch) = self.interaction_rotation();
         let ctx = PlaceContext {
             clicked_pos: BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
             face,
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
             inside: false,
-            yaw: self.yaw,
-            pitch: self.pitch,
+            yaw,
+            pitch,
             sneaking: self.keys.held(Mapping::Sneak),
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };
-        // The mods, once the position and state are known: a canceled
-        // placement is a failed one, and the client's prediction is undone.
-        if self.block_place_canceled(&stack, &ctx) {
-            self.use_failed = true;
-            self.guest_inventory_resend = true;
-            return Ok(true);
-        }
-        let outcome = self.with_level(|b, level, ticks| b.place_block(level, ticks, &ctx));
+        let outcome = if self.player_place_canceled(&ctx) {
+            PlaceOutcome::Failed
+        } else {
+            self.with_level(|b, level, ticks| b.place_block(level, ticks, &ctx))
+        };
         let PlaceOutcome::Placed { pos, state } = outcome else {
             self.process_level_events()?;
             // BlockItem.useOn: a consumable that could not be placed is used,
@@ -486,9 +687,9 @@ impl Game<'_> {
             return Ok(true);
         };
         let target = [pos.x, pos.y, pos.z];
-        let game_master = self.can_use_game_master_blocks();
-        let state = self.lectern_placed(target, state, &stack, game_master)?;
         let state = self.apply_item_block_state(target, state, &stack)?;
+        // Create's arm takes the points marked for it.
+        self.arm_placed(target);
         let key = (target[0], target[1], target[2]);
         if !self.world.block_entities.stateful_entity(state.0)
             && let Some(entity) = self.new_block_entity_for_state(state)
@@ -496,6 +697,7 @@ impl Game<'_> {
             self.world.block_entities.insert(key, entity);
         }
         if self.world.block_entities.get(&key).is_some() {
+            let game_master = self.can_use_game_master_blocks();
             self.apply_placed_item(target, &stack, game_master);
             // Block.setPlacedBy.
             match self.world.block_entities.get(&key) {
@@ -510,9 +712,7 @@ impl Game<'_> {
                 Some(BlockEntity::JigsawBlock(_)) => self.jigsaw_block_placed(key),
                 Some(BlockEntity::TestBlock(_)) => self.test_block_placed(key),
                 Some(BlockEntity::Jukebox(_)) => self.jukebox_placed(target, &stack),
-                Some(BlockEntity::Sign(sign)) if !sign.waxed && sign.front.has_editable_text() => {
-                    self.open_text_edit(key, true)
-                }
+                Some(BlockEntity::Sign(sign)) if !sign.waxed => self.open_sign_editor(key, true),
                 _ => {}
             }
         }
@@ -534,7 +734,6 @@ impl Game<'_> {
         // BlockItem.place: the used statistic and the placed_block trigger.
         self.award_stat("used", &stack.item, 1);
         self.trigger_block("minecraft:placed_block", target, &stack);
-        self.native_place_block(&stack, target, state);
         self.check_wither_spawn(target)?;
         self.check_golem_spawn(target)?;
         self.consume_held();
