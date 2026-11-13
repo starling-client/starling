@@ -3169,6 +3169,8 @@ struct Game<'a> {
     frame_graph: horizon_client::perf_overlay::FrameGraph,
     /// The Stats overlay's sampler and caches (game/perf.rs).
     stats_overlay: perf::Perf,
+    /// Starling's performance test: draw choices and each setup's averages (perf_lab.rs).
+    perf_lab: perf_lab::PerfLab,
     /// Files handed to the game from outside (game/imports.rs).
     imports: imports::Imports,
     /// The offer of the Starling folder in shared storage (game/files_offer.rs).
@@ -16793,6 +16795,7 @@ impl<'a> Game<'a> {
             pending_uploads: Vec::new(),
             frame_graph: Default::default(),
             stats_overlay: Default::default(),
+            perf_lab: Default::default(),
             imports: Default::default(),
             #[cfg(target_os = "android")]
             files_offer: Default::default(),

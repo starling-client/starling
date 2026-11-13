@@ -461,6 +461,7 @@ impl Game<'_> {
                 Event::DiagnosticsOpen => self.open_diagnostics(),
                 Event::DiagnosticsRecord => self.toggle_diagnostic_recording(),
                 Event::DiagnosticsGpu => self.toggle_diagnostic_gpu(),
+                Event::PerfLab(i) => self.perf_lab_next(i),
                 Event::ButtonClick => self.audio.play_button_click(),
                 Event::DebugEntriesChanged => self.debug_entries.invalidate(),
                 Event::Changed => {
@@ -890,6 +891,15 @@ impl Game<'_> {
             .settings
             .horizon
             .battery_limit(limit, self.title.is_none(), self.focused);
+        // Starling: on a phone a menu over the world (pause, inventory, ...) draws at most 60
+        // frames a second. A paused game's menu draws its kept backdrop (`menu_blur_cache`) so
+        // cheaply that it ran at 300+ FPS, warming the phone for nothing.
+        #[cfg(target_os = "android")]
+        let limit = if context.has_screen {
+            limit.min(60)
+        } else {
+            limit
+        };
         // A native mod may only lower it (`native_framerate_limit`).
         let mut hooked = limit;
         self.native_framerate_limit(

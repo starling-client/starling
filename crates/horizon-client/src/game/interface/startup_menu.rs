@@ -828,10 +828,16 @@ impl Loading {
                     !crate::performance::gpu_profile(),
                     &horizon_client::logging::private_home(),
                 ),
-                // No world debug list exists before Game construction.
-                Event::DebugEntriesChanged => {}
+                // No world debug list exists before Game construction, nor a renderer to test.
+                Event::DebugEntriesChanged | Event::PerfLab(_) => {}
                 Event::Changed => {
                     self.save_menu_settings();
+                    // Starling: the touch options (vibration, ...) live in horizon-touch.json,
+                    // which options.txt's save leaves alone; the game loads them from there.
+                    #[cfg(target_os = "android")]
+                    if let Err(e) = self.settings.touch.save() {
+                        log::warn!("Controls settings: {e}");
+                    }
                     self.settings.keys.sync_action_bindings();
                     self.apply_menu_settings();
                 }
