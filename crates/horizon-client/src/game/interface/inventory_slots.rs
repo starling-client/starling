@@ -439,9 +439,17 @@ impl Game<'_> {
     /// branches in the same order, so the two stay in step.
     pub(super) fn slot_count(&self) -> usize {
         if self.creative_inventory_open() {
-            return Creative::inventory_slots().count();
+            let craft = if self.bedrock_items.is_some() {
+                BEDROCK_CRAFT.len()
+            } else {
+                0
+            };
+            return Creative::inventory_slots().count() + craft;
         }
         if self.creative_tab_open() {
+            if CREATIVE_SHIFT.get() != 0.0 {
+                return Creative::six_row_slots().count();
+            }
             return Creative::tab_slots().count();
         }
         if let Some(n) = self
@@ -455,7 +463,7 @@ impl Game<'_> {
             return inventory + shown;
         }
         let container = match self.container_kind() {
-            Some(BlockEntity::Chest(_)) => self.container_size(),
+            Some(BlockEntity::Chest(_)) => self.open_container_size(),
             Some(BlockEntity::Furnace(_)) => 3,
             Some(BlockEntity::Brewing(_)) => 5,
             Some(BlockEntity::Crafter(_)) => 10,
@@ -500,9 +508,16 @@ impl Game<'_> {
     /// 300.. are the open container's slots.
     pub(super) fn slots(&self) -> Vec<usize> {
         if self.creative_inventory_open() {
-            return Creative::inventory_slots().collect();
+            let mut v: Vec<usize> = Creative::inventory_slots().collect();
+            if self.bedrock_items.is_some() {
+                v.extend(BEDROCK_CRAFT);
+            }
+            return v;
         }
         if self.creative_tab_open() {
+            if CREATIVE_SHIFT.get() != 0.0 {
+                return Creative::six_row_slots().collect();
+            }
             return Creative::tab_slots().collect();
         }
         if let Some(v) = self.station_slots().or_else(|| self.mount_slots()) {
@@ -514,7 +529,9 @@ impl Game<'_> {
             return v;
         }
         match self.container_kind() {
-            Some(BlockEntity::Chest(_)) => v.extend((0..self.container_size()).map(|i| 300 + i)),
+            Some(BlockEntity::Chest(_)) => {
+                v.extend((0..self.open_container_size()).map(|i| 300 + i))
+            }
             Some(BlockEntity::Furnace(_)) => v.extend(300..303),
             Some(BlockEntity::Brewing(_)) => v.extend(300..305),
             Some(BlockEntity::Crafter(_)) => v.extend(300..310),
