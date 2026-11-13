@@ -1467,7 +1467,12 @@ impl Audio {
             Err("no output on a dedicated server".into())
         };
         let (stream, live) = match opened {
+            // A build without the `audio` feature has no `Stream` type to hold (`Infallible`),
+            // so this arm is unreachable there and the compiler says so.
+            #[cfg(feature = "audio")]
             Ok(v) => (Some(v), true),
+            #[cfg(not(feature = "audio"))]
+            Ok(stream) => match stream {},
             Err(e) => {
                 if output {
                     log::warn!("Horizon: no sound: {e}");
