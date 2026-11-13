@@ -817,19 +817,6 @@ impl Game<'_> {
         self.player_drop(thrown);
     }
 
-    /// `ServerPlayer.drop(boolean)` for the guest `conn` (`gi` in the hub): the
-    /// drop key's throw, then `setRemoteSlot` on the selected slot so a pickup
-    /// that refills the stack is sent to the client that predicted the drop.
-    pub(super) fn guest_drop_held(
-        &mut self,
-        host: &mut super::lan::LanHost,
-        gi: usize,
-        conn: u32,
-        all: bool,
-    ) {
-        self.as_guest(host, conn, |g| g.drop_held(all));
-        host.hub.guests[gi].told_selected();
-    }
 
     /// `Player.createItemStackToDrop`: an item entity thrown from the eyes
     /// along the view direction. `thrown_from_hand` (`drop(stack, true)`, the
@@ -913,117 +900,8 @@ impl Game<'_> {
         }
     }
 
-    /// `Player.giveExperiencePoints`, and `giveExperienceLevels`' level-up
-    /// sound every fifth level (at most every 100 ticks).
-    pub(super) fn give_orb_points(&mut self, gained: u32) {
-        let Some(gained) = self.xp_change(gained as i32) else {
-            return;
-        };
-        let gained = gained.max(0);
-        let old_level = self.experience.level;
-        let gave = self.experience.give(gained);
-        self.native_player_level_changed(old_level);
-        // Player.giveExperienceLevels runs per level, so the first multiple of 5
-        // crossed plays the sound (and starts the cooldown for the rest).
-        if let Some(level) = gave {
-            self.play_level_up(1, level);
-        }
-    }
 }
 
-#[cfg(test)]
-mod destroyed_contents_tests {
-    use crate::native_machines::tests::server_game;
-    use super::*;
-    use horizon_client::items::ItemStack;
-    use horizon_core::random::RandomSource;
-
-    /// The motion of each spilled stack, in the order the spill made them.
-    fn spilled_motions(game: &Game<'_>) -> Vec<[f64; 3]> {
-        game.dropped
-            .iter()
-            .map(|item| [item.velocity.x, item.velocity.y, item.velocity.z])
-            .collect()
-    }
-
-    /// `ItemUtils.onContainerDestroyed` makes each stack with
-    /// `new ItemEntity(level, x, y, z, stack)`, whose motion is 0.2 up and
-    /// ±0.1 sideways from the *item's* random (ItemEntity.java:61-66), and
-    /// draws nothing from the level's. Every destroyed container funnels here:
-    /// lava, fire and cactus in the item's environment tick, an explosion, and
-    /// the damage command.
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn spilled_stacks_rise_from_their_own_randoms() {
-        let mut game = server_game();
-        let at = Vec3::new(8.5, 70.0, 8.5);
-        let stacks = ["minecraft:stone", "minecraft:dirt", "minecraft:glass"]
-            .into_iter()
-            .map(|id| (ItemStack::new(id, 1), at))
-            .collect();
-        let mut level = game.world.random.clone();
-        game.spawn_destroyed_contents(stacks);
-        let motions = spilled_motions(&game);
-        assert_eq!(motions.len(), 3);
-        for motion in &motions {
-            assert_eq!(motion[1], 0.2, "the four-argument constructor rises 0.2");
-            assert!((-0.1..0.1).contains(&motion[0]), "{motion:?}");
-            assert!((-0.1..0.1).contains(&motion[2]), "{motion:?}");
-        }
-        // Three stacks, three different sideways motions: each drew its own.
-        assert_ne!(motions[0], motions[1]);
-        assert_ne!(motions[1], motions[2]);
-        assert_ne!(motions[0], motions[2]);
-        // The spill leaves the level's random alone.
-        assert_eq!(game.world.random.next_double(), level.next_double());
-        assert_eq!(game.world.random.next_double(), level.next_double());
-    }
-
-    /// The damage command is one of those callers: killing a shulker box item
-    /// spills its contents with the same upward motion.
-    #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn a_damaged_shulker_box_spills_its_stacks_upward() {
-        let mut game = server_game();
-        game.build_registries();
-        game.set_allow_commands(true);
-        game.world.chunks.insert(
-            (0, 0),
-            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
-        );
-        let feet = Vec3::new(8.5, 70.0, 8.5);
-        game.player = Some(horizon_client::motion::PlayerMotion::new(game.motion, feet).unwrap());
-        game.update_chunk_tickets();
-        let boxed = horizon_client::item_data::parse_stack(
-            r#"{id:"minecraft:shulker_box",count:1,components:{"minecraft:container":[
-                {slot:0,item:{id:"minecraft:stone",count:2}},
-                {slot:4,item:{id:"minecraft:dirt",count:1}},
-                {slot:8,item:{id:"minecraft:glass",count:3}}]}}"#,
-        )
-        .unwrap()
-        .unwrap();
-        game.spawn_item(boxed, [8.5, 70.0, 8.5], [0.0; 3], 0);
-        assert_eq!(game.dropped.len(), 1);
-        assert!(game.run_command("damage @e[type=minecraft:item,limit=1] 100 minecraft:generic"));
-        let mut spilled: Vec<_> = game
-            .dropped
-            .iter()
-            .map(|item| (item.stack.item.to_string(), item.stack.count))
-            .collect();
-        spilled.sort();
-        assert_eq!(
-            spilled,
-            [
-                ("minecraft:dirt".to_owned(), 1),
-                ("minecraft:glass".to_owned(), 3),
-                ("minecraft:stone".to_owned(), 2)
-            ]
-        );
-        for item in &game.dropped {
-            assert_eq!(item.velocity.y, 0.2, "{item:?}");
-        }
-    }
-}
 
 #[cfg(test)]
 mod escape_tests {

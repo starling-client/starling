@@ -80,18 +80,6 @@ impl Game<'_> {
         out
     }
 
-    /// Creative mode only: gives the player `count` of `item`
-    /// (`minecraft:diamond`) as taking it from the creative inventory does
-    /// (`ServerboundSetCreativeModeSlot`): the selected slot first, then the
-    /// hotbar, then the inventory. The count is cut to one stack.
-    pub(in crate::game) fn give(
-        &mut self,
-        item: mod_api::ItemKey,
-        count: u32,
-    ) -> Result<(), String> {
-        let item = mod_api::__private::item_key_id(item).ok_or("unknown item key")?;
-        self.recipe_give(item, count)
-    }
 }
 
 /// The item of the stack in `selected` (`Player.tick`'s main-hand item), borrowed: a guest's

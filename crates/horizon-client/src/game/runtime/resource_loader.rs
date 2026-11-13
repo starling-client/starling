@@ -220,7 +220,7 @@ impl WorldRestLoader {
         Ok(self.handle.is_finished())
     }
 
-    fn finish(self) -> Result<()> {
+    pub(super) fn finish(self) -> Result<()> {
         self.handle
             .join()
             .map_err(|_| "world resource loader panicked")?

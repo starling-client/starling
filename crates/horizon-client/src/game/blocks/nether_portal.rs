@@ -11,6 +11,7 @@
 //! saved compound until its destination chunks are loaded.
 use super::entity::{Entity as _, entity_lists_of, for_each_entity};
 use super::{Dim, Game, Screen};
+use horizon_world::level::flags as level_flags;
 use horizon_client::fast_hash::FxHashMap;
 use horizon_client::nether_portal::{ENTITY_DELAY, PortalState};
 use horizon_core::{
@@ -1581,7 +1582,6 @@ impl Game<'_> {}
 mod tests {
     use super::super::server_travel::TravelCause;
     use super::*;
-use horizon_world::level::flags as level_flags;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicU32, Ordering},

@@ -5169,6 +5169,18 @@ impl Game<'_> {
     pub(in crate::game) fn transfer_recipe(&mut self, book_id: i32) {
         self.transfer_viewer_recipe(book_id);
     }
+    /// Creative mode only: gives the player `count` of `item`
+    /// (`minecraft:diamond`) as taking it from the creative inventory does
+    /// (`ServerboundSetCreativeModeSlot`): the selected slot first, then the
+    /// hotbar, then the inventory. The count is cut to one stack.
+    pub(in crate::game) fn give(
+        &mut self,
+        item: mod_api::ItemKey,
+        count: u32,
+    ) -> Result<(), String> {
+        let item = mod_api::__private::item_key_id(item).ok_or("unknown item key")?;
+        self.recipe_give(item, count)
+    }
 }
 
 #[cfg(test)]
@@ -5195,6 +5207,7 @@ mod screen_open_tests {
     /// A mod with no screen hook.
     struct Idle;
     #[mod_api::__subscriptions]
+    impl Hooks for Idle {}
 
     /// The creative screen keeps its two tab rows clear: one strip above the window
     /// and one below it, each as wide as the window and a tab row deep (vanilla's
