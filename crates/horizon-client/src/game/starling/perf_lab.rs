@@ -178,7 +178,11 @@ impl Setup {
     /// The frame rate of the slowest 1% of frames.
     fn low_fps(&self) -> f64 {
         let ms = self.percentile_ms(0.99);
-        if ms > 0.0 { 1000.0 / f64::from(ms) } else { 0.0 }
+        if ms > 0.0 {
+            1000.0 / f64::from(ms)
+        } else {
+            0.0
+        }
     }
     fn summary(&self) -> Value {
         let per = |sum: f64, n: u64| (n > 0).then(|| round(sum / n as f64));
@@ -442,7 +446,10 @@ impl Game<'_> {
             {
                 self.perf_lab.thermal = Some(now);
                 let system = self.stats_view().system;
-                if let Some(s) = self.perf_lab.current.and_then(|i| self.perf_lab.setups.get_mut(i))
+                if let Some(s) = self
+                    .perf_lab
+                    .current
+                    .and_then(|i| self.perf_lab.setups.get_mut(i))
                 {
                     let max_i = |a: Option<i32>, b: Option<i32>| a.max(b);
                     let max_f = |a: Option<f32>, b: Option<f32>| match (a, b) {
@@ -457,7 +464,10 @@ impl Game<'_> {
             if now.duration_since(since) >= SETTLE
                 && let Some((frame, cpu, gpu)) = sample
                 && frame < HITCH_MS
-                && let Some(s) = self.perf_lab.current.and_then(|i| self.perf_lab.setups.get_mut(i))
+                && let Some(s) = self
+                    .perf_lab
+                    .current
+                    .and_then(|i| self.perf_lab.setups.get_mut(i))
             {
                 s.add(frame, cpu, gpu);
                 s.last = unix_now();
