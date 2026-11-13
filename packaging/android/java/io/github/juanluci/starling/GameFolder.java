@@ -63,6 +63,11 @@ final class GameFolder {
         this.ownFiles = ownFiles;
     }
 
+    /** The folder itself (DiagnosticsActivity's graphics API choice writes its settings file). */
+    File root() {
+        return root;
+    }
+
     /**
      * The folder the game uses, as android.rs game_folder chooses it: `shared` (null when not
      * allowed), once the game has made it and moved the player's files there at a start, else
