@@ -113,21 +113,28 @@ impl Game<'_> {
         equipped.push((self.inventory[self.selected].as_ref(), "mainhand"));
         equipped.push((self.offhand.as_ref(), "offhand"));
         for (stack, slot) in equipped {
-            // ItemStack.forEachModifier: the stack's own ATTRIBUTE_MODIFIERS
-            // (its item's unless a command or a mod replaced them, #14641).
             let Some(stack) = stack else {
                 continue;
             };
-            for (attribute, id, amount, op, group) in world_items!(self).attribute_modifiers(stack)
+            for horizon_items::item_data::ModifierRow {
+                attribute,
+                id,
+                amount,
+                operation: op,
+                slot: group,
+            } in horizon_client::item_attributes::attribute_modifiers(stack, world_items!(self))
+                .iter()
             {
-                if !equipment_modifier_applies(&group, slot) {
+                // The attack code still reads the held item's attack damage and
+                // speed directly; the map copy is what `/attribute` reports.
+                if !horizon_client::living_attributes::modifier_applies(group, slot) {
                     continue;
                 }
                 if player
-                    .set_modifier_unclamped(&attribute, &id, amount, &op, true)
+                    .set_modifier_unclamped(attribute, id, *amount, op, true)
                     .is_ok()
                 {
-                    self.applied_modifiers.push((attribute, id));
+                    self.applied_modifiers.push((attribute.clone(), id.clone()));
                 }
             }
         }
