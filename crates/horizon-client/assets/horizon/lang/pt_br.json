@@ -298,6 +298,8 @@
   "starling.perf.sky": "Céu: %s",
   "starling.perf.occlusion": "Oclusão: %s",
   "starling.perf.faces": "Pular faces escondidas: %s",
+  "starling.perf.transparency": "Transparência melhorada: %s",
+  "starling.perf.transparency_off_short": "sem transparência melhorada",
   "starling.perf.auto": "Auto (%s)",
   "starling.perf.on": "Ligado",
   "starling.perf.off": "Desligado",

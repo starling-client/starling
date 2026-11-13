@@ -92,6 +92,10 @@ struct Choices {
     occlusion: Switch,
     /// Solid quads facing away from the eye left out (`Renderer::section_sides`).
     hidden_faces: Switch,
+    /// Improved Transparency, the order-independent passes the Fabulous preset turns on
+    /// (`Renderer::improved_transparency`). Half the GPU time of a frame on some phones.
+    #[serde(default)]
+    transparency: Switch,
 }
 
 /// `performance/perf-lab.json`: the choices, and the test build whose guided test ran.
@@ -111,6 +115,8 @@ struct Device {
     late_sky: bool,
     occlusion: bool,
     hidden_faces: bool,
+    /// Improved Transparency as the player's settings left it.
+    transparency: bool,
     /// `Renderer::draw_choices`: flat, indirect, late sky, occlusion culling.
     offers: [bool; 4],
 }
@@ -368,6 +374,7 @@ impl PerfLab {
             late_sky: r.late_sky_on(),
             occlusion: r.section_cull(),
             hidden_faces: r.section_sides(),
+            transparency: r.improved_transparency,
             offers: r.draw_choices(),
         });
         let c = self.choices;
@@ -395,6 +402,9 @@ impl PerfLab {
         if r.section_sides() != faces {
             r.set_section_sides(faces);
         }
+        // Only ever turned off from what the settings asked for: the game picks the breaking
+        // overlay's sprites from the setting, not from here.
+        r.improved_transparency = c.transparency.pick(d.transparency) && d.transparency;
     }
 
     /// The ways of drawing the guided test tries on this device: its own first, then each
@@ -423,6 +433,13 @@ impl PerfLab {
                 ..Choices::default()
             });
         }
+        // Improved Transparency is only ever turned off, and only where it is on.
+        if d.transparency {
+            variants.push(Choices {
+                transparency: Switch::Off,
+                ..Choices::default()
+            });
+        }
         variants
     }
 
@@ -440,6 +457,9 @@ impl PerfLab {
             Switch::Auto => {}
             Switch::On => parts.push(word("sky_late_short")),
             Switch::Off => parts.push(word("sky_early_short")),
+        }
+        if c.transparency == Switch::Off {
+            parts.push(word("transparency_off_short"));
         }
         if parts.is_empty() {
             word("auto_short")
@@ -565,6 +585,7 @@ impl Game<'_> {
                 "late_sky": r.late_sky_on(),
                 "occlusion_culling": r.section_cull(),
                 "hidden_faces_skipped": r.section_sides(),
+                "improved_transparency": r.improved_transparency,
                 "present": d(&r.config.present_mode),
                 "size": [r.config.width, r.config.height],
             });
@@ -837,7 +858,7 @@ impl Game<'_> {
         if self.perf_lab.fastest.is_some() && self.perf_lab.guided.is_none() {
             ids.push(11);
         }
-        ids.extend(0..4);
+        ids.extend(0..5);
         ids
     }
 
@@ -890,6 +911,13 @@ impl Game<'_> {
             1 if offers[2] => c.late_sky = c.late_sky.next(),
             2 if offers[3] => c.occlusion = c.occlusion.next(),
             3 => c.hidden_faces = c.hidden_faces.next(),
+            4 if self.perf_lab.device.is_some_and(|d| d.transparency) => {
+                c.transparency = if c.transparency == Switch::Off {
+                    Switch::Auto
+                } else {
+                    Switch::Off
+                };
+            }
             _ => return,
         }
         log::info!("Starling: performance test choices {c:?}");
@@ -971,10 +999,20 @@ impl Game<'_> {
                     };
                     lang::tr("starling.perf.occlusion", &[&occlusion])
                 }
-                _ => lang::tr(
+                3 => lang::tr(
                     "starling.perf.faces",
                     &[&switch(lab.choices.hidden_faces, device.hidden_faces)],
                 ),
+                _ => {
+                    let value = if !device.transparency {
+                        word("unavailable")
+                    } else if lab.choices.transparency == Switch::Off {
+                        word("off")
+                    } else {
+                        lang::tr("starling.perf.auto", &[&on_off(true)])
+                    };
+                    lang::tr("starling.perf.transparency", &[&value])
+                }
             });
         }
         let line = |s: &Setup| {
