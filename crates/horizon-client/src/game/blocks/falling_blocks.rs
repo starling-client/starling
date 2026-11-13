@@ -93,41 +93,37 @@ impl Game<'_> {
         }
         self.falling[i] = f;
     }
-    pub(super) fn tick_one_falling(&mut self, i: usize, entities: &[Aabb]) -> Result<()> {
-        let entity_drops = self.ui.rules.bool("entity_drops");
-        let join = self.falling[i].join;
-        let mut f = self.falling[i].clone();
-        let mut step = self.fall_step(&mut f, entity_drops, entities)?;
-        // FallingBlockEntity.tick: a block that comes down where a piston is
-        // moving a block neither lands nor breaks (whatever its cancelDrop).
-        // It slows like any landing and falls on, so the piston pushes it.
-        if let FallStep::Landed([x, y, z]) = step
-            && &*self.res.facts().get(self.world.block(x, y, z)).name == "minecraft:moving_piston"
-        {
-            f.velocity = horizon_client::entity_rules::scale_air_drag(
-                f.velocity.multiply(Vec3::new(0.7, -0.5, 0.7)),
-            );
-            step = FallStep::Falling;
-        }
-        let slot = if self.falling.get(i).is_some_and(|e| e.join == join) {
-            Some(i)
-        } else {
-            self.falling.iter().position(|e| e.join == join)
-        };
-        if matches!(step, FallStep::Falling) {
-            if let Some(j) = slot {
-                self.falling[j] = f;
+    /// FallingBlockEntity.tick: fall with 0.04 gravity and 0.98F drag, then land.
+    /// One falling block's `tick`: places or drops its block in its own tick,
+    /// so a block falling onto one that just landed lands on top of it. `i` is
+    /// its place in the list; the caller has checked it is ticking.
+    /// `entities` are the boxes that stop its move.
+    pub(in crate::game) fn tick_one_falling(&mut self, i: usize, entities: &[Aabb]) -> Result<()> {
+        let entity_drops = self
+            .ui
+            .rules
+            .bool_at(horizon_client::gamerules::vanilla::ENTITY_DROPS);
+        let _save_lease = horizon_client::join_seq::visibility::PassLease::enter();
+        let mut f = self.falling.extract(self.falling[i].join).unwrap();
+        let original = f.clone();
+        let (id, join) = (f.id, f.join);
+        match self.fall_step(&mut f, entity_drops, entities) {
+            Ok(FallStep::Falling) => {
+                self.falling.put_back(i.min(self.falling.len()), f);
+                return Ok(());
             }
-            return Ok(());
+            Ok(FallStep::Gone) => {}
+            Ok(FallStep::Dropped(at)) => self.drop_falling_block(f.state, at),
+            Ok(FallStep::Landed(pos)) => self.finish_falling_block(f, pos),
+            Err(error) => {
+                horizon_client::join_seq::store_back(&mut f, original);
+                self.falling.put_back(i.min(self.falling.len()), f);
+                return Err(error);
+            }
         }
-        if let Some(j) = slot {
-            self.falling.remove(j);
-        }
-        match step {
-            FallStep::Falling | FallStep::Gone => {}
-            FallStep::Dropped(at) => self.drop_falling_block(f.state, at),
-            FallStep::Landed(pos) => self.finish_falling_block(f, pos),
-        }
+        // Gone, dropped and landed owners have completed their terminal work;
+        // unlike a continuing fall, they will never be put back into the list.
+        self.falling.retire_extracted(id, join);
         Ok(())
     }
     /// One `FallingBlockEntity.tick` move of `f`.
@@ -195,8 +191,6 @@ impl Game<'_> {
         );
         let on_ground = wanted.y < 0.0 && movement.y != wanted.y;
         f.on_ground = on_ground;
-        // Entity.checkFallDamage: each step down, narrowed to a float (a
-        // falling block never runs baseTick, so it is never in water).
         if movement.y < 0.0 {
             f.fall_distance -= f64::from(movement.y as f32);
         }
@@ -213,12 +207,7 @@ impl Game<'_> {
             f.velocity.z = 0.0;
         }
         if on_ground {
-            // fallOn (causeFallDamage), then HIT_GROUND after a fall.
             self.falling_block_impact(f);
-            if f.fall_distance > 0.0 {
-                let bounds = horizon_client::falling_block::bounds(f.position);
-                self.post_landing_event(f.position, bounds, false);
-            }
             f.fall_distance = 0.0;
         }
         // applyEffectsFromBlocks: WebBlock.entityInside makes it stuck
