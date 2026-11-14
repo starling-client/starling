@@ -157,12 +157,25 @@ pub(super) fn boot_renderer(
         "renderer_init",
         || serde_json::json!({"api":format!("{:?}",api)}),
     );
-    pollster::block_on(horizon_client::gfx::boot::BootRenderer::new(
+    // As `loading_renderer`: the marker that sends the next start to OpenGL ES if this one dies
+    // opening the device or in its first frame, removed with that frame.
+    #[cfg(target_os = "android")]
+    let marker = start_marker(None);
+    let boot = pollster::block_on(horizon_client::gfx::boot::BootRenderer::new(
         window,
         (pixels, width, height),
         faces,
         api,
-    ))
+    ))?;
+    #[cfg(target_os = "android")]
+    let boot = {
+        let mut boot = boot;
+        if let Some(marker) = marker {
+            boot.forget_start_marker(marker);
+        }
+        boot
+    };
+    Ok(boot)
 }
 
 /// The menu bundle's atlas and title panorama replacing the boot screen's, on the device the

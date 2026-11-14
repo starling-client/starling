@@ -41,6 +41,10 @@ pub struct BootRenderer {
     textures: [wgpu::Texture; 3],
     /// The window is in the background, so no frame draws (`Renderer::detached`).
     pub detached: bool,
+    /// `graphics::RENDERER_MARKER`, written before this opened the device: removed with the first
+    /// frame presented, as `Renderer` does. This is the renderer that opens the device now, so a
+    /// driver that dies opening it or in its first submit still sends the next start to OpenGL ES.
+    start_marker: Option<std::path::PathBuf>,
 }
 
 /// What the boot screen draws with, made again when the menu bundle replaces the boot atlas.
@@ -152,7 +156,14 @@ impl BootRenderer {
             depth,
             textures,
             detached: false,
+            start_marker: None,
         })
+    }
+
+    /// Removes `marker` (`graphics::RENDERER_MARKER`) once a frame has been presented, as
+    /// `Renderer::forget_start_marker`: the start went through.
+    pub fn forget_start_marker(&mut self, marker: std::path::PathBuf) {
+        self.start_marker = Some(marker);
     }
 
     /// The window is going away (Android destroys it in the background): drop its surface while
@@ -322,6 +333,9 @@ impl BootRenderer {
         self.uploads.finish(&encoder);
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
+        if let Some(marker) = self.start_marker.take() {
+            let _ = std::fs::remove_file(marker);
+        }
         Ok(())
     }
 
