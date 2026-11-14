@@ -79,9 +79,44 @@ pub fn held_modifiers(held: &HashSet<KeyCode>) -> ModifiersState {
     modifiers
 }
 
+/// How far a mouse Android has not captured went in one event: its `AXIS_RELATIVE_X/Y`
+/// (`relative`, the event's history summed in), or, for a mouse whose events carry none (some
+/// phones' Bluetooth and OTG mice), how far its pointer went since the event before (`before` to
+/// `at`), as Horizon Android 0.7.8 reads it. With only the first, the view stood still or moved
+/// in jerks on those mice while the game held the pointer and Android had not captured it.
+pub fn free_mouse_motion(
+    relative: (f32, f32),
+    before: Option<(f32, f32)>,
+    at: (f32, f32),
+) -> (f32, f32) {
+    if relative != (0.0, 0.0) {
+        return relative;
+    }
+    before.map_or((0.0, 0.0), |(x, y)| (at.0 - x, at.1 - y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_free_mouse_moves_by_its_relative_axes_or_else_by_its_pointer() {
+        // A mouse that reports how far it went: that, whatever its pointer did.
+        assert_eq!(
+            free_mouse_motion((3.0, -2.0), Some((10.0, 10.0)), (50.0, 50.0)),
+            (3.0, -2.0)
+        );
+        // One that reports nothing there: the pointer's own move since the event before.
+        assert_eq!(
+            free_mouse_motion((0.0, 0.0), Some((10.0, 20.0)), (14.0, 17.0)),
+            (4.0, -3.0)
+        );
+        // Its first event has nothing to measure from.
+        assert_eq!(
+            free_mouse_motion((0.0, 0.0), None, (14.0, 17.0)),
+            (0.0, 0.0)
+        );
+    }
 
     #[test]
     fn a_phone_follows_the_input_used() {

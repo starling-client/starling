@@ -795,12 +795,15 @@ mod input {
         }
         let mut events = Vec::new();
         let pointer = motion.pointer_at_index(0);
-        if !relative && motion.action() != MotionAction::HoverExit {
-            let at = (pointer.x(), pointer.y());
-            if mouse.at != Some(at) {
-                mouse.at = Some(at);
-                events.push(MouseEvent::Moved(f64::from(at.0), f64::from(at.1)));
-            }
+        // Where the pointer was before this event, for a mouse that reports no relative motion.
+        let before = mouse.at;
+        let at = (pointer.x(), pointer.y());
+        if !relative && motion.action() == MotionAction::HoverExit {
+            // It comes back somewhere else: no move is measured across the gap.
+            mouse.at = None;
+        } else if !relative && mouse.at != Some(at) {
+            mouse.at = Some(at);
+            events.push(MouseEvent::Moved(f64::from(at.0), f64::from(at.1)));
         }
         // How far the mouse went, the moves batched into the event before it too: captured, its
         // x and y; free, its RELATIVE_X and RELATIVE_Y (the pointer's own, accelerated), which
@@ -814,6 +817,16 @@ mod input {
         for earlier in pointer.history() {
             dx += earlier.axis_value(x);
             dy += earlier.axis_value(y);
+        }
+        // Some phones' mice report no RELATIVE_X/Y: then the pointer's own move counts, as in
+        // Horizon Android 0.7.8.
+        if !relative
+            && matches!(
+                motion.action(),
+                MotionAction::Move | MotionAction::HoverMove
+            )
+        {
+            (dx, dy) = input_mode::free_mouse_motion((dx, dy), before, at);
         }
         if dx != 0.0 || dy != 0.0 {
             events.push(MouseEvent::Motion(f64::from(dx), f64::from(dy)));
