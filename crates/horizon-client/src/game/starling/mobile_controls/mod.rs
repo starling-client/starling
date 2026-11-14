@@ -27,6 +27,8 @@ pub(super) struct MobileControls {
     pub loaded: bool,
     frame_at: Option<Instant>,
     was_in_menu: Option<bool>,
+    /// The options changed the touch settings since they were last written (`mobile_options_apply`).
+    touch_unsaved: bool,
 }
 
 impl Game<'_> {
@@ -154,11 +156,25 @@ impl Game<'_> {
             self.android_touch_haptic(10);
         }
     }
-    pub(in crate::game) fn mobile_options_apply(&mut self) {
-        self.mobile.controls.settings = self.settings.touch.clone();
+    /// The options' touch settings as the controls use them. With `save`, they are written when
+    /// they changed since last written: once when a slider is let go (`Event::Changed`), not at
+    /// every step of its drag.
+    ///
+    /// Every slider's drag comes here (`Event::SliderDrag`), several times a frame, the graphics
+    /// sliders as much as the controls' own. Writing the layout puts ~37 KB on shared storage after
+    /// reading the default one back, ~50 ms a time on a POCO F6 Pro: the touch events that queued
+    /// behind each write kept the game frozen for as long as a finger moved any slider, 0.1 to 3.5 s.
+    pub(in crate::game) fn mobile_options_apply(&mut self, save: bool) {
+        if self.mobile.controls.settings != self.settings.touch {
+            self.mobile.controls.settings = self.settings.touch.clone();
+            self.mobile.touch_unsaved = true;
+        }
         self.mobile.ui.menu_direct_pointer = self.settings.touch.virtual_mouse_hidden;
         self.input_used(self.input_mode);
-        if let Err(e) = self.mobile.controls.settings.save() {
+        if save
+            && std::mem::take(&mut self.mobile.touch_unsaved)
+            && let Err(e) = self.mobile.controls.settings.save()
+        {
             log::warn!("Controls settings: {e}");
         }
     }
