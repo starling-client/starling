@@ -65,6 +65,9 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
 pub(super) struct Loading {
     pub(super) window: Option<Arc<Window>>,
     pub(super) renderer: Option<Renderer>,
+    /// What the loading screen draws with until the world's renderer is built from it
+    /// (`finish`): the panorama and the HUD, and none of the world's pipelines.
+    pub(super) boot_renderer: Option<horizon_client::gfx::boot::BootRenderer>,
     /// The boot screen's atlas, until the pack's GUI atlas replaces it.
     pub(super) boot: horizon_client::hud::HudAtlas,
     pub(super) gui: Option<UiResources>,
@@ -128,6 +131,11 @@ impl Loading {
             let size = window.inner_size();
             if let Some(r) = &mut self.renderer
                 && let Err(e) = r.resume(size.width, size.height)
+            {
+                log::warn!("Horizon: the window's surface did not come back: {e}");
+            }
+            if let Some(boot) = &mut self.boot_renderer
+                && let Err(e) = boot.resume(size.width, size.height)
             {
                 log::warn!("Horizon: the window's surface did not come back: {e}");
             }
@@ -201,20 +209,44 @@ impl Loading {
             Some(gui) => (&gui.atlas, Some(&gui.panorama)),
             None => (&self.boot, None),
         };
-        let built = loading_renderer(
-            window.clone(),
-            offscreen,
-            Some(atlas),
-            panorama,
-            None,
-            self.settings.horizon.api,
-        );
+        // Offscreen has no window for a loading screen, so it keeps the old path and builds the
+        // world's renderer at once; everything else draws with the boot renderer and hands it the
+        // open device at `finish`.
+        let failed = if offscreen {
+            match loading_renderer(
+                window.clone(),
+                offscreen,
+                Some(atlas),
+                panorama,
+                None,
+                self.settings.horizon.api,
+            ) {
+                Ok(r) => {
+                    self.renderer = Some(r);
+                    None
+                }
+                Err(e) => Some(e),
+            }
+        } else {
+            match boot_renderer(
+                window.clone(),
+                Some(atlas),
+                panorama,
+                self.settings.horizon.api,
+            ) {
+                Ok(boot) => {
+                    self.boot_renderer = Some(boot);
+                    None
+                }
+                Err(e) => Some(e),
+            }
+        };
         if self.gui.is_some() {
             self.ui_at = Some(Instant::now());
         }
-        match built {
-            Ok(r) => self.renderer = Some(r),
-            Err(e) => {
+        match failed {
+            None => {}
+            Some(e) => {
                 #[cfg(target_os = "windows")]
                 if let Some(stop) = &boot_paint_stop {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -245,6 +277,9 @@ impl Loading {
         self.suspended = true;
         if let Some(r) = &mut self.renderer {
             r.suspend();
+        }
+        if let Some(boot) = &mut self.boot_renderer {
+            boot.suspend();
         }
         horizon_client::logging::flush();
     }
@@ -346,23 +381,31 @@ impl Loading {
             return;
         };
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
-        if let Some(renderer) = &mut self.renderer {
-            renderer.release_surface();
-        }
         let bundle = self.gui.as_ref().expect("the menu bundle was just set");
         let _step = startup::step("renderer.title_artwork");
-        match loading_renderer(
-            window,
-            offscreen,
-            Some(&bundle.atlas),
-            Some(&bundle.panorama),
-            self.renderer.as_ref(),
-            self.settings.horizon.api,
-        ) {
-            Ok(r) => {
-                self.renderer = Some(r);
+        // The boot renderer keeps its device: the bundle's atlas and panorama are two pipelines
+        // on it, where the whole renderer was built again here before.
+        if let Some(boot) = &mut self.boot_renderer {
+            if let Err(e) = boot_set_ui(boot, &bundle.atlas, &bundle.panorama) {
+                self.error = Some(e);
             }
-            Err(e) => self.error = Some(e),
+        } else {
+            if let Some(renderer) = &mut self.renderer {
+                renderer.release_surface();
+            }
+            match loading_renderer(
+                window,
+                offscreen,
+                Some(&bundle.atlas),
+                Some(&bundle.panorama),
+                self.renderer.as_ref(),
+                self.settings.horizon.api,
+            ) {
+                Ok(r) => {
+                    self.renderer = Some(r);
+                }
+                Err(e) => self.error = Some(e),
+            }
         }
         // The title frame's wait starts once its renderer is built.
         self.ui_at = Some(Instant::now());
@@ -409,7 +452,9 @@ impl Loading {
             event_loop.exit();
             return;
         }
-        if self.renderer.as_ref().is_some_and(|r| r.detached) {
+        if self.renderer.as_ref().is_some_and(|r| r.detached)
+            || self.boot_renderer.as_ref().is_some_and(|b| b.detached)
+        {
             // In the background (Android), as Game::about_to_wait.
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(100),
@@ -437,6 +482,7 @@ impl Loading {
             .renderer
             .as_ref()
             .map(|r| [r.config.width, r.config.height])
+            .or_else(|| self.boot_renderer.as_ref().map(|b| b.size()))
         else {
             return;
         };
@@ -458,20 +504,34 @@ impl Loading {
         }
         self.draw_menu_touch_editor(&mut batch, size);
         self.menu.frame_drawn((batch.width, batch.height));
-        let mut frame = loading_frame(&batch);
-        frame.yaw = self.panorama_rotation.update(
+        let yaw = self.panorama_rotation.update(
             self.started.elapsed().as_secs_f32(),
             self.settings.file.double("panoramaScrollSpeed") as f32,
         );
         let diagnostic_prepared = diagnostic_started.elapsed();
-        if let Some(renderer) = &mut self.renderer {
-            match renderer.render(&frame) {
-                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
-                    self.title_drawn = true;
+        let drawn = if let Some(boot) = &mut self.boot_renderer {
+            match boot.render(&batch, yaw) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("Horizon: loading screen frame failed: {e}");
+                    false
                 }
-                Ok(_) => {}
-                Err(e) => log::warn!("Horizon: loading screen frame failed: {e}"),
             }
+        } else if let Some(renderer) = &mut self.renderer {
+            let mut frame = loading_frame(&batch);
+            frame.yaw = yaw;
+            match renderer.render(&frame) {
+                Ok(drawn) => drawn,
+                Err(e) => {
+                    log::warn!("Horizon: loading screen frame failed: {e}");
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if drawn && self.gui.is_some() && self.menu.pending.is_none() {
+            self.title_drawn = true;
         }
         let diagnostic_spans = if horizon_client::spans::recording_here() {
             horizon_client::spans::take_raw()
@@ -485,7 +545,19 @@ impl Loading {
             } else {
                 "startup_menu"
             },
-            || serde_json::json!({"gpu":self.renderer.as_ref().map(|r| &r.info.name), "backend":self.renderer.as_ref().map(|r|format!("{:?}",r.info.backend))}),
+            || {
+                // While the loading screen draws, the adapter is the boot renderer's: a crash or
+                // an ANR here is still reported against the GPU that was being drawn with.
+                let info = self
+                    .renderer
+                    .as_ref()
+                    .map(|r| r.info.clone())
+                    .or_else(|| self.boot_renderer.as_ref().map(|b| b.info()));
+                serde_json::json!({
+                    "gpu": info.as_ref().map(|i| &i.name),
+                    "backend": info.as_ref().map(|i| format!("{:?}", i.backend)),
+                })
+            },
         );
         if let Some(renderer) = &mut self.renderer {
             renderer.set_pass_timing(crate::performance::gpu_profile());
@@ -630,6 +702,10 @@ impl Loading {
         let gui = self.gui.take().ok_or("missing menu bundle")?;
         let window = self.window.clone().ok_or("window closed")?;
         // Keep the loader's device and swap in the real textures in one step.
+        // A boot renderer whose window went away (Android put the app in the background) has no
+        // surface to hand over, and `Renderer::new` would take a device with none for an
+        // offscreen one. That start is rare, so it opens its own device instead, as before.
+        let boot = self.boot_renderer.take().filter(|b| !b.detached);
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
         }
@@ -641,9 +717,9 @@ impl Loading {
                 &loaded.pack,
                 &gui,
                 self.renderer.as_ref(),
-                // The loading screen still builds its own renderer here; `BootRenderer` takes
-                // that over in the next change, and this is where it is handed on.
-                None,
+                // The loading screen's device, surface and window, so this is the first and only
+                // time the world's pipelines are built.
+                boot,
                 loaded.renderer_cpu,
                 self.settings.horizon.api,
                 self.settings.horizon.translucent_batching,

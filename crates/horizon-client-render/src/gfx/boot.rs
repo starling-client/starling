@@ -3,7 +3,7 @@
 //! `Renderer::new` builds every pipeline the world will ever need before it returns, and the
 //! loading screen used to wait for all of them: on a PowerVR B-Series that is 11 seconds before
 //! anything reaches the screen, and the window stays on whatever was behind it. What the loading
-//! screen actually draws is a cube and some text â€” `loading_frame` hands the renderer a `Frame`
+//! screen actually draws is a cube and some text: `loading_frame` hands the renderer a `Frame`
 //! with `title: true` and every other field empty.
 //!
 //! So this opens the device itself, keeps the two pipelines it draws with, and hands the open
@@ -24,7 +24,10 @@ use winit::window::Window;
 pub struct BootRenderer {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
-    surface: wgpu::Surface<'static>,
+    window: Arc<Window>,
+    /// None between `suspend` and `resume`: Android destroys the window in the background, and
+    /// the surface has to go with it (`Renderer::suspend` says why it is not kept as a spare).
+    surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     device_lost: Arc<std::sync::atomic::AtomicBool>,
@@ -36,6 +39,8 @@ pub struct BootRenderer {
     depth: wgpu::TextureView,
     /// Kept so the atlas and glint views stay alive for the HUD's bind group.
     textures: [wgpu::Texture; 3],
+    /// The window is in the background, so no frame draws (`Renderer::detached`).
+    pub detached: bool,
 }
 
 /// What the boot screen draws with, made again when the menu bundle replaces the boot atlas.
@@ -134,7 +139,8 @@ impl BootRenderer {
         Ok(Self {
             instance,
             adapter,
-            surface,
+            window,
+            surface: Some(surface),
             device,
             queue,
             device_lost,
@@ -145,7 +151,34 @@ impl BootRenderer {
             panorama,
             depth,
             textures,
+            detached: false,
         })
+    }
+
+    /// The window is going away (Android destroys it in the background): drop its surface while
+    /// the window it was made from still exists, exactly as `Renderer::suspend` does.
+    pub fn suspend(&mut self) {
+        self.surface = None;
+        self.detached = true;
+    }
+
+    /// The window is back, maybe at another size: a new surface on it.
+    pub fn resume(&mut self, width: u32, height: u32) -> Result<()> {
+        let max = self.device.limits().max_texture_dimension_2d;
+        if width == 0 || height == 0 || width > max || height > max {
+            return Ok(());
+        }
+        let resized = [width, height] != [self.config.width, self.config.height];
+        self.config.width = width;
+        self.config.height = height;
+        let surface = self.instance.create_surface(self.window.clone())?;
+        surface.configure(&self.device, &self.config);
+        self.surface = Some(surface);
+        if resized {
+            self.depth = super::Renderer::depth(&self.device, &self.config);
+        }
+        self.detached = false;
+        Ok(())
     }
 
     /// The menu bundle has come: its atlas and title panorama replace the boot screen's. The
@@ -172,6 +205,16 @@ impl BootRenderer {
         Ok(())
     }
 
+    /// The window the loading screen lays itself out for.
+    pub fn size(&self) -> [u32; 2] {
+        [self.config.width, self.config.height]
+    }
+
+    /// The adapter this opened, for the diagnostics the loading screen reports.
+    pub fn info(&self) -> wgpu::AdapterInfo {
+        self.adapter.get_info()
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         let max = self.device.limits().max_texture_dimension_2d;
         let (width, height) = (width.clamp(1, max), height.clamp(1, max));
@@ -180,17 +223,39 @@ impl BootRenderer {
         }
         self.config.width = width;
         self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.config);
+        }
         self.depth = super::Renderer::depth(&self.device, &self.config);
     }
 
     /// One frame of the loading screen: the panorama behind, the batch over it.
     pub fn render(&mut self, batch: &HudBatch, yaw: f32) -> Result<()> {
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            // A window being resized or not yet shown: the next frame draws it.
-            _ => return Ok(()),
+        // The borrow of the surface ends with the acquisition, so the arm below may resize.
+        let frame = match self
+            .surface
+            .as_ref()
+            .map(wgpu::Surface::get_current_texture)
+        {
+            // Suspended: there is no window to draw on until `resume`.
+            None => return Ok(()),
+            Some(
+                wgpu::CurrentSurfaceTexture::Success(frame)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame),
+            ) => frame,
+            // The window was resized, or its swapchain went out of date: configure the surface
+            // for the size the window has now and let the next frame draw it. The loading screen
+            // has no resize event of its own, so this is where a resize is noticed.
+            Some(_) => {
+                let size = self.window.inner_size();
+                self.resize(size.width, size.height);
+                // `resize` returns early when the size has not changed, but a swapchain that is
+                // out of date wants the surface configured again either way.
+                if let Some(surface) = &self.surface {
+                    surface.configure(&self.device, &self.config);
+                }
+                return Ok(());
+            }
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.config.format),
@@ -255,7 +320,7 @@ impl BootRenderer {
         self.panorama.release();
         Opened {
             instance: self.instance,
-            surface: Some(self.surface),
+            surface: self.surface,
             adapter: self.adapter,
             device: self.device,
             queue: self.queue,

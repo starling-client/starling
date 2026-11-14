@@ -133,9 +133,55 @@ pub(super) fn build_renderer(
     Ok(renderer)
 }
 
-/// The loading screen's renderer: one atlas (the boot screen's until the
-/// pack's GUI atlas is ready) over one opaque white block-sprite layer, an
-/// empty border texture and the title panorama once the menu bundle is ready.
+/// The loading screen's own renderer, in place of `loading_renderer` wherever there is a window
+/// to draw on: the same atlas and panorama, and none of the world's pipelines.
+pub(super) fn boot_renderer(
+    window: Arc<Window>,
+    atlas: Option<&horizon_client::hud::HudAtlas>,
+    panorama: Option<&Arc<horizon_client::gfx::panorama::Faces>>,
+    api: horizon_client::graphics::GraphicsApi,
+) -> Result<horizon_client::gfx::boot::BootRenderer> {
+    static EMPTY_HUD: [u8; 4] = [0, 0, 0, 255];
+    let faces = panorama
+        .cloned()
+        .unwrap_or_else(|| Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])));
+    let (pixels, width, height) = atlas.map_or((EMPTY_HUD.as_slice(), 1, 1), |a| {
+        (a.pixels.as_slice(), a.width, a.height)
+    });
+    // As `loading_renderer`: a glyph rasterized into an earlier texture is not in these pixels.
+    if let Some(atlas) = atlas {
+        atlas.font.reset_cache();
+    }
+    #[cfg(target_os = "android")]
+    crate::diagnostics::checkpoint(
+        "renderer_init",
+        || serde_json::json!({"api":format!("{:?}",api)}),
+    );
+    pollster::block_on(horizon_client::gfx::boot::BootRenderer::new(
+        window,
+        (pixels, width, height),
+        faces,
+        api,
+    ))
+}
+
+/// The menu bundle's atlas and title panorama replacing the boot screen's, on the device the
+/// boot renderer already opened.
+pub(super) fn boot_set_ui(
+    boot: &mut horizon_client::gfx::boot::BootRenderer,
+    atlas: &horizon_client::hud::HudAtlas,
+    panorama: &Arc<horizon_client::gfx::panorama::Faces>,
+) -> Result<()> {
+    atlas.font.reset_cache();
+    boot.set_ui(
+        (atlas.pixels.as_slice(), atlas.width, atlas.height),
+        panorama.clone(),
+    )
+}
+
+/// The loading screen's renderer where there is no window to draw on (`--offscreen`): one atlas
+/// (the boot screen's until the pack's GUI atlas is ready) over one opaque white block-sprite
+/// layer, an empty border texture and the title panorama once the menu bundle is ready.
 pub(super) fn loading_renderer(
     window: Arc<Window>,
     offscreen: bool,

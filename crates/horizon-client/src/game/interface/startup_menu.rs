@@ -1805,6 +1805,7 @@ mod tests {
         Loading {
             window: None,
             renderer: None,
+            boot_renderer: None,
             boot: horizon_client::hud::HudAtlas::boot(),
             gui: None,
             settings: Settings::default(),

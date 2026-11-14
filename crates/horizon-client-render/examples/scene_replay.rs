@@ -220,6 +220,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(Faces::colour([0, 0, 0, 255])),
         Some(prepared),
         None,
+        None,
         settings.graphics_api(),
         settings.translucent_batching,
         false,
