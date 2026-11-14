@@ -1053,10 +1053,16 @@ impl Graphics {
                 "the last start ended before HDR output showed a frame; HDR output stays off with that graphics driver until the HDR mode is changed (graphics option hdrFailedStart, in {FILE})"
             );
         }
-        if fs::remove_file(dir.join(RENDERER_MARKER)).is_ok()
-            && cfg!(target_os = "android")
-            && after_driver_crash(g.api) != g.api
-        {
+        let driver_died = fs::remove_file(dir.join(RENDERER_MARKER)).is_ok();
+        // The pipelines the driver compiled before (`gfx::vulkan_pipeline_cache`) go too: data a
+        // driver dies reading would otherwise end every start that goes back to Vulkan.
+        #[cfg(target_os = "android")]
+        if driver_died {
+            let _ = fs::remove_file(crate::gfx::vulkan_pipeline_cache(
+                &crate::logging::private_home(),
+            ));
+        }
+        if driver_died && cfg!(target_os = "android") && after_driver_crash(g.api) != g.api {
             g.api = after_driver_crash(g.api);
             g.save(dir);
             log::warn!(

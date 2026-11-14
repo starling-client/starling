@@ -2248,6 +2248,15 @@ fn instance_descriptor(
     if dx12 {
         wgpu::hal::dx12::disk_cache::set_file(dx12_shader_cache(&crate::logging::game_home()));
     }
+    // Vulkan on Android keeps no compiled pipelines between runs either: building them is
+    // about 3.5 s of a start on an Adreno 740. The driver's own cache data is kept in the app's
+    // files and handed back when the device opens (third_party/wgpu-hal/src/vulkan/disk_cache.rs).
+    #[cfg(target_os = "android")]
+    if descriptor.backends.contains(wgpu::Backends::VULKAN) {
+        wgpu::hal::vulkan::disk_cache::set_file(vulkan_pipeline_cache(
+            &crate::logging::private_home(),
+        ));
+    }
     if !cfg!(debug_assertions) && !dx12 {
         descriptor
             .flags
@@ -2265,6 +2274,11 @@ fn instance_descriptor(
 /// Where DX12 keeps the shaders it compiled, inside a game folder.
 pub fn dx12_shader_cache(home: &std::path::Path) -> std::path::PathBuf {
     home.join("cache").join("dx12-shaders.bin")
+}
+/// Where Vulkan keeps the pipelines the driver compiled, inside the game's private folder
+/// (`logging::private_home`).
+pub fn vulkan_pipeline_cache(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("cache").join("vulkan-pipelines.bin")
 }
 
 /// The window's display connection, so the OpenGL backend creates its EGL
@@ -3890,6 +3904,8 @@ impl Renderer {
         let debug_crosshair = hud_coverage.then(|| crosshair(true));
         let overlay_crosshair = (overlay_format != frame_format).then(|| crosshair(false));
         drop(terrain_step);
+        // The block sprites' arrays, the GUI atlas and the HUD's pipelines.
+        let textures_step = crate::spans::startup::step("renderer.textures_hud");
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Horizon globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -4253,6 +4269,7 @@ impl Renderer {
             hud_coverage,
         )?;
         hud.atlas_texture = Some(atlas.clone());
+        drop(textures_step);
         let entity_step = crate::spans::startup::step("renderer.entity_pipelines");
         let entity_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon entities"),
@@ -4902,6 +4919,8 @@ impl Renderer {
         };
         let celestial_pipeline = kept.create_render_pipeline(&celestial_descriptor);
         drop(entity_step);
+        // The border, sky, weather, post and the rest of the world's pipelines.
+        let rest_step = crate::spans::startup::step("renderer.other_pipelines");
         // WorldBorderRenderer: misc/forcefield.png as a MipmappedTexture
         // (repeat, linear minification with mipmaps, nearest magnification).
         let forcefield_size = forcefield.1;
@@ -5408,6 +5427,7 @@ impl Renderer {
             overlay_format,
         );
         let panorama = panorama::Panorama::new(&device, frame_format, panorama_faces, gl);
+        drop(rest_step);
         drop(pipelines_step);
         reuse.finish(generation);
         if previous.is_some() {
@@ -7542,6 +7562,14 @@ impl Renderer {
     /// device) once a frame has been presented: the start went through.
     pub fn forget_start_marker(&mut self, marker: std::path::PathBuf) {
         self.start_marker = Some(marker);
+    }
+    /// Keeps the pipelines the driver compiled for the next start (`vulkan_pipeline_cache`): on
+    /// Android's Vulkan, written on a thread of its own; elsewhere nothing.
+    pub fn save_pipeline_cache(&self) {
+        #[cfg(target_os = "android")]
+        if self.info.backend == wgpu::Backend::Vulkan {
+            wgpu::hal::vulkan::disk_cache::save();
+        }
     }
     /// The HDR Lighting setting (`Hdr::look`).
     pub fn set_hdr_lighting(&mut self, on: bool) {

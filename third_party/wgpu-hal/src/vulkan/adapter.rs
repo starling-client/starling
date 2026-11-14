@@ -2941,6 +2941,27 @@ impl super::Adapter {
                 .map_err(super::map_host_device_oom_err)?
         };
 
+        // Horizon: the pipelines an earlier run compiled, when the application keeps them
+        // (`disk_cache::set_file`). Data the driver turns down starts an empty cache instead.
+        let fallback_pipeline_cache = if super::disk_cache::enabled() {
+            let seed = super::disk_cache::seed(&self.phd_capabilities.properties);
+            let seeded = seed.as_deref().and_then(|data| {
+                let info = vk::PipelineCacheCreateInfo::default().initial_data(data);
+                unsafe { raw_device.create_pipeline_cache(&info, None) }.ok()
+            });
+            seeded
+                .or_else(|| {
+                    unsafe {
+                        raw_device
+                            .create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)
+                    }
+                    .ok()
+                })
+                .unwrap_or(vk::PipelineCache::null())
+        } else {
+            vk::PipelineCache::null()
+        };
+
         let shared = Arc::new(super::DeviceShared {
             raw: raw_device,
             family_index,
@@ -2974,7 +2995,9 @@ impl super::Adapter {
             texture_identity_factory: super::ResourceIdentityFactory::new(),
             texture_view_identity_factory: super::ResourceIdentityFactory::new(),
             empty_descriptor_set_layout,
+            fallback_pipeline_cache,
         });
+        super::disk_cache::register(&shared);
 
         let relay_semaphores = super::RelaySemaphores::new(&shared)?;
 

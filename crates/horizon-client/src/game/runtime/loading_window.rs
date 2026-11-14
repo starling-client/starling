@@ -207,6 +207,8 @@ impl<'a> RendererParts<'a> {
             }
             renderer
         };
+        // The pipelines it compiled, for the next start (Android's Vulkan).
+        renderer.save_pipeline_cache();
         Ok((renderer, atlas_pixels))
     }
 }
