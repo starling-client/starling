@@ -129,6 +129,9 @@ pub struct Flat {
     ranges: wgpu::Buffer,
     range_capacity: u64,
     range_data: Vec<Range>,
+    /// Solid index ranges from the last submitted flat frame.
+    quad_ranges: Vec<Range>,
+    quad_ranges_submitted: bool,
     /// Segments of `range_data` by index source: (source, first range,
     /// ranges).
     segments: Vec<(Source, u64, u64)>,
@@ -556,6 +559,8 @@ impl Flat {
             ranges: buffer(device, "Flat section ranges", 16, storage_usage),
             range_capacity: 1,
             range_data: Vec::new(),
+            quad_ranges: Vec::new(),
+            quad_ranges_submitted: false,
             segments: Vec::new(),
             empty: buffer(device, "No sorted indices", 16, storage_usage),
             calls: Vec::new(),
@@ -650,6 +655,10 @@ impl Flat {
         self.pages.clear();
         self.free_ids.clear();
         self.next_id = 0;
+        self.quad_ranges_submitted = false;
+    }
+    pub fn submitted(&mut self) {
+        self.quad_ranges_submitted = !self.quad_ranges.is_empty();
     }
     /// Forgets the tables of pages the arenas released (`live`, by page key).
     pub fn trim(&mut self, live: impl Fn(u32) -> bool) {
@@ -685,6 +694,7 @@ impl Flat {
         translucent_arena: bool,
         origins: impl Iterator<Item = (u32, [f32; 4])>,
         sorted_page: impl Fn(u32) -> wgpu::Buffer,
+        cache_quads: bool,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> bool {
         self.phase2_group = None;
@@ -756,6 +766,7 @@ impl Flat {
             self.solid_calls = 0;
             self.shadow_calls = [0; 2];
             self.pass_calls = [0; 3];
+            self.quad_ranges_submitted = false;
             return false;
         }
         if self.range_data.len() as u64 > self.range_capacity {
@@ -775,7 +786,25 @@ impl Flat {
                 self.index_capacity * 4,
                 wgpu::BufferUsages::INDEX | wgpu::BufferUsages::STORAGE,
             );
+            self.quad_ranges_submitted = false;
         }
+        // The quad pattern depends only on these ranges. Sorted translucent
+        // indices still read the current per-section sort buffers each frame.
+        let quad_ranges = self
+            .segments
+            .iter()
+            .find(|(source, ..)| cache_quads && *source == Source::Quads)
+            .map_or(&[][..], |&(_, first, count)| {
+                &self.range_data[first as usize..(first + count) as usize]
+            });
+        let reuse_quads = self.quad_ranges_submitted
+            && !quad_ranges.is_empty()
+            && self.quad_ranges.as_slice() == quad_ranges;
+        if !reuse_quads {
+            self.quad_ranges.clear();
+            self.quad_ranges.extend_from_slice(quad_ranges);
+        }
+        self.quad_ranges_submitted = false;
         uploads.buffer(
             encoder,
             &self.ranges,
@@ -853,6 +882,7 @@ impl Flat {
             .iter()
             .filter_map(|&(source, first, count)| {
                 let sorted = match source {
+                    Source::Quads if reuse_quads => return None,
                     Source::Quads => None,
                     Source::Seen => return None,
                     Source::Sorted(page) => Some(sorted_page(page)),
