@@ -517,8 +517,8 @@ class OnGitHub(unittest.TestCase):
             }
         ]
 
-    def finished_run(self, job, commit=None):
-        """Asked for, run and done: the library is here, built from `commit` when it is given."""
+    def result_on_github(self, commit=None):
+        """The run's artifact: the library, built from `commit` when it is given."""
         library = self.LIBRARY
         build = {"version": "0.8.0", **({"commit": commit} if commit else {})}
         self.github.artifact = result_zip(
@@ -530,6 +530,10 @@ class OnGitHub(unittest.TestCase):
             },
             library,
         )
+
+    def finished_run(self, job, commit=None):
+        """Asked for, run and done: the library is here, built from `commit` when it is given."""
+        self.result_on_github(commit)
         self.gateway.github_round()
         self.run_is("completed", "success")
         self.gateway.github_round()
@@ -717,6 +721,42 @@ class OnGitHub(unittest.TestCase):
         self.gateway.load_index()
         self.assertEqual(self.poll(job)["state"], "queued")
         self.assertEqual(self.finished_run(job)["state"], "done")
+
+    def test_a_run_that_ended_gives_its_place_to_the_next_in_line_in_the_same_look(self):
+        # A look used to start runs before reading which had ended, and to bring each result here
+        # before the next look: an ended run held its place, and with the line full GitHub ran
+        # fewer builds than it may while players were turned away.
+        self.gateway.GITHUB_AT_ONCE = 1
+        first = self.ask(b"first")[1]["job"]
+        second = self.ask(b"second")[1]["job"]
+        self.gateway.github_round()
+        self.assertEqual(len(self.github.dispatched), 1)
+        self.result_on_github()
+        self.run_is("completed", "success")
+        on_its_way = []
+        self.gateway.github_round(collect=lambda *job: on_its_way.append(job))
+        # The second runs while the first's library is still to bring here, and the first is
+        # still the player's build.
+        self.assertEqual(len(self.github.dispatched), 2)
+        self.assertEqual([job for job, _, _ in on_its_way], [first])
+        self.assertEqual(self.poll(first)["state"], "building")
+        self.assertEqual(self.poll(second)["state"], "queued")
+        self.gateway.github_keep(*on_its_way[0])
+        self.assertEqual(self.poll(first)["state"], "done")
+        self.assertEqual(self.call("GET", f"/v1/job/{first}/lib")[1], self.LIBRARY)
+
+    def test_a_result_on_its_way_when_the_service_stopped_is_brought_again(self):
+        job = self.ask()[1]["job"]
+        self.gateway.github_round()
+        self.result_on_github()
+        self.run_is("completed", "success")
+        # The run ended and its download never finished: the service stopped first.
+        self.gateway.github_round(collect=lambda *job: None)
+        self.start_gateway()
+        self.gateway.load_index()
+        self.gateway.github_round()
+        self.assertEqual(self.poll(job)["state"], "done")
+        self.assertEqual(self.call("GET", f"/v1/job/{job}/lib")[1], self.LIBRARY)
 
 
 if __name__ == "__main__":

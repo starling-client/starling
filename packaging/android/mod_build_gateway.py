@@ -20,6 +20,7 @@ brings the library here when it ends, so it is served as any other.
     STORE_BYTES            how much of them, default 10 GiB
     GATEWAY_PUBLIC_URL     where GitHub's runners reach this; without it, or the token, no GitHub builds
     GITHUB_AT_ONCE         GitHub runs at once, default 8; GITHUB_LINE, waiting here beyond them, 24
+    GITHUB_LOOK_SECONDS    how often the runs are looked at, default 5
     GITHUB_BUILDS_PER_DAY  GitHub builds in any 24 hours, everyone's together, default 300
     CREDENTIALS_DIRECTORY  systemd's LoadCredential: github-token, allowed to run mod-builds' workflows
     PERF_BYTES             how much of the test builds' performance reports stay, default 256 MiB
@@ -30,6 +31,7 @@ sent it (the address only counts the reports per hour, in memory).
 """
 import base64
 import calendar
+import concurrent.futures
 import hashlib
 import http.client
 import http.server
@@ -103,7 +105,12 @@ PERF_PER_HOUR = 30
 PERF_BYTES = int(os.environ.get("PERF_BYTES", str(256 << 20)))
 # Reports per address in the last hour, only here in memory.
 perf_sent = {}
-GITHUB_LOOK_SECONDS = 20
+# A look is a read of the runs and the starts the free places allow. It was 20 s and held each result's
+# download besides: a finished run kept its place for a minute or so, and with the line full GitHub ran a
+# quarter fewer builds than GITHUB_AT_ONCE allows while players were turned away (13/11: 9 to 12 of 16).
+GITHUB_LOOK_SECONDS = float(os.environ.get("GITHUB_LOOK_SECONDS", "5"))
+# Results brought here at once from GitHub, a library of tens of MB each, beside the looks.
+GITHUB_COLLECTING_AT_ONCE = 4
 # Asked for and no run after this, or a run this old: it isn't coming.
 GITHUB_NO_RUN_SECONDS = 15 * 60
 GITHUB_SECONDS = 75 * 60
@@ -336,6 +343,11 @@ def load_index():
         github_jobs.update(
             {j: e for j, e in (data.get("github") or {}).items() if e.get("state") != "writing"}
         )
+        # One whose result was on its way here is followed again: its run has ended, so the first
+        # look brings the result anew.
+        for entry in github_jobs.values():
+            if entry.get("state") == "collecting":
+                entry["state"] = "queued"
 
 
 def result_folder(job):
@@ -629,8 +641,11 @@ def github_status(job):
         state = job_now["state"]
         if state == "failed":
             return {"state": "failed", "error": job_now["error"], "settled": False}
-        if state == "building":
-            return {"state": "building", "seconds": int(now - job_now["started"])}
+        # Its result on its way here is still the build to the player. A run that ended between two
+        # looks was never seen building, so it counts from when it was asked for.
+        if state in ("building", "collecting"):
+            began = job_now.get("started") or job_now.get("asked") or now
+            return {"state": "building", "seconds": int(now - began)}
         ahead = 0
         if state in ("waiting", "writing"):
             ahead = sum(
@@ -711,8 +726,18 @@ def github_keep(job, entry, run):
             os.remove(part)
 
 
-def github_round():
-    """One look: failures that were told long enough go, those in line run, the rest are followed."""
+# A job's place among GITHUB_AT_ONCE: asked for and not ended on GitHub. One whose result is on its way
+# here ("collecting") has given its place back.
+ON_GITHUB = ("asked", "queued", "building")
+
+
+def github_round(collect=None):
+    """One look: failures that were told long enough go, the runs are read, and the free places run
+    those in line.
+
+    The runs are read before anyone starts, so a run that ended gives its place to the next in line in
+    this same look. Its result is brought here by `collect(job, entry, run)` (the worker hands it to its
+    threads, so a look is never held by a download), or at once when none is given."""
     now = time.time()
     with lock:
         for job in [
@@ -721,21 +746,74 @@ def github_round():
             if e["state"] == "failed" and now - e["at"] > GITHUB_FAILURE_SECONDS
         ]:
             del github_jobs[job]
-        active = {
-            j: dict(e)
-            for j, e in github_jobs.items()
-            if e["state"] in ("waiting", "asked", "queued", "building")
-        }
-    if not active:
+        followed = {j: dict(e) for j, e in github_jobs.items() if e["state"] in ON_GITHUB}
+        in_line = any(e["state"] == "waiting" for e in github_jobs.values())
+    if not followed and not in_line:
         return
-    running = sum(e["state"] != "waiting" for e in active.values())
-    waiting = sorted(
-        (j for j, e in active.items() if e["state"] == "waiting"), key=lambda j: active[j]["at"]
-    )
-    for job in waiting:
+    ended = github_follow(followed) if followed else []
+    github_start()
+    save_index()
+    for job, entry, run in ended:
+        (collect or github_keep)(job, entry, run)
+
+
+def github_follow(followed):
+    """Reads the runs of the jobs on GitHub. Returns those that ended well, now `collecting`: their
+    places are free and their results still to bring here."""
+    try:
+        runs = github_api(
+            "GET",
+            f"/actions/workflows/{GITHUB_WORKFLOW}/runs?event=workflow_dispatch&per_page=100",
+        )["workflow_runs"]
+    except (OSError, ValueError, KeyError) as e:
+        print(f"github: could not read the runs: {e}", flush=True)
+        return []
+    by_title = {}
+    for run in runs:
+        by_title.setdefault(run.get("display_title"), run)
+    now = time.time()
+    ended = []
+    for job, entry in followed.items():
+        run = by_title.get(f"build {entry['ask']}")
+        if not run:
+            if now - entry["asked"] > GITHUB_NO_RUN_SECONDS:
+                github_failed(job, "GitHub did not start the build. Try again later.")
+            continue
+        if now - entry["asked"] > GITHUB_SECONDS:
+            github_failed(job, "The build took too long. Try again later.")
+        elif run["status"] == "completed":
+            if run["conclusion"] == "success":
+                with lock:
+                    github_jobs[job]["state"] = "collecting"
+                ended.append((job, entry, run["id"]))
+            else:
+                github_failed(job, "The build on GitHub did not finish. Try again.")
+        elif run["status"] == "in_progress" and entry["state"] != "building":
+            started = run.get("run_started_at") or ""
+            try:
+                began = calendar.timegm(time.strptime(started, "%Y-%m-%dT%H:%M:%SZ"))
+            except ValueError:
+                began = now
+            with lock:
+                github_jobs[job]["state"] = "building"
+                github_jobs[job]["started"] = began
+        elif entry["state"] == "asked":
+            with lock:
+                github_jobs[job]["state"] = "queued"
+    return ended
+
+
+def github_start():
+    """Runs those in line, the first first, while fewer than GITHUB_AT_ONCE are on GitHub."""
+    with lock:
+        running = sum(e["state"] in ON_GITHUB for e in github_jobs.values())
+        waiting = sorted(
+            ((j, dict(e)) for j, e in github_jobs.items() if e["state"] == "waiting"),
+            key=lambda pair: pair[1]["at"],
+        )
+    for job, entry in waiting:
         if running >= GITHUB_AT_ONCE:
             break
-        entry = active[job]
         try:
             github_api(
                 "POST",
@@ -758,60 +836,36 @@ def github_round():
             print(f"github: could not ask for a run: {e}", flush=True)
             break
         with lock:
-            github_jobs[job]["state"] = entry["state"] = "asked"
-            github_jobs[job]["asked"] = entry["asked"] = time.time()
+            github_jobs[job]["state"] = "asked"
+            github_jobs[job]["asked"] = time.time()
         running += 1
-    followed = {j: e for j, e in active.items() if e["state"] != "waiting"}
-    if not followed:
-        return save_index()
+
+
+def github_keep_or_fail(job, entry, run):
+    """`github_keep` on one of the worker's threads: an error it did not expect still ends the job,
+    instead of leaving it `collecting`, answered as building, for good."""
     try:
-        runs = github_api(
-            "GET",
-            f"/actions/workflows/{GITHUB_WORKFLOW}/runs?event=workflow_dispatch&per_page=100",
-        )["workflow_runs"]
-    except (OSError, ValueError, KeyError) as e:
-        print(f"github: could not read the runs: {e}", flush=True)
-        return None
-    by_title = {}
-    for run in runs:
-        by_title.setdefault(run.get("display_title"), run)
-    now = time.time()
-    for job, entry in followed.items():
-        run = by_title.get(f"build {entry['ask']}")
-        if not run:
-            if now - entry["asked"] > GITHUB_NO_RUN_SECONDS:
-                github_failed(job, "GitHub did not start the build. Try again later.")
-            continue
-        if now - entry["asked"] > GITHUB_SECONDS:
-            github_failed(job, "The build took too long. Try again later.")
-        elif run["status"] == "completed":
-            if run["conclusion"] == "success":
-                github_keep(job, entry, run["id"])
-            else:
-                github_failed(job, "The build on GitHub did not finish. Try again.")
-        elif run["status"] == "in_progress" and entry["state"] != "building":
-            started = run.get("run_started_at") or ""
-            try:
-                began = calendar.timegm(time.strptime(started, "%Y-%m-%dT%H:%M:%SZ"))
-            except ValueError:
-                began = now
-            with lock:
-                github_jobs[job]["state"] = "building"
-                github_jobs[job]["started"] = began
-        elif entry["state"] == "asked":
-            with lock:
-                github_jobs[job]["state"] = "queued"
-    save_index()
+        github_keep(job, entry, run)
+    except Exception as e:
+        print(f"github {job}: {e!r}", flush=True)
+        github_failed(job, "The build's result did not arrive. Try again.")
 
 
 def github_worker():
-    while True:
-        time.sleep(GITHUB_LOOK_SECONDS)
-        try:
-            if github_open():
-                github_round()
-        except Exception as e:  # The next look goes on whatever this one did.
-            print(f"github: {e!r}", flush=True)
+    with concurrent.futures.ThreadPoolExecutor(
+        GITHUB_COLLECTING_AT_ONCE, thread_name_prefix="github-keep"
+    ) as pool:
+        while True:
+            time.sleep(GITHUB_LOOK_SECONDS)
+            try:
+                if github_open():
+                    github_round(
+                        collect=lambda job, entry, run: pool.submit(
+                            github_keep_or_fail, job, entry, run
+                        )
+                    )
+            except Exception as e:  # The next look goes on whatever this one did.
+                print(f"github: {e!r}", flush=True)
 
 
 def perf_refusal(address, now):
