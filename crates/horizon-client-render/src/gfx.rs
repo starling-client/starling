@@ -1730,7 +1730,29 @@ async fn open_device(
 ) -> Result<Opened> {
     let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
     let mut api = api.with_env();
-    if api == GraphicsApi::Auto
+    // A custom GPU driver (Android, gpu_drivers) replaces the system's libvulkan: Vulkan,
+    // whatever the setting says, and no sidestep to OpenGL ES for GPUs whose stock driver
+    // crashes (that is what the custom driver is for). Off Android nothing sets one.
+    let custom_driver = crate::gpu_drivers::active().map(|(id, _)| id);
+    if let Some(id) = custom_driver {
+        if api == GraphicsApi::OpenGl {
+            // An explicit OpenGL ES choice wins over a chosen driver: the way back when a
+            // custom Vulkan driver misbehaves past startup.
+            log::info!("Horizon renderer: OpenGL ES chosen: the custom GPU driver {id} stays off");
+        } else {
+            if api != GraphicsApi::Vulkan {
+                log::info!(
+                    "Horizon renderer: custom GPU driver {id} chosen: Vulkan, not {}",
+                    api.label()
+                );
+            } else {
+                log::info!("Horizon renderer: custom GPU driver {id} chosen");
+            }
+            api = GraphicsApi::Vulkan;
+        }
+    }
+    if custom_driver.is_none()
+        && api == GraphicsApi::Auto
         && !wgpu_backend
         && cfg!(target_os = "android")
         && let Some(gpu) = vulkan_gpu_name(window)

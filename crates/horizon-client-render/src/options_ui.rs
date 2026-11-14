@@ -1745,6 +1745,9 @@ pub enum Page {
     /// Horizon's shader packs, either kind (`shader_pack_list`): one on or none, and a
     /// `shaders/` pack's profile.
     ShaderPacks,
+    /// Custom GPU drivers (Android, `gpu_drivers`): one on or the system driver, applied at
+    /// the next start.
+    GpuDrivers,
     /// The options of `s.shader_packs[.0]`, a Horizon pack: its `[[pages]]` entry `.1`, the
     /// first the one the button opens.
     NativePackOptions(usize, u8),
@@ -1882,6 +1885,13 @@ enum Act {
     PlayMusicTrack(String, String),
     /// The Music page: turn this track off, or back on.
     MusicTrackOn(String, bool),
+    /// The GPU Drivers page: pick the driver with this folder id for the next start (or the
+    /// system driver when it is picked again), delete it, ask the system for a package (it
+    /// arrives through the import inbox), or restart now to play the pick.
+    PickGpuDriver(String),
+    DeleteGpuDriver(String),
+    ImportGpuDriver,
+    RestartGame,
 }
 enum WKind {
     Button {
@@ -2055,6 +2065,10 @@ pub enum Event {
     ListMusicTracks,
     /// A Music page row: play this track of this event now.
     PlayMusicTrack(String, String),
+    /// A custom GPU driver package arrived through the import inbox: install it.
+    ImportGpuDriver,
+    /// The GPU driver pick changed: start again to play it (Android).
+    RestartGame,
 }
 /// A row of the Music page: the track, and the pool it is played from.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -2432,6 +2446,7 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::Agent => "horizon.pages.agent.tooltip",
         Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
         Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
+        Page::GpuDrivers => "horizon.pages.gpu_drivers.tooltip",
         Page::Mods => "horizon.pages.mods.tooltip",
         Page::SplitSetup => "horizon.pages.split_setup.tooltip",
         Page::Music => "horizon.pages.music.tooltip",
@@ -2494,6 +2509,86 @@ fn native_pack_option_rows(s: &Settings, i: usize, at: u8) -> Vec<Row> {
 }
 /// The open screen of the picked pack: its title, then its items, one to a row on a phone, where
 /// long names fit and a finger finds them, else as the pack lays them out.
+/// The GPU Drivers page (Android): the system driver or one installed driver, applied at
+/// the next start, and the notice when a driver was set aside for crashing starts.
+fn gpu_driver_rows() -> Vec<Row> {
+    let drivers = crate::gpu_drivers::list();
+    let selected = crate::gpu_drivers::selected();
+    let active = crate::gpu_drivers::active().map(|(id, _)| id.to_owned());
+    let mut rows = vec![Row::Note(tr("horizon.pages.gpu_drivers.warning").plain())];
+    if let Some(notice) = crate::gpu_drivers::take_notice() {
+        rows.push(Row::Note(notice));
+    }
+    if let Some(id) = &active
+        && let Some(driver) = drivers.iter().find(|d| &d.id == id)
+    {
+        rows.push(Row::Note(
+            Text::translate(
+                "horizon.pages.gpu_drivers.playing",
+                &[Text::literal(driver.label())],
+            )
+            .plain(),
+        ));
+    }
+    if selected != active {
+        rows.push(Row::Note(tr("options.restartRequired").plain()));
+        rows.push(Row::Buttons(
+            button(
+                0.0,
+                0.0,
+                310.0,
+                tr("horizon.pages.gpu_drivers.restart"),
+                Act::RestartGame,
+            ),
+            None,
+        ));
+    }
+    let pick = |on: bool, name: Text, act: Act| {
+        let label = if on {
+            Text::literal(format!("> {} <", name.plain()))
+        } else {
+            name
+        };
+        Row::Buttons(button(0.0, 0.0, 310.0, label, act), None)
+    };
+    rows.push(pick(
+        selected.is_none(),
+        tr("horizon.pages.gpu_drivers.system"),
+        Act::PickGpuDriver(String::new()),
+    ));
+    for driver in &drivers {
+        let on = selected.as_deref() == Some(driver.id.as_str());
+        let label = if on {
+            format!("> {} <", driver.label())
+        } else {
+            driver.label()
+        };
+        rows.push(Row::Buttons(
+            button(
+                0.0,
+                0.0,
+                150.0,
+                Text::literal(label),
+                Act::PickGpuDriver(driver.id.clone()),
+            ),
+            Some(button(
+                0.0,
+                0.0,
+                150.0,
+                tr("horizon.pages.gpu_drivers.delete"),
+                Act::DeleteGpuDriver(driver.id.clone()),
+            )),
+        ));
+    }
+    if let Some(id) = &selected
+        && let Some(driver) = drivers.iter().find(|d| &d.id == id)
+        && !driver.meta.description.is_empty()
+    {
+        rows.push(Row::Note(driver.meta.description.clone()));
+    }
+    rows
+}
+
 fn shader_option_rows(s: &Settings) -> Vec<Row> {
     let Some(options) = &s.shader_options else {
         return vec![Row::Header("horizon.shader_options.loading")];
@@ -3234,6 +3329,7 @@ impl OptionsUi {
             Page::Mods => "horizon.pages.mods",
             Page::NativeMod(_) => "Mod Settings",
             Page::ShaderPacks => "horizon.pages.shader_packs",
+            Page::GpuDrivers => "horizon.pages.gpu_drivers",
             Page::ShaderOptions | Page::NativePackOptions(..) => "horizon.pages.shader_options",
             Page::CustomButtons
             | Page::CustomButton(_)
@@ -3671,6 +3767,19 @@ impl OptionsUi {
                     ),
                     None,
                 ));
+                // Custom GPU drivers (ARM64 Android only): the pick loads at the next start.
+                if cfg!(target_os = "android") && cfg!(target_arch = "aarch64") {
+                    rows.push(Row::Buttons(
+                        button(
+                            0.0,
+                            0.0,
+                            310.0,
+                            tr("horizon.pages.open.gpu_drivers"),
+                            Act::Push(Page::GpuDrivers),
+                        ),
+                        None,
+                    ));
+                }
                 rows.push(Row::Header("options.video.display.header"));
                 // A phone's app always fills its screen.
                 let display: &[Opt] = if cfg!(target_os = "android") {
@@ -4176,6 +4285,7 @@ impl OptionsUi {
                 rows
             }
             Page::ShaderOptions => shader_option_rows(s),
+            Page::GpuDrivers => gpu_driver_rows(),
             Page::NativePackOptions(i, at) => native_pack_option_rows(s, i, at),
             Page::CustomButtons => {
                 let mut rows = vec![Row::Note(
@@ -5105,6 +5215,9 @@ impl OptionsUi {
                 let folder = match page {
                     Page::Mods => Some(("horizon.mods.open_folder", Act::OpenModFolder)),
                     Page::ShaderPacks => Some(("pack.openFolder", Act::OpenShaderPackFolder)),
+                    Page::GpuDrivers => {
+                        Some(("horizon.pages.gpu_drivers.import", Act::ImportGpuDriver))
+                    }
                     Page::ShaderOptions => Some(("controls.reset", Act::ShaderReset)),
                     Page::NativePackOptions(i, _) => {
                         Some(("controls.reset", Act::NativePackReset(i)))
@@ -6072,6 +6185,19 @@ impl OptionsUi {
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
                         Act::OpenCatalog(shelf) => events.push(Event::OpenCatalog(shelf)),
                         Act::OpenShaderPackFolder => events.push(Event::OpenShaderPackFolder),
+                        Act::PickGpuDriver(id) => {
+                            let selected = crate::gpu_drivers::selected();
+                            crate::gpu_drivers::select(
+                                if selected.as_deref() == Some(id.as_str()) {
+                                    ""
+                                } else {
+                                    &id
+                                },
+                            );
+                        }
+                        Act::DeleteGpuDriver(id) => crate::gpu_drivers::remove(&id),
+                        Act::ImportGpuDriver => events.push(Event::ImportGpuDriver),
+                        Act::RestartGame => events.push(Event::RestartGame),
                         Act::ShaderResolution => {
                             const STEPS: [u32; 6] = [100, 75, 50, 40, 30, 25];
                             let now = s.horizon.resolution_scale;
@@ -7302,6 +7428,19 @@ impl OptionsUi {
                             }
                         }
                         Act::OpenShaderPackFolder => events.push(Event::OpenShaderPackFolder),
+                        Act::PickGpuDriver(id) => {
+                            let selected = crate::gpu_drivers::selected();
+                            crate::gpu_drivers::select(
+                                if selected.as_deref() == Some(id.as_str()) {
+                                    ""
+                                } else {
+                                    &id
+                                },
+                            );
+                        }
+                        Act::DeleteGpuDriver(id) => crate::gpu_drivers::remove(&id),
+                        Act::ImportGpuDriver => events.push(Event::ImportGpuDriver),
+                        Act::RestartGame => events.push(Event::RestartGame),
                         // The shader options page's buttons, as a click does them.
                         Act::ShaderOptions => {
                             self.focus = None;

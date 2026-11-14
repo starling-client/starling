@@ -24,6 +24,9 @@ pub enum Kind {
     Mod,
     /// A native mod (`horizon-native.json`): for `horizon-native-mods/`, compiled from there.
     NativeMod,
+    /// A custom GPU driver package (`meta.json`): for `gpu-drivers/`, loaded at the next
+    /// start (`gpu_drivers`).
+    GpuDriver,
     /// A folder horizon-prepare made (`horizon-resources.json`), zipped.
     Resources,
     /// Bedrock Edition content (.mcpack, .mcaddon, .mcworld, .mctemplate).
@@ -64,6 +67,12 @@ pub fn classify(path: &Path) -> (Kind, String) {
     else {
         return (Kind::Unknown, String::new());
     };
+    // A custom GPU driver (Turnip, PanVK, RADV...): `meta.json` names the driver library.
+    if let Some(prefix) = crate::gpu_drivers::manifest_prefix(&names)
+        && crate::gpu_drivers::read_manifest(path, &prefix).is_some()
+    {
+        return (Kind::GpuDriver, prefix);
+    }
     let found = |marker: &str| marker_prefix(&names, marker);
     if let Some(prefix) = found("horizon-resources.json") {
         return (Kind::Resources, prefix);
@@ -220,6 +229,14 @@ pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, St
             copy_file(path, &dir.join(format!("{id}.hnmod"))).map_err(fail)?;
             format!("Native mod \"{id}\" added: compile it in Options > Mods")
         }
+        Kind::GpuDriver => {
+            let driver = crate::gpu_drivers::install_from_zip(path, &title)
+                .map_err(|e| format!("{name} can't be added: {e}"))?;
+            format!(
+                "GPU driver \"{}\" added: pick it in Video Settings > GPU Drivers",
+                driver.meta.name
+            )
+        }
         Kind::Resources => {
             install_resources(path, &prefix, &places.resources)?;
             "Minecraft resources imported".to_owned()
@@ -243,7 +260,7 @@ pub fn install(path: &Path, name: &str, places: &Places) -> Result<Installed, St
         Kind::Unknown => {
             return Err(format!(
                 "the game does not know what {name} is: it takes resource packs, shader packs, \
-                 worlds and mods as .zip or .starling, and skins as .png"
+                 worlds, mods and GPU drivers as .zip or .starling, and skins as .png"
             ));
         }
     };
@@ -541,6 +558,33 @@ mod tests {
                 "m.zip",
                 &[("horizon-mod.toml", b""), ("mod.wasm", b"")],
                 Kind::Mod,
+                "",
+            ),
+            (
+                "driver.adpkg",
+                &[
+                    (
+                        "meta.json",
+                        br#"{"name":"Turnip","libraryName":"vulkan.ad07XX.so"}"#,
+                    ),
+                    ("vulkan.ad07XX.so", b""),
+                ],
+                Kind::GpuDriver,
+                "",
+            ),
+            (
+                "nested-driver.zip",
+                &[(
+                    "Turnip/meta.json",
+                    br#"{"name":"Turnip","libraryName":"vulkan.ad07XX.so"}"#,
+                )],
+                Kind::GpuDriver,
+                "Turnip/",
+            ),
+            (
+                "fake-driver.zip",
+                &[("meta.json", b"{}")],
+                Kind::Unknown,
                 "",
             ),
             ("notes.zip", &[("readme.txt", b"")], Kind::Unknown, ""),

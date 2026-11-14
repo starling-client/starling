@@ -453,6 +453,7 @@ fn done_title(kind: Kind) -> &'static str {
         Kind::DataPack => "Data pack imported",
         Kind::ShaderPack => "Shader pack imported",
         Kind::Mod | Kind::NativeMod => "Mod imported",
+        Kind::GpuDriver => "GPU driver imported",
         Kind::Skin => "Skin imported",
         Kind::Resources => "Minecraft resources imported",
         Kind::Bedrock | Kind::Unknown => "Imported",
@@ -597,7 +598,7 @@ fn icon(kind: Kind) -> &'static [&'static str] {
     match kind {
         Kind::World => WORLD,
         Kind::ResourcePack | Kind::DataPack | Kind::ShaderPack => PACK,
-        Kind::Mod | Kind::NativeMod => GEAR,
+        Kind::Mod | Kind::NativeMod | Kind::GpuDriver => GEAR,
         Kind::Skin => FACE,
         Kind::Resources | Kind::Bedrock | Kind::Unknown => BOX,
     }

@@ -37,6 +37,8 @@ mod semaphore_list;
 mod swapchain;
 
 pub use adapter::PhysicalDeviceFeatures;
+// Starling's custom GPU driver (Android): the setter lives in `instance`.
+pub use instance::set_custom_get_instance_proc_addr;
 
 use alloc::{boxed::Box, ffi::CString, sync::Arc, vec::Vec};
 use core::{borrow::Borrow, ffi::CStr, fmt, marker::PhantomData, mem, num::NonZeroU32};

@@ -5,6 +5,9 @@
     <string name="diagnostics_view_log">View latest log</string>
     <string name="diagnostics_export">Export diagnostic ZIP</string>
     <string name="diagnostics_share">Share latest ZIP</string>
+    <string name="diagnostics_reset_gpu_driver">Reset GPU driver</string>
+    <string name="diagnostics_gpu_driver_reset">Custom GPU driver off: the system driver plays next start.</string>
+    <string name="diagnostics_gpu_driver_system">Already on the system GPU driver.</string>
     <string name="diagnostics_start">Try starting the game</string>
     <string name="diagnostics_working">Preparing report…</string>
     <string name="diagnostics_exported">Report exported. Review it before sharing.</string>

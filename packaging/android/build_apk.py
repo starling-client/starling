@@ -3,7 +3,8 @@
 NativeActivity library.
 
 The APK holds the game library, the launcher icon, Starling Visuals and what prepares the game
-files on the phone (the Java launchers in native/ and original exporter classes/sources), nothing of
+files on the phone (the Java launchers in native/ and original exporter classes/sources), and, on
+arm64-v8a, the libadrenotools Vulkan hook libraries for custom GPU drivers. Nothing of
 Minecraft: the resources
 horizon-prepare makes from the player's own copy are made on the phone, or copied there.
 
@@ -145,6 +146,67 @@ def build_launchers(ndk, out, abi=ABI):
         libraries[name] = target
     sysroot = ndk_tool(ndk, "clang").parent.parent / "sysroot"
     libraries["libc++_shared.so"] = sysroot / "usr" / "lib" / sysroot_triple / "libc++_shared.so"
+    return libraries
+
+
+def build_adrenotools(ndk, out, abi=ABI):
+    """libadrenotools (third_party/libadrenotools): the Vulkan driver hook
+    (`adrenotools_open_libvulkan`) and its `hook_impl`, `main_hook` and
+    `file_redirect_hook` libraries, for custom GPU drivers. Upstream supports
+    arm64-v8a only, so other ABIs get none. An app runs libraries only from
+    its library folder, so they go in the APK as libraries (extractNativeLibs
+    extracts them to nativeLibraryDir, the hook's `hookLibDir`)."""
+    if abi != "arm64-v8a":
+        return {}
+    _, compiler, _ = TARGETS[abi]
+    cc = ndk_tool(ndk, f"{compiler}{MIN_SDK}-clang")
+    cxx = ndk_tool(ndk, f"{compiler}{MIN_SDK}-clang++")
+    src = ROOT / "third_party" / "libadrenotools"
+    inc = [
+        "-I", src / "include",
+        "-I", src / "src",
+        "-I", src / "src" / "hook",
+        "-I", src / "lib" / "linkernsbypass",
+    ]
+    page = ["-Wl,-z,max-page-size=16384"]
+    # Compiled into each shared library that needs it, as upstream's static
+    # liblinkernsbypass is.
+    ns = [
+        src / "lib" / "linkernsbypass" / "android_linker_ns.cpp",
+        src / "lib" / "linkernsbypass" / "elf_soname_patcher.cpp",
+    ]
+    libraries = {}
+    # hook_impl first: the hooks link against it by name, as upstream does.
+    hook_impl = out / "libhook_impl.so"
+    run(
+        cxx, "-O2", "-shared", "-fPIC", "-std=c++17", "-fvisibility=hidden",
+        "-Wall", "-Wextra", *inc, *page, "-o", hook_impl,
+        src / "src" / "hook" / "hook_impl.cpp", *ns,
+        "-llog", "-landroid", "-ldl",
+    )
+    libraries["libhook_impl.so"] = hook_impl
+    for name, source in (
+        ("libmain_hook.so", "main_hook.c"),
+        ("libfile_redirect_hook.so", "file_redirect_hook.c"),
+    ):
+        target = out / name
+        run(
+            cc, "-O2", "-shared", "-fPIC", "-fvisibility=hidden",
+            "-Wall", "-Wextra", *inc, *page, "-Wl,-z,global", "-o", target,
+            src / "src" / "hook" / source, f"-L{out}", "-l:libhook_impl.so", "-llog",
+        )
+        libraries[name] = target
+    adrenotools = out / "libadrenotools.so"
+    # No -fvisibility=hidden here (unlike the hooks, whose sources mark their entry
+    # points): driver.cpp exports adrenotools_open_libvulkan with default visibility,
+    # which the game finds with dlsym.
+    run(
+        cxx, "-O2", "-shared", "-fPIC", "-std=c++17",
+        "-Wall", "-Wextra", *inc, *page, "-o", adrenotools,
+        src / "src" / "driver.cpp", *ns,
+        "-llog", "-landroid", "-ldl",
+    )
+    libraries["libadrenotools.so"] = adrenotools
     return libraries
 
 
@@ -358,6 +420,8 @@ def main():
     link_resources(tool(build_tools, "aapt2"), android_jar, out, assets(out), variant, args.abi)
     dex = compile_java(build_tools, android_jar, out)
     libraries = build_launchers(ndk, out, args.abi)
+    # Custom GPU drivers (libadrenotools): arm64-v8a only, beside the launchers.
+    libraries.update(build_adrenotools(ndk, out, args.abi))
     libraries[library.name] = library
     add_code(out / "base.apk", libraries, dex, out / "unsigned.apk", args.abi)
     aligned = out / "aligned.apk"

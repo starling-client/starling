@@ -778,6 +778,9 @@ impl Graphics {
         }
         if fs::remove_file(dir.join(RENDERER_MARKER)).is_ok()
             && cfg!(target_os = "android")
+            // A custom GPU driver keeps Vulkan: its own start counter (gpu_drivers::note_start)
+            // sets it aside after repeated crashes, instead of swinging the API to OpenGL ES.
+            && crate::gpu_drivers::active().is_none()
             && after_driver_crash(g.api) != g.api
         {
             g.api = after_driver_crash(g.api);

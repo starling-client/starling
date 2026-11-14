@@ -93,6 +93,10 @@ public final class DiagnosticsActivity extends Activity {
             @Override public void onClick(View view) { share(); }
         });
         if (!recovery) add(launching, R.string.diagnostics_start, retry);
+        LinearLayout drivers = row(root);
+        add(drivers, R.string.diagnostics_reset_gpu_driver, new View.OnClickListener() {
+            @Override public void onClick(View view) { resetGpuDriver(); }
+        });
         add(row(root), R.string.diagnostics_close, new View.OnClickListener() {
             @Override public void onClick(View view) { finish(); }
         });
@@ -218,5 +222,12 @@ public final class DiagnosticsActivity extends Activity {
         catch (android.content.ActivityNotFoundException error) {
             status.setText(getString(R.string.diagnostics_failed, String.valueOf(error.getMessage())));
         }
+    }
+    /** Back to the system GPU driver without starting the game: forget the chosen custom
+     *  driver and its crash count. The installed drivers stay for the next pick. */
+    private void resetGpuDriver() {
+        File drivers = new File(getFilesDir(), "gpu-drivers");
+        boolean reset = new File(drivers, "current").delete() | new File(drivers, "starts").delete();
+        status.setText(reset ? R.string.diagnostics_gpu_driver_reset : R.string.diagnostics_gpu_driver_system);
     }
 }

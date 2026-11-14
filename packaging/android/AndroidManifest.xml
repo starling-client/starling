@@ -64,10 +64,10 @@
                 <data android:mimeType="application/x-zip-compressed" />
                 <data android:mimeType="application/octet-stream" />
             </intent-filter>
-            <!-- Starling's own extension (.starling: any of them, told apart by what it holds)
-                 and Horizon's mods (.hmod), by name as Bedrock does .mcpack: a file manager that
-                 does not know them offers the apps that do. The extra patterns let the path
-                 hold dots before the name. -->
+            <!-- Starling's own extension (.starling: any of them, told apart by what it holds),
+                 Horizon's mods (.hmod) and GPU driver packages (.adpkg), by name as Bedrock does
+                 .mcpack: a file manager that does not know them offers the apps that do. The extra
+                 patterns let the path hold dots before the name. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -84,6 +84,10 @@
                 <data android:pathPattern=".*\\.hnmod" />
                 <data android:pathPattern=".*\\..*\\.hnmod" />
                 <data android:pathPattern=".*\\..*\\..*\\.hnmod" />
+                <!-- A GPU driver package (gpu_drivers.rs): a zip whose meta.json names the driver. -->
+                <data android:pathPattern=".*\\.adpkg" />
+                <data android:pathPattern=".*\\..*\\.adpkg" />
+                <data android:pathPattern=".*\\..*\\..*\\.adpkg" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

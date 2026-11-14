@@ -827,6 +827,13 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
+                Event::ImportGpuDriver => {
+                    horizon_client::platform::pick_file();
+                }
+                Event::RestartGame => {
+                    #[cfg(target_os = "android")]
+                    crate::android::restart_app();
+                }
                 Event::Credits => {
                     if let Some(gui) = &self.gui {
                         let name = self.options.as_ref().map_or_else(

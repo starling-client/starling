@@ -521,6 +521,13 @@ impl Game<'_> {
                     }
                 }
                 Event::OpenShaderPackFolder => self.open_game_folder(&Self::shader_packs_dir()),
+                Event::ImportGpuDriver => {
+                    horizon_client::platform::pick_file();
+                }
+                Event::RestartGame => {
+                    #[cfg(target_os = "android")]
+                    crate::android::restart_app();
+                }
                 Event::NativeButton(i, b) => {
                     // Android: the Native mods row's button opens its card (native_builds.rs).
                     #[cfg(target_os = "android")]

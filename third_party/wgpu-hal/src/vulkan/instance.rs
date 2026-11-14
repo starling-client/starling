@@ -190,6 +190,25 @@ impl super::InstanceShared {
     }
 }
 
+/// A custom libvulkan's `vkGetInstanceProcAddr` (Starling's custom GPU driver on Android),
+/// set before `init`: `init_with_callback` loads the entry points through it instead of the
+/// system's libvulkan. 0 (the default) loads the system driver.
+static CUSTOM_GET_INSTANCE_PROC_ADDR: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Use `addr` (`vkGetInstanceProcAddr` resolved from an already loaded libvulkan) for the
+/// next Vulkan instances instead of the system's libvulkan. Starling's custom GPU driver.
+pub fn set_custom_get_instance_proc_addr(addr: usize) {
+    CUSTOM_GET_INSTANCE_PROC_ADDR.store(addr, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn custom_get_instance_proc_addr() -> Option<usize> {
+    match CUSTOM_GET_INSTANCE_PROC_ADDR.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => None,
+        addr => Some(addr),
+    }
+}
+
 impl super::Instance {
     pub fn shared_instance(&self) -> &super::InstanceShared {
         &self.shared
@@ -575,17 +594,34 @@ impl super::Instance {
 
         let entry = unsafe {
             profiling::scope!("Load vk library");
-            // ohos support is already fixed on ash main, but it's unclear when
-            // a new release can happen.
-            #[cfg(target_env = "ohos")]
-            let loaded = ash::Entry::load_from("libvulkan.so");
-            #[cfg(not(target_env = "ohos"))]
-            let loaded = ash::Entry::load();
-            loaded
-        }
-        .map_err(|err| {
-            crate::InstanceError::with_source(String::from("missing Vulkan entry points"), err)
-        })?;
+            match custom_get_instance_proc_addr() {
+                // Starling's custom GPU driver (Android): its `vkGetInstanceProcAddr`, set
+                // before the instance is made, instead of the system's libvulkan.
+                Some(addr) => ash::Entry::from_static_fn(ash::StaticFn {
+                    // SAFETY: the address this setter took is `vkGetInstanceProcAddr`
+                    // resolved from a loaded libvulkan.
+                    get_instance_proc_addr: core::mem::transmute::<
+                        usize,
+                        vk::PFN_vkGetInstanceProcAddr,
+                    >(addr),
+                }),
+                None => {
+                    // ohos support is already fixed on ash main, but it's unclear when
+                    // a new release can happen.
+                    #[cfg(target_env = "ohos")]
+                    let loaded = ash::Entry::load_from("libvulkan.so");
+                    #[cfg(not(target_env = "ohos"))]
+                    let loaded = ash::Entry::load();
+                    loaded
+                }
+                .map_err(|err| {
+                    crate::InstanceError::with_source(
+                        String::from("missing Vulkan entry points"),
+                        err,
+                    )
+                })?,
+            }
+        };
         let version = {
             profiling::scope!("vkEnumerateInstanceVersion");
             unsafe { entry.try_enumerate_instance_version() }
