@@ -5542,7 +5542,7 @@ impl Renderer {
             solid_cutout,
             solid_paths,
             solid_settled_single,
-            settled_single_on: false,
+            settled_single_on: true,
             settled_single_active: false,
             translucent,
             translucent_mark,
