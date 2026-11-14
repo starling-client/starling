@@ -67,6 +67,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         panorama,
         None,
         None,
+        None,
         GraphicsApi::Vulkan,
         false,
         true,

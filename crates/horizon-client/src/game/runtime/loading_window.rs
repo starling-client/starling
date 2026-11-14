@@ -1,6 +1,7 @@
 //! The window's first renderer and frames: the renderer built from the prepared textures, the
 //! boot screen's frame, and `start_game`, which turns the loaded resources into a `Game`.
 use super::*;
+use std::borrow::Cow;
 
 /// A driver that dies while the first renderer starts leaves this marker behind, and the next
 /// start opens with OpenGL ES (`graphics::RENDERER_MARKER`). A renderer made on a device that
@@ -51,7 +52,175 @@ pub(super) fn build_renderer(
     display: horizon_client::gfx::DisplayReading,
     filtering: (i32, i32),
 ) -> Result<Renderer> {
-    let assets = &pack.render;
+    let (mut renderer, _) = RendererParts::new(
+        window,
+        offscreen,
+        pack,
+        gui,
+        gui.atlas.pixels(),
+        prepared,
+        api,
+        translucent_batching,
+        settings,
+        shader_pack,
+        display,
+    )
+    .build(previous, None)?;
+    finish_renderer(&mut renderer, pack, gui, filtering)?;
+    Ok(renderer)
+}
+
+/// What the world's renderer is made from (`Renderer::new`): borrowed from the pack and the GUI,
+/// or owned (`into_owned`) so that it is built on a thread of its own while the loading screen
+/// goes on drawing (`Loading::begin_world_renderer`). The GUI's font stays on the main thread,
+/// where `finish_renderer` does the rest.
+pub(super) struct RendererParts<'a> {
+    window: Arc<Window>,
+    offscreen: bool,
+    pack: Cow<'a, PackResources>,
+    // The GUI atlas's RGBA (`HudAtlas::pixels`), its width and its height.
+    atlas: (Cow<'a, [u8]>, u32, u32),
+    glint: (Cow<'a, [u8]>, u32, u32),
+    glint_armor: (Cow<'a, [u8]>, u32, u32),
+    panorama: Arc<horizon_client::gfx::panorama::Faces>,
+    prepared: Option<horizon_client::gfx::PreparedTextures>,
+    api: horizon_client::graphics::GraphicsApi,
+    translucent_batching: bool,
+    settings: Cow<'a, horizon_client::graphics::Graphics>,
+    shader_pack: shader_packs::PickedPack,
+    display: horizon_client::gfx::DisplayReading,
+}
+
+fn borrowed(image: &(Vec<u8>, u32, u32)) -> (Cow<'_, [u8]>, u32, u32) {
+    (Cow::Borrowed(image.0.as_slice()), image.1, image.2)
+}
+
+fn owned(image: (Cow<'_, [u8]>, u32, u32)) -> (Cow<'static, [u8]>, u32, u32) {
+    (Cow::Owned(image.0.into_owned()), image.1, image.2)
+}
+
+impl<'a> RendererParts<'a> {
+    pub(super) fn new(
+        window: Arc<Window>,
+        offscreen: bool,
+        pack: &'a PackResources,
+        gui: &'a UiResources,
+        // `gui`'s atlas pixels: `HudAtlas::pixels`, or the ones taken from it for a thread.
+        atlas_pixels: Cow<'a, [u8]>,
+        prepared: Option<horizon_client::gfx::PreparedTextures>,
+        api: horizon_client::graphics::GraphicsApi,
+        translucent_batching: bool,
+        settings: &'a horizon_client::graphics::Graphics,
+        shader_pack: shader_packs::PickedPack,
+        display: horizon_client::gfx::DisplayReading,
+    ) -> Self {
+        let atlas = &gui.atlas;
+        Self {
+            window,
+            offscreen,
+            pack: Cow::Borrowed(pack),
+            atlas: (atlas_pixels, atlas.width, atlas.height),
+            glint: borrowed(&atlas.glint),
+            glint_armor: borrowed(&atlas.glint_armor),
+            panorama: gui.panorama.clone(),
+            prepared,
+            api,
+            translucent_batching,
+            settings: Cow::Borrowed(settings),
+            shader_pack,
+            display,
+        }
+    }
+
+    /// The same parts, owning what they borrowed: the pack is shared (`PackResources` clones its
+    /// handles), the glint textures and the settings copied, and atlas pixels given owned stay
+    /// as they are.
+    pub(super) fn into_owned(self) -> RendererParts<'static> {
+        RendererParts {
+            window: self.window,
+            offscreen: self.offscreen,
+            pack: Cow::Owned(self.pack.into_owned()),
+            atlas: owned(self.atlas),
+            glint: owned(self.glint),
+            glint_armor: owned(self.glint_armor),
+            panorama: self.panorama,
+            prepared: self.prepared,
+            api: self.api,
+            translucent_batching: self.translucent_batching,
+            settings: Cow::Owned(self.settings.into_owned()),
+            shader_pack: self.shader_pack,
+            display: self.display,
+        }
+    }
+
+    /// `Renderer::new` from these parts, on whichever thread holds them. `previous` is the
+    /// renderer this replaces on the same device; `boot` the loading screen's device
+    /// (`BootRenderer::lend`). The atlas pixels come back with it.
+    pub(super) fn build(
+        self,
+        previous: Option<&Renderer>,
+        boot: Option<horizon_client::gfx::boot::Lent>,
+    ) -> Result<(Renderer, Cow<'a, [u8]>)> {
+        let assets = &self.pack.render;
+        // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
+        let prepared = Some(
+            self.prepared
+                .unwrap_or_else(|| prepare_renderer_textures(&self.pack)),
+        );
+        #[cfg(target_os = "android")]
+        crate::diagnostics::checkpoint(
+            "renderer_init",
+            || serde_json::json!({"api":format!("{:?}",self.api)}),
+        );
+        #[cfg(target_os = "android")]
+        let marker = start_marker(previous);
+        let (atlas_pixels, atlas_width, atlas_height) = self.atlas;
+        let renderer = pollster::block_on(Renderer::new(
+            self.window,
+            self.offscreen,
+            &assets.pixels.get(),
+            assets.sprite_size,
+            assets.sprite_minimum_size,
+            assets.texture_layers,
+            &assets.sprite_mips,
+            &assets.animations,
+            (&atlas_pixels, atlas_width, atlas_height),
+            (&self.glint.0, self.glint.1, self.glint.2),
+            (&self.glint_armor.0, self.glint_armor.1, self.glint_armor.2),
+            (&self.pack.forcefield.2, self.pack.forcefield.0),
+            self.panorama,
+            prepared,
+            previous,
+            boot,
+            self.api,
+            self.translucent_batching,
+            self.shader_pack.draws_flat,
+            &self.settings,
+            self.shader_pack.frame(),
+            self.display,
+        ))?;
+        #[cfg(target_os = "android")]
+        let renderer = {
+            let mut renderer = renderer;
+            if let Some(marker) = marker {
+                renderer.forget_start_marker(marker);
+            }
+            renderer
+        };
+        // The pipelines it compiled, for the next start (Android's Vulkan).
+        renderer.save_pipeline_cache();
+        Ok((renderer, atlas_pixels))
+    }
+}
+
+/// What a renderer built from `RendererParts` still wants, on the main thread: the pack's models,
+/// sprite animations, shaders, sky and glints, and the GUI's font told about its new texture.
+pub(super) fn finish_renderer(
+    renderer: &mut Renderer,
+    pack: &PackResources,
+    gui: &UiResources,
+    filtering: (i32, i32),
+) -> Result<()> {
     let atlas = &gui.atlas;
     // The new renderer's atlas texture starts from `HudAtlas.pixels`, which
     // holds the textures but never a glyph rasterized at run time. The font's
@@ -61,47 +230,6 @@ pub(super) fn build_renderer(
     // Chinese and Japanese menu labels go blank when the loading screen hands
     // over to the game.
     atlas.font.reset_cache();
-    // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
-    let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
-    let atlas_pixels = atlas.pixels();
-    #[cfg(target_os = "android")]
-    crate::diagnostics::checkpoint(
-        "renderer_init",
-        || serde_json::json!({"api":format!("{:?}",api)}),
-    );
-    #[cfg(target_os = "android")]
-    let marker = start_marker(previous);
-    let mut renderer = pollster::block_on(Renderer::new(
-        window,
-        offscreen,
-        &assets.pixels.get(),
-        assets.sprite_size,
-        assets.sprite_minimum_size,
-        assets.texture_layers,
-        &assets.sprite_mips,
-        &assets.animations,
-        (&atlas_pixels, atlas.width, atlas.height),
-        (&atlas.glint.0, atlas.glint.1, atlas.glint.2),
-        (
-            &atlas.glint_armor.0,
-            atlas.glint_armor.1,
-            atlas.glint_armor.2,
-        ),
-        (&pack.forcefield.2, pack.forcefield.0),
-        gui.panorama.clone(),
-        prepared,
-        previous,
-        api,
-        translucent_batching,
-        shader_pack.draws_flat,
-        settings,
-        shader_pack.frame(),
-        display,
-    ))?;
-    #[cfg(target_os = "android")]
-    if let Some(marker) = marker {
-        renderer.forget_start_marker(marker);
-    }
     let (prepared_vertices, prepared_ranges) =
         native_block_entity_draw::StandaloneGeometry::new(pack, gui).prepared_upload();
     renderer.install_prepared_models(
@@ -127,12 +255,71 @@ pub(super) fn build_renderer(
     renderer
         .hud
         .set_cit_glints(&renderer.device, &renderer.queue, cit_glints);
-    Ok(renderer)
+    Ok(())
 }
 
-/// The loading screen's renderer: one atlas (the boot screen's until the
-/// pack's GUI atlas is ready) over one opaque white block-sprite layer, an
-/// empty border texture and the title panorama once the menu bundle is ready.
+/// The loading screen's own renderer, in place of `loading_renderer` wherever there is a window
+/// to draw on: the same atlas and panorama, and none of the world's pipelines.
+pub(super) fn boot_renderer(
+    window: Arc<Window>,
+    atlas: Option<&horizon_client::hud::HudAtlas>,
+    panorama: Option<&Arc<horizon_client::gfx::panorama::Faces>>,
+    api: horizon_client::graphics::GraphicsApi,
+) -> Result<horizon_client::gfx::boot::BootRenderer> {
+    static EMPTY_HUD: [u8; 4] = [0, 0, 0, 255];
+    let faces = panorama
+        .cloned()
+        .unwrap_or_else(|| Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])));
+    let (pixels, width, height) = atlas.map_or((EMPTY_HUD.as_slice(), 1, 1), |a| {
+        (a.pixels.as_slice(), a.width, a.height)
+    });
+    // As `loading_renderer`: a glyph rasterized into an earlier texture is not in these pixels.
+    if let Some(atlas) = atlas {
+        atlas.font.reset_cache();
+    }
+    #[cfg(target_os = "android")]
+    crate::diagnostics::checkpoint(
+        "renderer_init",
+        || serde_json::json!({"api":format!("{:?}",api)}),
+    );
+    // As `loading_renderer`: the marker that sends the next start to OpenGL ES if this one dies
+    // opening the device or in its first frame, removed with that frame.
+    #[cfg(target_os = "android")]
+    let marker = start_marker(None);
+    let boot = pollster::block_on(horizon_client::gfx::boot::BootRenderer::new(
+        window,
+        (pixels, width, height),
+        faces,
+        api,
+    ))?;
+    #[cfg(target_os = "android")]
+    let boot = {
+        let mut boot = boot;
+        if let Some(marker) = marker {
+            boot.forget_start_marker(marker);
+        }
+        boot
+    };
+    Ok(boot)
+}
+
+/// The menu bundle's atlas and title panorama replacing the boot screen's, on the device the
+/// boot renderer already opened.
+pub(super) fn boot_set_ui(
+    boot: &mut horizon_client::gfx::boot::BootRenderer,
+    atlas: &horizon_client::hud::HudAtlas,
+    panorama: &Arc<horizon_client::gfx::panorama::Faces>,
+) -> Result<()> {
+    atlas.font.reset_cache();
+    boot.set_ui(
+        (atlas.pixels.as_slice(), atlas.width, atlas.height),
+        panorama.clone(),
+    )
+}
+
+/// The loading screen's renderer where there is no window to draw on (`--offscreen`): one atlas
+/// (the boot screen's until the pack's GUI atlas is ready) over one opaque white block-sprite
+/// layer, an empty border texture and the title panorama once the menu bundle is ready.
 pub(super) fn loading_renderer(
     window: Arc<Window>,
     offscreen: bool,
@@ -183,6 +370,7 @@ pub(super) fn loading_renderer(
         panorama,
         None,
         previous,
+        None,
         api,
         // It draws no terrain.
         false,

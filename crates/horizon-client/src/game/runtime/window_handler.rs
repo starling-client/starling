@@ -2125,6 +2125,9 @@ impl ApplicationHandler for Game<'_> {
             crate::diagnostics::request_flush();
         }
         if let Some(r) = &mut self.renderer {
+            // Pipelines made since the start (a world's, a shader pack's) are kept too: Android
+            // may end the process in the background without another word.
+            r.save_pipeline_cache();
             r.suspend();
         }
         self.audio.suspend_output();

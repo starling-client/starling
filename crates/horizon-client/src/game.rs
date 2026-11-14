@@ -111,7 +111,8 @@ use event_loop::EventLoopCtl;
 use hand::interact_location;
 use horizon_client::random_source;
 use loading_window::{
-    build_renderer, loading_frame, loading_renderer, prepare_renderer_textures, start_game,
+    RendererParts, boot_renderer, boot_set_ui, build_renderer, finish_renderer, loading_frame,
+    loading_renderer, prepare_renderer_textures, start_game,
 };
 // `Action` here is the title screen's buttons (`title::Action`).
 use self::api_values::TryIntoApi;
@@ -17647,6 +17648,8 @@ fn run_loading(
     let loading = Loading {
         window: None,
         renderer: None,
+        boot_renderer: None,
+        world_renderer: None,
         boot: horizon_client::hud::HudAtlas::boot(),
         gui: None,
         settings,

@@ -362,6 +362,8 @@ fn packed_wanted() -> bool {
 mod adreno;
 pub(crate) mod animate;
 mod arena;
+/// The loading screen's own small renderer, which hands this one its open device.
+pub mod boot;
 pub mod capture;
 pub mod compositor;
 pub(crate) mod core_lines;
@@ -2246,6 +2248,15 @@ fn instance_descriptor(
     if dx12 {
         wgpu::hal::dx12::disk_cache::set_file(dx12_shader_cache(&crate::logging::game_home()));
     }
+    // Vulkan on Android keeps no compiled pipelines between runs either: building them is
+    // about 3.5 s of a start on an Adreno 740. The driver's own cache data is kept in the app's
+    // files and handed back when the device opens (third_party/wgpu-hal/src/vulkan/disk_cache.rs).
+    #[cfg(target_os = "android")]
+    if descriptor.backends.contains(wgpu::Backends::VULKAN) {
+        wgpu::hal::vulkan::disk_cache::set_file(vulkan_pipeline_cache(
+            &crate::logging::private_home(),
+        ));
+    }
     if !cfg!(debug_assertions) && !dx12 {
         descriptor
             .flags
@@ -2263,6 +2274,11 @@ fn instance_descriptor(
 /// Where DX12 keeps the shaders it compiled, inside a game folder.
 pub fn dx12_shader_cache(home: &std::path::Path) -> std::path::PathBuf {
     home.join("cache").join("dx12-shaders.bin")
+}
+/// Where Vulkan keeps the pipelines the driver compiled, inside the game's private folder
+/// (`logging::private_home`).
+pub fn vulkan_pipeline_cache(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("cache").join("vulkan-pipelines.bin")
 }
 
 /// The window's display connection, so the OpenGL backend creates its EGL
@@ -2332,8 +2348,9 @@ fn renders_depth(features: wgpu::TextureFormatFeatures) -> bool {
         .allowed_usages
         .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
 }
-/// A device and what it came from.
-struct Opened {
+/// A device and what it came from. `pub(crate)` so the loading screen's own renderer
+/// (`boot::BootRenderer`) can hand this one the device it already opened.
+pub(crate) struct Opened {
     instance: wgpu::Instance,
     surface: Option<wgpu::Surface<'static>>,
     adapter: wgpu::Adapter,
@@ -3179,6 +3196,9 @@ impl Renderer {
         panorama_faces: Arc<panorama::Faces>,
         prepared: Option<PreparedTextures>,
         previous: Option<&Self>,
+        // The loading screen's device (`BootRenderer::lend`), this renderer made on it while the
+        // loading screen goes on drawing: its surface comes at the handover (`adopt_surface`).
+        boot: Option<boot::Lent>,
         api: GraphicsApi,
         translucent_batching: bool,
         shader_pack: bool,
@@ -3193,9 +3213,12 @@ impl Renderer {
         // available", a fatal error when loading ended in the background). This one starts
         // suspended too, with the previous one's window format, and makes its surface on `resume`
         // (as an offscreen renderer never would).
+        // So is one made on the loading screen's device, whose surface the loading screen keeps
+        // drawing on until the handover (`adopt_surface`).
         let waits_for_window = !offscreen
-            && previous
-                .is_some_and(|p| p.suspended && p.surface.is_none() && p.offscreen.is_none());
+            && (boot.is_some()
+                || previous
+                    .is_some_and(|p| p.suspended && p.surface.is_none() && p.offscreen.is_none()));
         let Opened {
             instance,
             surface,
@@ -3204,39 +3227,43 @@ impl Renderer {
             queue,
             device_lost,
             configured,
-        } = match previous {
-            // Reload resources on the same device; replacing live Vulkan
-            // devices can invalidate the driver's swapchain state on the same
-            // window.
-            Some(renderer) => {
-                describe_adapter(&renderer.adapter);
-                check_layers(&renderer.adapter, layers)?;
-                Opened {
-                    surface: if offscreen || waits_for_window {
-                        None
-                    } else {
-                        let spare = renderer
-                            .spare_surface
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take();
-                        Some(match spare {
-                            Some(surface) => surface,
-                            None => renderer.instance.create_surface(window.clone())?,
-                        })
-                    },
-                    instance: renderer.instance.clone(),
-                    adapter: renderer.adapter.clone(),
-                    device: renderer.device.clone(),
-                    queue: renderer.queue.clone(),
-                    device_lost: renderer.device_lost.clone(),
-                    configured: None,
+        } = match boot {
+            // Opened by `open_device` too, with the window's configuration and capabilities.
+            Some(boot) => boot.into_opened(),
+            None => match previous {
+                // Reload resources on the same device; replacing live Vulkan
+                // devices can invalidate the driver's swapchain state on the same
+                // window.
+                Some(renderer) => {
+                    describe_adapter(&renderer.adapter);
+                    check_layers(&renderer.adapter, layers)?;
+                    Opened {
+                        surface: if offscreen || waits_for_window {
+                            None
+                        } else {
+                            let spare = renderer
+                                .spare_surface
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .take();
+                            Some(match spare {
+                                Some(surface) => surface,
+                                None => renderer.instance.create_surface(window.clone())?,
+                            })
+                        },
+                        instance: renderer.instance.clone(),
+                        adapter: renderer.adapter.clone(),
+                        device: renderer.device.clone(),
+                        queue: renderer.queue.clone(),
+                        device_lost: renderer.device_lost.clone(),
+                        configured: None,
+                    }
                 }
-            }
-            None => {
-                let _step = crate::spans::startup::step("renderer.open_device");
-                open_device(&window, offscreen, api, layers).await?
-            }
+                None => {
+                    let _step = crate::spans::startup::step("renderer.open_device");
+                    open_device(&window, offscreen, api, layers).await?
+                }
+            },
         };
         // Computed once: the sprite arrays, the shaders' constants and the
         // shader pack atlas all cut the sprites by it.
@@ -3260,7 +3287,8 @@ impl Renderer {
                 previous.map(|renderer| renderer.config.present_mode),
                 previous.is_none(),
             )?),
-            (None, _) => None,
+            // The window's own configuration, as the loading screen made it (`Lent`).
+            (None, configured) => configured.filter(|_| waits_for_window),
         };
         // Until its first frame the window shows what was behind it (on Android, the
         // launcher through the app's empty window): clear it now, before the pipelines
@@ -3876,6 +3904,8 @@ impl Renderer {
         let debug_crosshair = hud_coverage.then(|| crosshair(true));
         let overlay_crosshair = (overlay_format != frame_format).then(|| crosshair(false));
         drop(terrain_step);
+        // The block sprites' arrays, the GUI atlas and the HUD's pipelines.
+        let textures_step = crate::spans::startup::step("renderer.textures_hud");
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Horizon globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -4239,6 +4269,7 @@ impl Renderer {
             hud_coverage,
         )?;
         hud.atlas_texture = Some(atlas.clone());
+        drop(textures_step);
         let entity_step = crate::spans::startup::step("renderer.entity_pipelines");
         let entity_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon entities"),
@@ -4888,6 +4919,8 @@ impl Renderer {
         };
         let celestial_pipeline = kept.create_render_pipeline(&celestial_descriptor);
         drop(entity_step);
+        // The border, sky, weather, post and the rest of the world's pipelines.
+        let rest_step = crate::spans::startup::step("renderer.other_pipelines");
         // WorldBorderRenderer: misc/forcefield.png as a MipmappedTexture
         // (repeat, linear minification with mipmaps, nearest magnification).
         let forcefield_size = forcefield.1;
@@ -5394,6 +5427,7 @@ impl Renderer {
             overlay_format,
         );
         let panorama = panorama::Panorama::new(&device, frame_format, panorama_faces, gl);
+        drop(rest_step);
         drop(pipelines_step);
         reuse.finish(generation);
         if previous.is_some() {
@@ -5928,6 +5962,22 @@ impl Renderer {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.suspended = true;
         self.detached = true;
+    }
+    /// The loading screen's surface (`BootRenderer::give_surface`) for a renderer made on its
+    /// device while it drew. It goes where `resume` takes its surface from, so the window keeps the
+    /// one surface it has: a second one on the same window fails on Android (the window is in use)
+    /// and on Wayland.
+    pub fn adopt_surface(
+        &mut self,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        *self
+            .spare_surface
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(surface);
+        self.resume(width, height)
     }
     /// The window is back, maybe at another size: a new surface on it.
     pub fn resume(&mut self, width: u32, height: u32) -> Result<()> {
@@ -7513,6 +7563,14 @@ impl Renderer {
     pub fn forget_start_marker(&mut self, marker: std::path::PathBuf) {
         self.start_marker = Some(marker);
     }
+    /// Keeps the pipelines the driver compiled for the next start (`vulkan_pipeline_cache`): on
+    /// Android's Vulkan, written on a thread of its own; elsewhere nothing.
+    pub fn save_pipeline_cache(&self) {
+        #[cfg(target_os = "android")]
+        if self.info.backend == wgpu::Backend::Vulkan {
+            wgpu::hal::vulkan::disk_cache::save();
+        }
+    }
     /// The HDR Lighting setting (`Hdr::look`).
     pub fn set_hdr_lighting(&mut self, on: bool) {
         self.hdr_lighting_setting = on;
@@ -8713,7 +8771,7 @@ impl Renderer {
                 // used as configured (wgpu reports a configuration raced with
                 // a submission this way). Give it a fresh configuration like
                 // an Outdated one, and once that has not helped, reattach the
-                // window like a Lost one — a fullscreen loading screen then
+                // window like a Lost one â€” a fullscreen loading screen then
                 // skips frames instead of failing every one of them.
                 if self.acquire_validation_failures == 0 {
                     self.configure_surface();
@@ -10656,7 +10714,7 @@ impl Renderer {
         }
         // The hand draws at the end of the world pass, after a depth reset, when nothing runs
         // between them (a scaled world's post pass, HDR's world copy, a native mod's
-        // `world_drawn`): one render pass fewer, ~10 µs of wgpu's encoding a frame.
+        // `world_drawn`): one render pass fewer, ~10 Âµs of wgpu's encoding a frame.
         let hand_in_world = (frame.hand.len() / 4) > 0
             && !pack_draws_hand
             && scaled.is_none()
@@ -10755,7 +10813,7 @@ impl Renderer {
             }
         }
         // One of Horizon's own packs with `[shadow]`: the solid terrain the light sees, from the
-        // shadow camera's lists, into the pack's shadow map (a pack without one gets its 1×1 map
+        // shadow camera's lists, into the pack's shadow map (a pack without one gets its 1Ã—1 map
         // cleared to "far" once).
         if !frame.title
             && let Some(native) = &mut self.native
@@ -12092,7 +12150,7 @@ impl Renderer {
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             }
             // LevelRenderer.executeTranslucentAfterTerrain: vanilla's
-            // translucent particle layer draws after translucent terrain —
+            // translucent particle layer draws after translucent terrain â€”
             // the quads write depth, so before it they would hide the glass
             // or water behind them.
             if translucent_particle_quads > 0 && !oit_on {
@@ -15990,7 +16048,7 @@ mod shadow_caster_tests {
 
     /// Our probes' Iris 1.11.7 maps keep the sections whose box, grown by a margin of 1.1224 to
     /// 1.1252 blocks, meets the shape (#8464): a camera at (13.5, 69.62, -13.5) under a noon sun with the scenes' flying
-    /// field of view (77°).
+    /// field of view (77Â°).
     #[test]
     fn the_shadow_pass_keeps_a_margin_around_the_view() {
         let kept = |yaw: f32, column: [f32; 2]| {
@@ -16017,7 +16075,7 @@ mod shadow_caster_tests {
     }
 
     /// With `shadowDistanceRenderMul`, our probe's Iris 1.11.7 maps keep the sections within
-    /// `shadowDistance × mul` of the camera along each axis, out to the cube's corners, and with
+    /// `shadowDistance Ã— mul` of the camera along each axis, out to the cube's corners, and with
     /// some slack (the camera at (13.5, 69.62, -13.5)):
     /// - at 100 blocks, the column at chunk (7, 5), 98.5 and 93.5 blocks out (136 diagonally), and
     ///   the one at (-6, -7) are kept; the one at (8, -4), 114.5 out on x, is not;
@@ -16140,7 +16198,7 @@ mod shadow_caster_tests {
 
     /// The margin doesn't follow the field of view: from the same camera under a noon sun, our
     /// probe's Iris 1.11.7 maps keep a section that needs a growth of 1.1224 blocks at a field of
-    /// view of 70 (77° flying) and drop ones that need 1.1252 to 1.1422 at 50 (55° flying) and
+    /// view of 70 (77Â° flying) and drop ones that need 1.1252 to 1.1422 at 50 (55Â° flying) and
     /// 70 (#8464).
     #[test]
     fn the_shadow_pass_keeps_the_same_margin_at_every_field_of_view() {
