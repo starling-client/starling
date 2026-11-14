@@ -293,6 +293,18 @@ impl BootRenderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
+                // The panorama's pipeline is the world pass's and wants its depth attachment
+                // (Depth32Float), cleared as that pass clears it: 0.0, the far side of a reversed
+                // depth. Without one, wgpu refuses the draw as a validation error, which ends the
+                // process. The HUD clears its own depth after, so nothing here needs keeping.
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
                 ..Default::default()
             });
             self.panorama.draw(&mut pass);
