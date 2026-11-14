@@ -352,7 +352,7 @@ impl BootRenderer {
             device: self.device.clone(),
             queue: self.queue.clone(),
             device_lost: self.device_lost.clone(),
-            configured: Some((self.config.clone(), self.capabilities.clone())),
+            configured: Some((self.config.clone(), copy_capabilities(&self.capabilities))),
         })
     }
 
@@ -370,6 +370,17 @@ pub struct Lent(Opened);
 impl Lent {
     pub(crate) fn into_opened(self) -> Opened {
         self.0
+    }
+}
+
+/// `wgpu::SurfaceCapabilities` is not `Clone`, and every one of its fields is.
+fn copy_capabilities(capabilities: &wgpu::SurfaceCapabilities) -> wgpu::SurfaceCapabilities {
+    wgpu::SurfaceCapabilities {
+        formats: capabilities.formats.clone(),
+        format_capabilities: capabilities.format_capabilities.clone(),
+        present_modes: capabilities.present_modes.clone(),
+        alpha_modes: capabilities.alpha_modes.clone(),
+        usages: capabilities.usages,
     }
 }
 

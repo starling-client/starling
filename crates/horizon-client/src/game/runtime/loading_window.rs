@@ -175,7 +175,7 @@ impl<'a> RendererParts<'a> {
         #[cfg(target_os = "android")]
         let marker = start_marker(previous);
         let (atlas_pixels, atlas_width, atlas_height) = self.atlas;
-        let mut renderer = pollster::block_on(Renderer::new(
+        let renderer = pollster::block_on(Renderer::new(
             self.window,
             self.offscreen,
             &assets.pixels.get(),
@@ -200,9 +200,13 @@ impl<'a> RendererParts<'a> {
             self.display,
         ))?;
         #[cfg(target_os = "android")]
-        if let Some(marker) = marker {
-            renderer.forget_start_marker(marker);
-        }
+        let renderer = {
+            let mut renderer = renderer;
+            if let Some(marker) = marker {
+                renderer.forget_start_marker(marker);
+            }
+            renderer
+        };
         Ok((renderer, atlas_pixels))
     }
 }
