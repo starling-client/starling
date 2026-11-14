@@ -6,10 +6,12 @@
 //! screen actually draws is a cube and some text: `loading_frame` hands the renderer a `Frame`
 //! with `title: true` and every other field empty.
 //!
-//! So this opens the device itself, keeps the two pipelines it draws with, and hands the open
-//! device, queue and surface to the world's renderer once the resources are ready
-//! (`into_opened`). The world's pipelines are then built once, instead of once for the boot
-//! screen, again for the title artwork and again for the world.
+//! So this opens the device itself, keeps the two pipelines it draws with, and lends the open
+//! device and queue to the world's renderer once the resources are ready (`lend`): that one is
+//! built on another thread while this one goes on drawing the title, and takes the window's
+//! surface at the handover (`give_surface`). The world's pipelines are then built once, instead
+//! of once for the boot screen, again for the title artwork and again for the world, and none of
+//! them on the thread the title answers on.
 
 use std::sync::Arc;
 
@@ -339,20 +341,35 @@ impl BootRenderer {
         Ok(())
     }
 
-    /// The device, queue and surface for `Renderer::new` to take over, so the world's renderer
-    /// does not open a second one. The panorama's cube goes back to the driver first: the world's
-    /// renderer makes its own.
-    pub(crate) fn into_opened(mut self) -> Opened {
-        self.panorama.release();
-        Opened {
-            instance: self.instance,
-            surface: self.surface,
-            adapter: self.adapter,
-            device: self.device,
-            queue: self.queue,
-            device_lost: self.device_lost,
-            configured: Some((self.config, self.capabilities)),
-        }
+    /// The device and the window's format, for the world's renderer to be made on while this one
+    /// goes on drawing (`Renderer::new`, on another thread). The surface stays here until the
+    /// handover (`give_surface`): a window has one, and the loading screen draws on it meanwhile.
+    pub fn lend(&self) -> Lent {
+        Lent(Opened {
+            instance: self.instance.clone(),
+            surface: None,
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            device_lost: self.device_lost.clone(),
+            configured: Some((self.config.clone(), self.capabilities.clone())),
+        })
+    }
+
+    /// The window's surface for the world's renderer (`Renderer::adopt_surface`), the loading
+    /// screen's last frame still on it. None while the window is in the background: the world's
+    /// renderer then makes one when it comes back, as after any `suspend`.
+    pub fn give_surface(self) -> Option<wgpu::Surface<'static>> {
+        self.surface
+    }
+}
+
+/// The boot renderer's device lent to the world's renderer (`BootRenderer::lend`).
+pub struct Lent(Opened);
+
+impl Lent {
+    pub(crate) fn into_opened(self) -> Opened {
+        self.0
     }
 }
 

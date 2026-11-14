@@ -68,6 +68,8 @@ pub(super) struct Loading {
     /// What the loading screen draws with until the world's renderer is built from it
     /// (`finish`): the panorama and the HUD, and none of the world's pipelines.
     pub(super) boot_renderer: Option<horizon_client::gfx::boot::BootRenderer>,
+    /// The world's renderer, made on the boot renderer's device while the title stays up.
+    pub(super) world_renderer: Option<WorldRenderer>,
     /// The boot screen's atlas, until the pack's GUI atlas replaces it.
     pub(super) boot: horizon_client::hud::HudAtlas,
     pub(super) gui: Option<UiResources>,
@@ -112,13 +114,28 @@ pub(super) struct Loading {
     pub(super) suspended: bool,
     pub(super) error: Option<Box<dyn std::error::Error>>,
 }
+/// The world's renderer, made on a thread of its own on the boot renderer's device
+/// (`Loading::begin_world_renderer`).
+pub(super) enum WorldRenderer {
+    Building {
+        thread: JoinHandle<std::result::Result<(Renderer, Vec<u8>), String>>,
+        /// The resources it is made from (`RenderAssets::generation`): a pack reload on the title
+        /// replaces them meanwhile, and this renderer with them.
+        generation: u64,
+        /// The GUI atlas whose pixels it took (`HudAtlas::revision`), to give them back.
+        atlas: Option<u64>,
+    },
+    /// Made, for the game to take once the window is in front (Android puts it in the background).
+    Built(Box<Renderer>),
+}
+
 /// How long the handoff waits for the first title frame before building the
 /// world renderer anyway (a hidden window may never be asked to redraw).
 pub(super) const TITLE_FRAME_WAIT: Duration = Duration::from_secs(1);
 impl Loading {
-    /// The world renderer is built on the main thread, so building it before
-    /// the title is on the screen holds the title back by that build. Wait for
-    /// one title frame first, unless a world is waiting to open.
+    /// The handoff and, offscreen, the world renderer's build run on the main
+    /// thread, so either before the title is on the screen holds the title back.
+    /// Wait for one title frame first, unless a world is waiting to open.
     pub(super) fn ready_for_handoff(&self) -> bool {
         self.title_drawn
             || self.menu.pending.is_some()
@@ -692,7 +709,146 @@ impl Loading {
         ui.finish();
         self.imports.draw(&gui.atlas, batch);
     }
-    pub(super) fn finish(&mut self, mut loaded: Loaded) -> Result<Option<split::Split<'static>>> {
+    /// The resources are in: the world's renderer starts on a thread of its own, on the boot
+    /// renderer's device, and the title stays on the screen and answers meanwhile. Built at the
+    /// handoff on the main thread, it held the title still for as long: 3.5 s on an Adreno 740,
+    /// 11 s on a PowerVR B-Series.
+    fn begin_world_renderer(&mut self) -> Result<()> {
+        let (Some(boot), Some(gui), Some(Ok(loaded)), Some(window)) = (
+            &self.boot_renderer,
+            &mut self.gui,
+            &mut self.loaded,
+            &self.window,
+        ) else {
+            return Ok(());
+        };
+        // The atlas's pixels go with the thread and come back with the renderer instead of being
+        // copied (tens of megabytes): the loading screen draws from its own texture of them.
+        let atlas = (!gui.atlas.pixels.is_empty()).then_some(gui.atlas.revision);
+        let pixels = match atlas {
+            Some(_) => std::mem::take(&mut gui.atlas.pixels),
+            None => gui.atlas.pixels().into_owned(),
+        };
+        let parts = RendererParts::new(
+            window.clone(),
+            self.options.as_ref().is_some_and(|o| o.offscreen),
+            &loaded.pack,
+            gui,
+            std::borrow::Cow::Owned(pixels),
+            loaded.renderer_cpu.take(),
+            self.settings.horizon.api,
+            self.settings.horizon.translucent_batching,
+            &self.settings.horizon,
+            shader_packs::picked_pack_shape(&self.settings),
+            // What a renderer reads from the display comes after its first frames.
+            Default::default(),
+        )
+        .into_owned();
+        let lent = boot.lend();
+        let generation = loaded.pack.render.generation;
+        let thread = std::thread::Builder::new()
+            .name("world-renderer".into())
+            .spawn(move || {
+                startup::time("renderer.world", || parts.build(None, Some(lent)))
+                    .map(|(renderer, pixels)| (renderer, pixels.into_owned()))
+                    .map_err(|e| e.to_string())
+            })?;
+        self.world_renderer = Some(WorldRenderer::Building {
+            thread,
+            generation,
+            atlas,
+        });
+        Ok(())
+    }
+    /// Starts the world's renderer once the resources are in, and takes it when its thread is
+    /// done.
+    fn poll_world_renderer(&mut self) -> Result<()> {
+        if self.world_renderer.is_none() {
+            // A pack reload asked for on the title replaces these resources first.
+            if !self.menu.reload_packs {
+                self.begin_world_renderer()?;
+            }
+            return Ok(());
+        }
+        if let Some(WorldRenderer::Building { thread, .. }) = &self.world_renderer
+            && thread.is_finished()
+            && let Some(WorldRenderer::Building {
+                thread,
+                generation,
+                atlas,
+            }) = self.world_renderer.take()
+        {
+            let built = thread.join().unwrap_or_else(|payload| {
+                let text = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("no message");
+                Err(format!("the world's renderer panicked: {text}"))
+            });
+            let made_for = |loaded: &Loaded| loaded.pack.render.generation == generation;
+            let current = !self.menu.reload_packs
+                && matches!(&self.loaded, Some(Ok(loaded)) if made_for(loaded));
+            match built {
+                Ok((renderer, pixels)) => {
+                    if let Some(gui) = &mut self.gui
+                        && atlas == Some(gui.atlas.revision)
+                    {
+                        gui.atlas.pixels = pixels;
+                    }
+                    // Else it was made for resources a pack reload replaces: the next ones get
+                    // their own.
+                    if current {
+                        self.world_renderer = Some(WorldRenderer::Built(Box::new(renderer)));
+                    }
+                }
+                // As a build at the handoff that failed: these resources are done with, and only
+                // a load again (`retry`) brings others.
+                Err(e) if current => {
+                    self.loaded = None;
+                    return Err(e.into());
+                }
+                Err(_) => {}
+            }
+        }
+        Ok(())
+    }
+    /// What the app does next (`App::about_to_wait`): nothing yet, or the game, made from the
+    /// loaded resources and the world's renderer.
+    fn poll_handoff(&mut self) -> Option<Result<Option<split::Split<'static>>>> {
+        // Offscreen there is no boot renderer: the world's is built at the handoff, on the main
+        // thread, from the loading renderer's device.
+        let threaded = self.boot_renderer.is_some() || self.world_renderer.is_some();
+        if threaded && let Err(e) = self.poll_world_renderer() {
+            return Some(Err(e));
+        }
+        // A window in the background has no surface for the game's renderer: the loaded
+        // resources wait for it to come back.
+        if self.menu.reload_packs || self.suspended || !self.ready_for_handoff() {
+            return None;
+        }
+        let renderer = match self.world_renderer.take() {
+            Some(WorldRenderer::Built(renderer)) => Some(*renderer),
+            building => {
+                self.world_renderer = building;
+                if threaded && matches!(self.loaded, Some(Ok(_))) {
+                    return None;
+                }
+                None
+            }
+        };
+        Some(match self.loaded.take()? {
+            Err(e) => Err(e.into()),
+            Ok(loaded) => self.finish(loaded, renderer),
+        })
+    }
+    pub(super) fn finish(
+        &mut self,
+        mut loaded: Loaded,
+        // The world's renderer made on the loading screen's device (`begin_world_renderer`);
+        // none builds it here.
+        built: Option<Renderer>,
+    ) -> Result<Option<split::Split<'static>>> {
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
         options.resources = loaded.root.clone();
@@ -701,40 +857,53 @@ impl Loading {
         options.server = None;
         let gui = self.gui.take().ok_or("missing menu bundle")?;
         let window = self.window.clone().ok_or("window closed")?;
-        // Keep the loader's device and swap in the real textures in one step.
-        // A boot renderer whose window went away (Android put the app in the background) has no
-        // surface to hand over, and `Renderer::new` would take a device with none for an
-        // offscreen one. That start is rare, so it opens its own device instead, as before.
-        let boot = self.boot_renderer.take().filter(|b| !b.detached);
-        if let Some(renderer) = &mut self.renderer {
-            renderer.release_surface();
-        }
+        let filtering = (
+            self.settings.file.int("textureFiltering"),
+            self.settings.file.int("maxAnisotropyBit"),
+        );
         let renderer_at = Instant::now();
-        let renderer = startup::time("renderer.world", || {
-            build_renderer(
-                window.clone(),
-                options.offscreen,
-                &loaded.pack,
-                &gui,
-                self.renderer.as_ref(),
-                // The loading screen's device, surface and window, so this is the first and only
-                // time the world's pipelines are built.
-                boot,
-                loaded.renderer_cpu,
-                self.settings.horizon.api,
-                self.settings.horizon.translucent_batching,
-                &self.settings.horizon,
-                shader_packs::picked_pack_shape(&self.settings),
-                self.renderer
-                    .as_ref()
-                    .map(|r| r.display_reading())
-                    .unwrap_or_default(),
-                (
-                    self.settings.file.int("textureFiltering"),
-                    self.settings.file.int("maxAnisotropyBit"),
-                ),
-            )
-        })?;
+        let renderer = match built {
+            Some(mut renderer) => {
+                // The window keeps the one surface it has: the boot renderer's, its last frame
+                // still on it, else (the window came back without one) a new one.
+                let size = window.inner_size();
+                match self
+                    .boot_renderer
+                    .take()
+                    .and_then(horizon_client::gfx::boot::BootRenderer::give_surface)
+                {
+                    Some(surface) => renderer.adopt_surface(surface, size.width, size.height)?,
+                    None => renderer.resume(size.width, size.height)?,
+                }
+                finish_renderer(&mut renderer, &loaded.pack, &gui, filtering)?;
+                renderer
+            }
+            None => {
+                // Keep the loader's device and swap in the real textures in one step.
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.release_surface();
+                }
+                startup::time("renderer.world", || {
+                    build_renderer(
+                        window.clone(),
+                        options.offscreen,
+                        &loaded.pack,
+                        &gui,
+                        self.renderer.as_ref(),
+                        loaded.renderer_cpu.take(),
+                        self.settings.horizon.api,
+                        self.settings.horizon.translucent_batching,
+                        &self.settings.horizon,
+                        shader_packs::picked_pack_shape(&self.settings),
+                        self.renderer
+                            .as_ref()
+                            .map(|r| r.display_reading())
+                            .unwrap_or_default(),
+                        filtering,
+                    )
+                })?
+            }
+        };
         log::info!(
             "Horizon: world renderer ready after {} ms",
             self.started.elapsed().as_millis()
@@ -848,23 +1017,11 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
-                // A window in the background has no surface for the game's renderer: the
-                // loaded resources wait for it to come back.
-                match if loading.menu.reload_packs
-                    || loading.suspended
-                    || !loading.ready_for_handoff()
-                {
-                    None
-                } else {
-                    loading.loaded.take()
-                } {
+                match loading.poll_handoff() {
                     None => Step::Waiting,
-                    Some(Err(e)) => Step::Failed(e.into()),
-                    Some(Ok(loaded)) => match loading.finish(loaded) {
-                        Ok(Some(game)) => Step::Ready(Box::new(game)),
-                        Ok(None) => Step::Done,
-                        Err(e) => Step::Failed(e),
-                    },
+                    Some(Ok(Some(game))) => Step::Ready(Box::new(game)),
+                    Some(Ok(None)) => Step::Done,
+                    Some(Err(e)) => Step::Failed(e),
                 }
             }
         };

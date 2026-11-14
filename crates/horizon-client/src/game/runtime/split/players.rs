@@ -510,7 +510,6 @@ impl Split<'_> {
             &guest.gui,
             host.renderer.as_ref(),
             None,
-            None,
             host.settings.horizon.api,
             host.settings.horizon.translucent_batching,
             &host.settings.horizon,

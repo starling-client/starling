@@ -3182,9 +3182,9 @@ impl Renderer {
         panorama_faces: Arc<panorama::Faces>,
         prepared: Option<PreparedTextures>,
         previous: Option<&Self>,
-        // The loading screen's renderer, handing over the device it opened and the surface it
-        // configured: the pipelines built here are then the only ones the start pays for.
-        boot: Option<boot::BootRenderer>,
+        // The loading screen's device (`BootRenderer::lend`), this renderer made on it while the
+        // loading screen goes on drawing: its surface comes at the handover (`adopt_surface`).
+        boot: Option<boot::Lent>,
         api: GraphicsApi,
         translucent_batching: bool,
         shader_pack: bool,
@@ -3199,11 +3199,12 @@ impl Renderer {
         // available", a fatal error when loading ended in the background). This one starts
         // suspended too, with the previous one's window format, and makes its surface on `resume`
         // (as an offscreen renderer never would).
+        // So is one made on the loading screen's device, whose surface the loading screen keeps
+        // drawing on until the handover (`adopt_surface`).
         let waits_for_window = !offscreen
-            && previous
-                .is_some_and(|p| p.suspended && p.surface.is_none() && p.offscreen.is_none());
-        // The boot renderer already drew on this window, so the clear below would blink.
-        let from_boot = boot.is_some();
+            && (boot.is_some()
+                || previous
+                    .is_some_and(|p| p.suspended && p.surface.is_none() && p.offscreen.is_none()));
         let Opened {
             instance,
             surface,
@@ -3213,8 +3214,7 @@ impl Renderer {
             device_lost,
             configured,
         } = match boot {
-            // Its device was opened by `open_device` too, and its surface is configured: this
-            // takes both over and builds the world's pipelines on them.
+            // Opened by `open_device` too, with the window's configuration and capabilities.
             Some(boot) => boot.into_opened(),
             None => match previous {
                 // Reload resources on the same device; replacing live Vulkan
@@ -3273,7 +3273,8 @@ impl Renderer {
                 previous.map(|renderer| renderer.config.present_mode),
                 previous.is_none(),
             )?),
-            (None, _) => None,
+            // The window's own configuration, as the loading screen made it (`Lent`).
+            (None, configured) => configured.filter(|_| waits_for_window),
         };
         // Until its first frame the window shows what was behind it (on Android, the
         // launcher through the app's empty window): clear it now, before the pipelines
@@ -3281,7 +3282,6 @@ impl Renderer {
         // (PowerVR Rogue's, in this first submit) is told apart from one that dies
         // configuring.
         if previous.is_none()
-            && !from_boot
             && let (Some(surface), Some((config, _))) = (&surface, &configured)
         {
             startup_step(format_args!("clearing the window"));
@@ -5942,6 +5942,22 @@ impl Renderer {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.suspended = true;
         self.detached = true;
+    }
+    /// The loading screen's surface (`BootRenderer::give_surface`) for a renderer made on its
+    /// device while it drew. It goes where `resume` takes its surface from, so the window keeps the
+    /// one surface it has: a second one on the same window fails on Android (the window is in use)
+    /// and on Wayland.
+    pub fn adopt_surface(
+        &mut self,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        *self
+            .spare_surface
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(surface);
+        self.resume(width, height)
     }
     /// The window is back, maybe at another size: a new surface on it.
     pub fn resume(&mut self, width: u32, height: u32) -> Result<()> {
