@@ -516,9 +516,12 @@ fn translate(
         private,
     } = varyings::assign(&v, &f, &mut errors);
 
+    // Past the pack's varyings, and past `hz_cutout` when the program draws terrain's two parts:
+    // both at the first free place made every such program invalid ("Multiple bindings at
+    // location 8"), and a phone on the Auto profile then drew its terrain without the pack (0.9.0).
     let prepass_uv = gbuffers
         .filter(|g| g.prepass_uv)
-        .map(|_| locations.len() as u32);
+        .map(|_| locations.len() as u32 + u32::from(parts.is_some()));
 
     // Terrain's fade input is supplied without a pack declaration. Inject it only when
     // the renderer provides the actual value; other geometry and authored globals keep
@@ -2993,6 +2996,24 @@ in VertexData {{ {member} }} vIn;
         )
         .unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(p.interface.prepass_uv, Some(16));
+        // With terrain's two parts in one pass, `hz_cutout` has the first place past the varyings.
+        let both = GbuffersInputs {
+            alpha_test: None,
+            parts: Some(Parts {
+                solid: "true".into(),
+                cutout_alpha_test: AlphaTest::parse("GREATER 0.1").unwrap(),
+            }),
+            ..game.clone()
+        };
+        let p = translate_gbuffers(
+            &preprocess(&pack, "gbuffers_terrain.vsh", &m),
+            &preprocess(&pack, "gbuffers_terrain.fsh", &m),
+            Target::Buffers,
+            &both,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        // Translated and valid: the two outputs at one place were refused.
+        assert_eq!(p.interface.prepass_uv, Some(17));
     }
 
     #[test]
