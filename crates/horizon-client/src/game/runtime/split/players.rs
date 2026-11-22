@@ -479,7 +479,9 @@ impl Split<'_> {
         // `options.resources` is P1's overlay when a pack is on: never the vanilla root, as a
         // reload would rebuild that overlay out of itself.
         let vanilla_root = host.vanilla_root();
-        let mut gui = UiResources::load(&host.pack.source)?;
+        let defaults =
+            horizon_assets::resource_source::ResourceSource::directory(vanilla_root.clone());
+        let mut gui = UiResources::load_with_defaults(&host.pack.source, &defaults)?;
         gui.splashes = host.gui.splashes.clone();
         // P1's output, heard from this player's camera too (`Audio::share`).
         let audio = host.audio.share(seat as u8);

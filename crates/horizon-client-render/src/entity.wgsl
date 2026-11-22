@@ -328,6 +328,11 @@ struct ClippedEntity {
 @fragment fn fs_entity_unmarked(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     return frame_stored(entity_color(in, front));
 }
+// The shared atlas has one mip level. Map quads only sample their own page.
+fn entity_texel(uv: vec2<f32>) -> vec4<f32> {
+    if uv.x < -8192.0 { return separate_map_texel(uv); }
+    return textureSampleLevel(atlas, atlas_sampler, uv, 0.0);
+}
 fn entity_color(in: Out, front: bool) -> vec4<f32> {
     var uv = in.uv;
     if in.overlay == 6u { uv.y = in.wrap.x + fract(in.uv.y) * in.wrap.y; }
@@ -335,7 +340,7 @@ fn entity_color(in: Out, front: bool) -> vec4<f32> {
         // Each crack's stage sprite origin comes in its light bytes (breaking::stage_light).
         uv = crumbling_uv(in.uv, in.wrap, globals.crumbling_sprite.zw, textureDimensions(atlas));
     }
-    let texel = textureSample(atlas, atlas_sampler, uv);
+    let texel = entity_texel(uv);
     var tint = select(in.back_color, in.color, front);
     if in.overlay == 38u {
         // RenderPipelines.ENTITY_CUTOUT_DISSOLVE (entity.fsh's DISSOLVE): gone where the vertex
@@ -395,7 +400,7 @@ fn shadow_color(in: Out) -> vec4<f32> {
 }
 
 @fragment fn fs_outline(in: Out) -> @location(0) vec4<f32> {
-    if textureSample(atlas, atlas_sampler, in.uv).a == 0.0 { discard; }
+    if entity_texel(in.uv).a == 0.0 { discard; }
     return vec4(in.color.rgb, 1.0);
 }
 
@@ -406,14 +411,14 @@ fn shadow_color(in: Out) -> vec4<f32> {
     // Beams wrap their v in the sprite as fs_entity does: sample where they draw.
     var uv = in.uv;
     if in.overlay == 6u { uv.y = in.wrap.x + fract(in.uv.y) * in.wrap.y; }
-    let texel = textureSample(atlas, atlas_sampler, uv);
+    let texel = entity_texel(uv);
     if texel.a < 0.1 { discard; }
     return vec4(0.0, 0.0, 0.0, hdr_entity_mark(in));
 }
 fn hdr_entity_mark(in: Out) -> f32 {
     var uv = in.uv;
     if in.overlay == 6u { uv.y = in.wrap.x + fract(in.uv.y) * in.wrap.y; }
-    let texel = textureSample(atlas, atlas_sampler, uv);
+    let texel = entity_texel(uv);
     // Additive and procedural colour draws can survive where the legacy mark pass skips.
     if texel.a < 0.1 { return 1.0; }
     // Fog hides a light source and the light on a surface as it hides everything else.
@@ -442,7 +447,7 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 // The hand in HDR output (gfx.rs "HDR hand marks"): where it drew, what the world kept there
 // no longer shines; fs_hdr_mark then marks the light sources it holds.
 @fragment fn fs_hdr_hand_unmark(in: Out) -> @location(0) vec4<f32> {
-    if textureSample(atlas, atlas_sampler, in.uv).a < 0.1 { discard; }
+    if entity_texel(in.uv).a < 0.1 { discard; }
     return vec4(0.0, 0.0, 0.0, hdr_scene_alpha(in.scene));
 }
 

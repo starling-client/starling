@@ -166,6 +166,14 @@ impl UiResources {
     /// The resolved resource generation, including the base layer and pack filters.
     /// Its splash pool is empty until `with_splashes`.
     pub fn load(root: &horizon_assets::resource_source::ResourceSource) -> Result<Self> {
+        Self::load_with_defaults(root, root)
+    }
+
+    /// Pack pixels are drawn with the base game's logical GUI dimensions.
+    pub fn load_with_defaults(
+        root: &horizon_assets::resource_source::ResourceSource,
+        defaults: &horizon_assets::resource_source::ResourceSource,
+    ) -> Result<Self> {
         // The title screen waits for both: the panorama's six faces decode
         // beside the atlas.
         std::thread::scope(|scope| {
@@ -176,7 +184,7 @@ impl UiResources {
             });
             let mod_image = horizon_client_render::render_slots::world_drawn_hooked();
             let atlas = startup::time("ui.atlas", || {
-                HudAtlas::build_over_with_image(root, root, mod_image)
+                HudAtlas::build_over_with_image(root, defaults, mod_image)
             });
             let panorama = panorama
                 .join()

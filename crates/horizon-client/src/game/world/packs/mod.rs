@@ -583,6 +583,7 @@ impl Game<'_> {
             .set_resource_root(self.pack.source.clone());
         self.maps.slots.forget();
         self.map_patches.clear();
+        self.map_tiles.clear();
         self.text_patches.get_mut().clear();
         // Kept mod block entities name the old atlas's sprites, and their view distances the old
         // registry's states.
@@ -710,6 +711,8 @@ pub(super) fn stage_pack(
     let resource_root = super::client_reload::stage_texture_atlases(resource_root, texture_atlases);
     let root = resource_root.prepared().to_path_buf();
     let source = resource_root.source().clone();
+    let defaults =
+        horizon_assets::resource_source::ResourceSource::directory(vanilla_root.to_path_buf());
     progress.set(1);
     // The mod listeners prepare against the merged root before the heavy
     // staging builds run: a listener that fails aborts the reload without the
@@ -727,7 +730,8 @@ pub(super) fn stage_pack(
     // the frame that applies the reload (about 20 ms of it).
     let (render, atlas, panorama, (sounds, ui_metadata, language)) = std::thread::scope(|s| {
         let atlas = super::resource_load::named_scope(s, "pack-assets", || {
-            HudAtlas::build_over_with_image(&source, &source, mod_image).map_err(|e| e.to_string())
+            HudAtlas::build_over_with_image(&source, &defaults, mod_image)
+                .map_err(|e| e.to_string())
         });
         let panorama = super::resource_load::named_scope(s, "pack-assets", || {
             horizon_client::gfx::panorama::Faces::load(&source, &source)

@@ -18,6 +18,8 @@ mod animate;
 pub mod cit_glint;
 mod gui_sprite;
 mod menu_pictures;
+#[cfg(any(target_os = "android", test))]
+mod mobile_atlas;
 mod model_reducing;
 mod pack_text;
 pub mod pictures;
@@ -173,6 +175,40 @@ fn halved((name, w, h, data): &PackedImage) -> PackedImage {
 /// framed maps, so the pool holds a wall; too few slots re-upload every map
 /// every frame. 26.3's `MapTextureManager` keeps a texture per map instead.
 pub const MAP_SLOTS: usize = 256;
+pub const MAP_TILE_SIDE: u32 = 128;
+pub(crate) const MAP_PAGE_SIDE: u32 = 1024;
+const MAPS_PER_ROW: u32 = MAP_PAGE_SIDE / MAP_TILE_SIDE;
+pub(crate) const MAPS_PER_PAGE: usize = (MAPS_PER_ROW * MAPS_PER_ROW) as usize;
+pub(crate) const MAP_PAGE_COUNT: usize = MAP_SLOTS / MAPS_PER_PAGE;
+
+static MAP_PAGE_ALLOCATION_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Keep using shared map slots if this process could not allocate a dedicated page.
+pub fn fallback_to_shared_map_atlas() -> bool {
+    !MAP_PAGE_ALLOCATION_FAILED.swap(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Texel coordinates in a page, plus a negative U tag shared by the HUD and entity shaders.
+pub fn separate_map_rect(slot: usize) -> Option<Rect> {
+    if slot >= MAP_SLOTS {
+        return None;
+    }
+    let page = slot / MAPS_PER_PAGE;
+    let tile = slot as u32 % MAPS_PER_PAGE as u32;
+    let x = (tile % MAPS_PER_ROW) * MAP_TILE_SIDE;
+    let y = (tile / MAPS_PER_ROW) * MAP_TILE_SIDE;
+    let u = x as f32 - 16384.0 + page as f32 * MAP_PAGE_SIDE as f32;
+    Some(Rect {
+        u0: u,
+        v0: y as f32,
+        u1: u + MAP_TILE_SIDE as f32,
+        v1: (y + MAP_TILE_SIDE) as f32,
+        w: MAP_TILE_SIDE,
+        h: MAP_TILE_SIDE,
+    })
+}
+
 /// The atlas sprite of map slot `slot` (`horizon/map{slot}`), named once:
 /// every map shown asks for its slot's each frame.
 pub fn map_slot_sprite(slot: usize) -> Option<&'static str> {
@@ -1481,11 +1517,39 @@ impl HudAtlas {
     #[cfg(any(target_os = "android", test))]
     fn mobile_layout(images: &[PackedImage], maximum: u32) -> Result<(u32, Vec<(u32, u32)>, u32)> {
         let width = maximum.min(4096);
+        let first = Self::mobile_skyline(images, width, maximum, 0..images.len());
+        if first.is_ok() {
+            return first;
+        }
+        let area: u64 = images
+            .iter()
+            .map(|image| (u64::from(image.1) + 1) * (u64::from(image.2) + 1))
+            .sum();
+        if area > u64::from(width) * u64::from(maximum.saturating_sub(GLYPH_ROWS)) {
+            return first;
+        }
+        // Place sprites with two large sides earlier when height order leaves gaps.
+        let mut order: Vec<_> = (0..images.len()).collect();
+        order.sort_by_key(|&i| {
+            let (_, w, h, _) = &images[i];
+            std::cmp::Reverse((w.min(h), w.max(h)))
+        });
+        Self::mobile_skyline(images, width, maximum, order)
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    fn mobile_skyline(
+        images: &[PackedImage],
+        width: u32,
+        maximum: u32,
+        order: impl IntoIterator<Item = usize>,
+    ) -> Result<(u32, Vec<(u32, u32)>, u32)> {
         // [x, occupied height, segment width]. Segments cover the complete width.
         let mut skyline = vec![[0u32, 0, width]];
-        let mut placements = Vec::with_capacity(images.len());
+        let mut placements = vec![(0, 0); images.len()];
         let mut bottom = 0;
-        for (_, w, h, _) in images {
+        for sprite_index in order {
+            let (_, w, h, _) = &images[sprite_index];
             let (rw, rh) = (w + 1, h + 1);
             let mut best: Option<(u32, u32, usize, u32)> = None;
             for (i, node) in skyline.iter().enumerate() {
@@ -1514,7 +1578,7 @@ impl HudAtlas {
                 )
                 .into());
             }
-            placements.push((x, y));
+            placements[sprite_index] = (x, y);
             bottom = bottom.max(top);
             let end = x + rw;
             skyline.insert(index, [x, top, rw]);
@@ -1540,82 +1604,6 @@ impl HudAtlas {
         }
         Ok((width, placements, bottom))
     }
-    /// Fit static sprites to a small adapter without shrinking pixel icons, glyphs or dynamic
-    /// map/skin/GUI slots. Terrain uses separate texture arrays and is unchanged.
-    #[cfg(any(target_os = "android", test))]
-    fn fit_mobile_atlas(
-        images: &mut [PackedImage],
-        gui_sizes: &mut HashMap<String, (u32, u32)>,
-        flags: &HashMap<String, TextureFlags>,
-        limit: u32,
-    ) -> Result<()> {
-        loop {
-            let mut dimensions: Vec<PackedImage> = images
-                .iter()
-                .map(|(name, w, h, _)| {
-                    let border = if flags.get(name).is_some_and(|f| f.blur) {
-                        2
-                    } else {
-                        0
-                    };
-                    (name.clone(), w + border, h + border, Vec::new())
-                })
-                .collect();
-            dimensions.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
-            match Self::layout(&dimensions, limit) {
-                Ok(_) => return Ok(()),
-                Err(error) => {
-                    // The interface's own textures wait until the rest is as small as it goes:
-                    // a phone whose GPU takes 4096 and whose default resources need 4108 rows
-                    // (the PowerVR GE8322) then fits them, instead of losing its packs.
-                    let mut changed = false;
-                    for interface in [false, true] {
-                        for (name, w, h, rgba) in images.iter_mut() {
-                            // Never the glyphs, and never the slots written at run time
-                            // (`slots`, all under `horizon/`), whose size is their own.
-                            if name.contains("font/")
-                                || name.starts_with("horizon/")
-                                || (*w).max(*h) <= SMALLEST_SHRUNK_SIDE
-                                || rgba.len() < (*w as usize * *h as usize * 4)
-                            {
-                                continue;
-                            }
-                            if (name.starts_with("gui/") || name.starts_with("ui/")) != interface {
-                                continue;
-                            }
-                            // Keep original GUI units and normalized UVs. Runtime patches
-                            // retain their full-size slots, so no coordinate remapping occurs.
-                            gui_sizes.entry(name.clone()).or_insert((*w, *h));
-                            let (old_w, old_h) = (*w, *h);
-                            *w = (*w / 2).max(1);
-                            *h = (*h / 2).max(1);
-                            let mut smaller = Vec::with_capacity((*w * *h * 4) as usize);
-                            for y in 0..*h {
-                                for x in 0..*w {
-                                    let at =
-                                        ((y * old_h / *h * old_w + x * old_w / *w) * 4) as usize;
-                                    smaller.extend_from_slice(&rgba[at..at + 4]);
-                                }
-                            }
-                            *rgba = smaller;
-                            changed = true;
-                        }
-                        if changed {
-                            log::info!(
-                                "Reduced {} atlas sprites to fit the adapter's {limit}px texture limit",
-                                if interface { "interface" } else { "non-UI" }
-                            );
-                            break;
-                        }
-                    }
-                    if !changed {
-                        return Err(error);
-                    }
-                }
-            }
-        }
-    }
-
     /// `layout_leaving_out`, but when the images still don't fit (a small GPU: the PowerVR GE8320
     /// takes 4096x4096 and the default resources need 4096x5120), with the largest at half size,
     /// then the largest of what is left, until they do. A sprite's `Rect` keeps its size in
@@ -1921,17 +1909,13 @@ impl HudAtlas {
                     maps.iter().any(Option::is_some).then(|| Box::new(maps))
                 })
                 .flatten();
-            (gw <= 1024
-                && (gh <= 512
-                    || matches!(
-                        name.as_str(),
-                        "gui/title/background/panorama_0"
-                            | "gui/title/background/panorama_2"
-                            | "gui/title/background/panorama_3"
-                            | "gui/presets/isles"
-                    )
-                    || name.starts_with("font/")))
-            .then_some(((name, w, h, pixels), flags, gui_size, animated, maps))
+            (gw <= 1024 && (gh <= 512 || name.starts_with("font/"))).then_some((
+                (name, w, h, pixels),
+                flags,
+                gui_size,
+                animated,
+                maps,
+            ))
         };
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
         let chunk = files.len().div_ceil(threads).max(1);
@@ -2079,12 +2063,42 @@ impl HudAtlas {
                 })
                 .collect();
             images.push((MISSING_SPRITE.into(), 16, 16, missing));
+            let (width, height, rgba) =
+                decode_bytes(include_bytes!("jei_recipes/config_button.png"))?;
+            images.push(("horizon/recipes/settings".to_owned(), width, height, rgba));
         }
         let limit = atlas_limit();
         let mut full_sizes = HashMap::new();
         #[cfg(target_os = "android")]
         if limit < MAX_ATLAS_SIZE {
-            Self::fit_mobile_atlas(&mut images, &mut full_sizes, &flags, limit)?;
+            if limit <= 4096 {
+                // The cloud renderer reads its pattern directly from the active resources.
+                images.retain(|(name, ..)| name != "environment/clouds");
+            }
+            if full
+                && (MAP_PAGE_SIDE..=4096).contains(&limit)
+                && !MAP_PAGE_ALLOCATION_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+                && !crate::sprites::labpbr_maps()
+            {
+                // Preserve the existing path when it fits without reducing sprites.
+                let mut sizes: Vec<PackedImage> = images
+                    .iter()
+                    .map(|(name, w, h, _)| {
+                        let border = if flags.get(name).is_some_and(|f: &TextureFlags| f.blur) {
+                            2
+                        } else {
+                            0
+                        };
+                        (String::new(), w + border, h + border, Vec::new())
+                    })
+                    .collect();
+                sizes.sort_by_key(|(_, w, h, _)| std::cmp::Reverse((*h, *w)));
+                if Self::mobile_layout(&sizes, limit).is_err() {
+                    images.retain(|(name, ..)| !name.starts_with("horizon/map"));
+                    log::info!("GUI atlas: using separate map pages before reducing sprites");
+                }
+            }
+            Self::fit_mobile_atlas(&mut images, &mut full_sizes, &gui_sizes, &flags, limit)?;
         }
         // Blurred sprites are sampled linearly in the atlas (screen.wgsl): a
         // border wrapped from their own edges keeps the filter off their
@@ -2095,11 +2109,6 @@ impl HudAtlas {
                 *image = wrap_border(image);
                 bordered.insert(image.0.clone());
             }
-        }
-        if full {
-            let (width, height, rgba) =
-                decode_bytes(include_bytes!("jei_recipes/config_button.png"))?;
-            images.push(("horizon/recipes/settings".to_owned(), width, height, rgba));
         }
         images.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
         let (width, placements, glyph_region) = Self::layout_within(
@@ -2112,8 +2121,7 @@ impl HudAtlas {
         )
         .or_else(|error| -> Result<_> {
             let models = reducible_model_sprites(root, &images, &bordered);
-            let layout =
-                Self::layout_reducing_models(&mut images, &mut gui_sizes, &models, MAX_ATLAS_SIZE)?;
+            let layout = Self::layout_reducing_models(&mut images, &mut gui_sizes, &models, limit)?;
             log::warn!("reduced HUD model texture resolution to keep the resource pack: {error}");
             Ok(layout)
         })?;
@@ -2354,6 +2362,8 @@ pub struct HudBatch {
     pub height: f32,
     /// Glyph pixels to upload into the atlas before drawing.
     pub patches: Vec<crate::font::Patch>,
+    /// Dirty map tiles, keyed by the existing bounded map slot cache.
+    pub map_tiles: Vec<(usize, Vec<u8>)>,
     /// Vertex ranges with another blend or depth/scissor state, in order.
     pub blends: Vec<(std::ops::Range<u32>, Blend)>,
     /// The textures and time of the `Blend::EndPortal` runs.
@@ -2443,6 +2453,7 @@ impl HudBatch {
             width: gui.size[0] as f32,
             height: gui.size[1] as f32,
             patches: Vec::new(),
+            map_tiles: Vec::new(),
             blends: Vec::new(),
             end_portal: EndPortalFill::default(),
             glint_alpha: 0.75,
@@ -3244,6 +3255,8 @@ impl HudUniform {
 }
 use crate::gfx::hud_coverage::{self, Pipeline};
 
+const HUD_SHADER: &str = concat!(include_str!("map_tiles.wgsl"), include_str!("hud.wgsl"));
+
 pub struct HudRenderer {
     pictures: HashMap<u64, (Arc<pictures::Picture>, wgpu::BindGroup)>,
     pub sprite_animations: Vec<(Rect, crate::sprites::SpriteAnimation, (usize, usize, u32))>,
@@ -3269,6 +3282,11 @@ pub struct HudRenderer {
     format: wgpu::TextureFormat,
     coverage: bool,
     atlas_view: wgpu::TextureView,
+    sampler: wgpu::Sampler,
+    linear_sampler: wgpu::Sampler,
+    glint: wgpu::TextureView,
+    glint_armor: wgpu::TextureView,
+    glint_sampler: wgpu::Sampler,
     /// The resource pack's text shader, when it has one that works.
     pack_text: Option<pack_text::PackText>,
     /// Target pixels per window pixel: above 1 for a screenshot drawn larger than the
@@ -3276,6 +3294,76 @@ pub struct HudRenderer {
     pub zoom: f32,
 }
 impl HudRenderer {
+    #[allow(clippy::too_many_arguments)]
+    fn resources(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        uniform: &wgpu::Buffer,
+        view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        glint_view: &wgpu::TextureView,
+        glint_sampler: &wgpu::Sampler,
+        linear_sampler: &wgpu::Sampler,
+        glint_armor_view: &wgpu::TextureView,
+        maps: [&wgpu::TextureView; MAP_PAGE_COUNT],
+    ) -> wgpu::BindGroup {
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(glint_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(glint_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::Sampler(linear_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(glint_armor_view),
+            },
+        ];
+        entries.extend(crate::gfx::map_pages::bindings(maps));
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("HUD resources"),
+            layout,
+            entries: &entries,
+        })
+    }
+
+    pub(crate) fn bind_map_pages(
+        &mut self,
+        device: &wgpu::Device,
+        maps: [&wgpu::TextureView; MAP_PAGE_COUNT],
+    ) {
+        self.group = Self::resources(
+            device,
+            &self.layout,
+            &self.uniform,
+            &self.atlas_view,
+            &self.sampler,
+            &self.glint,
+            &self.glint_sampler,
+            &self.linear_sampler,
+            &self.glint_armor,
+            maps,
+        );
+    }
+
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -3287,7 +3375,7 @@ impl HudRenderer {
     ) -> Result<Self> {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon HUD"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("hud.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(HUD_SHADER.into()),
         });
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -3305,103 +3393,83 @@ impl HudRenderer {
             contents: bytemuck::bytes_of(&HudUniform::new([1.0; 4], EndPortalFill::default(), 0)),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let mut layout_entries = vec![
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ];
+        layout_entries.extend(crate::gfx::map_pages::layouts());
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("HUD bindings"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-            ],
+            entries: &layout_entries,
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("HUD resources"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(glint_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(glint_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::Sampler(&linear_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(glint_armor_view),
-                },
-            ],
-        });
+        let group = Self::resources(
+            device,
+            &layout,
+            &uniform,
+            view,
+            &sampler,
+            glint_view,
+            glint_sampler,
+            &linear_sampler,
+            glint_armor_view,
+            [view; MAP_PAGE_COUNT],
+        );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("HUD layout"),
             bind_group_layouts: &[Some(&layout)],
@@ -3446,7 +3514,7 @@ impl HudRenderer {
                 multiview_mask: None,
                 cache: None,
             };
-            let source = wgpu::ShaderSource::Wgsl(include_str!("hud.wgsl").into());
+            let source = wgpu::ShaderSource::Wgsl(HUD_SHADER.into());
             Pipeline::new(device, &desc, source, coverage).expect("the HUD's coverage")
         };
         let pipeline = create("HUD", wgpu::BlendState::ALPHA_BLENDING, "fs_main", None);
@@ -3553,6 +3621,11 @@ impl HudRenderer {
             format,
             coverage,
             atlas_view: view.clone(),
+            sampler,
+            linear_sampler,
+            glint: glint_view.clone(),
+            glint_armor: glint_armor_view.clone(),
+            glint_sampler: glint_sampler.clone(),
             pack_text: None,
             zoom: 1.0,
         })
@@ -5971,7 +6044,7 @@ texture=wide",
 
     #[test]
     fn hud_shader_validates_both_fragment_entries() {
-        let module = naga::front::wgsl::parse_str(include_str!("hud.wgsl")).unwrap();
+        let module = naga::front::wgsl::parse_str(HUD_SHADER).unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -6048,6 +6121,7 @@ texture=wide",
                 width: width as f32,
                 height: height as f32,
                 patches: Vec::new(),
+                map_tiles: Vec::new(),
                 blends: Vec::new(),
                 end_portal: EndPortalFill::default(),
                 glint_alpha: 0.75,
@@ -6077,12 +6151,28 @@ texture=wide",
                 vec![255; 1024 * 1024 * 4],
             ),
             ("gui/panel".to_string(), 512, 256, vec![255; 512 * 256 * 4]),
+            (
+                "entity/player/wide/steve".into(),
+                64,
+                64,
+                vec![255; 64 * 64 * 4],
+            ),
+            ("entity/wolf/wolf".into(), 64, 32, vec![255; 64 * 32 * 4]),
         ];
         let mut full_sizes = HashMap::new();
-        HudAtlas::fit_mobile_atlas(&mut images, &mut full_sizes, &HashMap::new(), 1024).unwrap();
+        HudAtlas::fit_mobile_atlas(
+            &mut images,
+            &mut full_sizes,
+            &HashMap::new(),
+            &HashMap::new(),
+            1024,
+        )
+        .unwrap();
         let gui = images.iter().find(|i| i.0 == "gui/panel").unwrap();
         assert_eq!((gui.1, gui.2), (512, 256));
         assert!(!full_sizes.contains_key("gui/panel"));
+        assert!(!full_sizes.contains_key("entity/player/wide/steve"));
+        assert!(!full_sizes.contains_key("entity/wolf/wolf"));
         assert!(full_sizes.contains_key("entity/large"));
     }
     #[test]
@@ -6098,7 +6188,14 @@ texture=wide",
             ("horizon/map0".to_string(), 128, 128, Vec::new()),
         ];
         let mut full_sizes = HashMap::new();
-        HudAtlas::fit_mobile_atlas(&mut images, &mut full_sizes, &HashMap::new(), 1024).unwrap();
+        HudAtlas::fit_mobile_atlas(
+            &mut images,
+            &mut full_sizes,
+            &HashMap::new(),
+            &HashMap::new(),
+            1024,
+        )
+        .unwrap();
         let of = |name: &str| {
             let i = images.iter().find(|i| i.0 == name).unwrap();
             (i.1, i.2)
@@ -6111,6 +6208,19 @@ texture=wide",
         assert!(!full_sizes.contains_key("font/ascii"));
         assert!(!full_sizes.contains_key("horizon/map0"));
     }
+    #[test]
+    fn mobile_atlas_counts_separators_and_glyph_rows_at_the_device_limit() {
+        let mut images = [("gui/panel".to_owned(), 4095, 3583, Vec::new())];
+        let (width, _, bottom) = HudAtlas::mobile_layout(&images, 4096).unwrap();
+        assert_eq!((width, bottom + GLYPH_ROWS), (4096, 4096));
+
+        images[0].2 += 12;
+        assert!(HudAtlas::mobile_layout(&images, 4096).is_err());
+        images[0].2 -= 12;
+        images[0].1 += 1;
+        assert!(HudAtlas::mobile_layout(&images, 4096).is_err());
+    }
+
     #[test]
     fn mobile_layout_places_varied_rectangles_without_overlap() {
         let mut seed = 0x5a17u32;

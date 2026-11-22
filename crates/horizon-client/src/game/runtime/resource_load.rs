@@ -585,12 +585,14 @@ pub(super) fn load_resources(
     let mut pack_error = None;
     // A dedicated server builds only the font (UiResources::server), as the
     // integrated server's game does: the full atlas and panorama are 144 MB.
+    let defaults =
+        horizon_assets::resource_source::ResourceSource::directory(vanilla_root.to_path_buf());
     let load_ui = |source: &horizon_assets::resource_source::ResourceSource| {
         let _step = startup::step("ui.load");
         if headless {
             UiResources::server(source)
         } else {
-            UiResources::load(source).map(|ui| {
+            UiResources::load_with_defaults(source, &defaults).map(|ui| {
                 ui.with_splashes(
                     source,
                     vanilla_root,

@@ -176,40 +176,18 @@ impl HudRenderer {
                     address_mode_v: address,
                     ..Default::default()
                 });
-                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("GUI picture"),
-                    layout: &self.layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: self.uniform.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::Sampler(&sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(&self.atlas_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::Sampler(&sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: wgpu::BindingResource::Sampler(&sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 6,
-                            resource: wgpu::BindingResource::TextureView(&self.atlas_view),
-                        },
-                    ],
-                });
+                let group = Self::resources(
+                    device,
+                    &self.layout,
+                    &self.uniform,
+                    &view,
+                    &sampler,
+                    &self.atlas_view,
+                    &sampler,
+                    &sampler,
+                    &self.atlas_view,
+                    [&view; MAP_PAGE_COUNT],
+                );
                 (picture.clone(), group)
             });
         }
