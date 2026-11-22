@@ -220,6 +220,8 @@ pub struct Failure {
     #[serde(default)]
     pub id: String,
     #[serde(default)]
+    pub version: String,
+    #[serde(default)]
     pub error: String,
     #[serde(default)]
     pub settled: bool,
@@ -236,25 +238,61 @@ pub struct Index {
 /// scripts/mod_lib.py).
 const WHOLE_GAME: &str = "whole-game Compile";
 
-/// The native mods only the whole-game Compile builds, by id, as `index` says: a library of its own
-/// holds no mixin, nor a crate beside the mod API. A mod the store built some version of is not
-/// one.
-pub fn whole_game_only(index: &Index) -> BTreeSet<String> {
+/// What a store's failure says of a mod Starling doesn't run at all, a wasm mod for one (mod-builds'
+/// scripts/mod_lib.py).
+const NOT_ON_STARLING: &str = "doesn't run on Starling";
+
+/// The mods this game can't play, by id, as `index` says:
+/// - a native mod only the whole-game Compile builds (a library of its own holds no mixin), unless
+///   the store built some version of it;
+/// - a mod whose newest version the store knows doesn't run on Starling: a catalog installs the
+///   newest, whatever an older one was.
+pub fn not_played(index: &Index) -> BTreeSet<String> {
     let built: BTreeSet<&str> = index.mods.values().map(|l| l.id.as_str()).collect();
-    index
-        .failed
+    let mut newest: BTreeMap<&str, (Vec<u64>, bool)> = BTreeMap::new();
+    let rows = (index
+        .mods
         .values()
-        .filter(|f| {
-            f.error.contains(WHOLE_GAME) && !f.id.is_empty() && !built.contains(f.id.as_str())
-        })
+        .map(|l| (l.id.as_str(), l.version.as_str(), false)))
+    .chain(index.failed.values().map(|f| {
+        (
+            f.id.as_str(),
+            f.version.as_str(),
+            f.error.contains(NOT_ON_STARLING),
+        )
+    }));
+    for (id, version, refused) in rows {
+        let version = version_parts(version);
+        if !id.is_empty() && newest.get(id).is_none_or(|(held, _)| *held <= version) {
+            newest.insert(id, (version, refused));
+        }
+    }
+    let whole_game = index.failed.values().filter(|f| {
+        f.error.contains(WHOLE_GAME) && !f.id.is_empty() && !built.contains(f.id.as_str())
+    });
+    whole_game
         .map(|f| f.id.clone())
+        .chain(
+            newest
+                .into_iter()
+                .filter(|(_, (_, refused))| *refused)
+                .map(|(id, _)| id.to_owned()),
+        )
         .collect()
 }
 
-/// The native mods the catalogs leave out on this game: those Compile v2 can't play
-/// ([`whole_game_only`]) in this APK's own build, read from GitHub once. It blocks: the catalogs
-/// ask from their search threads. None for a game that doesn't say its build, or without the
-/// network: the catalogs then list every mod, as before.
+/// A version's numbers in order ("3.0.10" is after "3.0.9"); what isn't a number counts as zero.
+fn version_parts(version: &str) -> Vec<u64> {
+    version
+        .split(['.', '-', '+'])
+        .map(|part| part.parse().unwrap_or(0))
+        .collect()
+}
+
+/// The mods the catalogs leave out on this game: those it can't play ([`not_played`]) in this
+/// APK's own build, read from GitHub once. It blocks: the catalogs ask from their search threads.
+/// None for a game that doesn't say its build, or without the network: the catalogs then list
+/// every mod, as before.
 pub fn catalog_hidden() -> &'static BTreeSet<String> {
     static HIDDEN: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
     HIDDEN.get_or_init(|| {
@@ -271,7 +309,7 @@ pub fn catalog_hidden() -> &'static BTreeSet<String> {
             .ok()
             .and_then(|response| response.into_string().ok());
         text.and_then(|text| index(&text, build).ok())
-            .map(|index| whole_game_only(&index))
+            .map(|index| not_played(&index))
             .unwrap_or_default()
     })
 }
@@ -592,11 +630,38 @@ mod tests {
             ],
         })
         .to_string();
-        let hidden = whole_game_only(&index(&text, BUILD).unwrap());
+        let hidden = not_played(&index(&text, BUILD).unwrap());
         assert_eq!(
             hidden.into_iter().collect::<Vec<_>>(),
             ["freecam_plus", "oritech"]
         );
+    }
+
+    #[test]
+    fn the_catalogs_leave_out_a_mod_whose_newest_version_does_not_run_here() {
+        let wasm = "This mod is a wasm mod: it doesn't run on Starling.";
+        let failed = |job: &str, id: &str, version: &str, error: &str| serde_json::json!({"job": job, "id": id, "version": version, "error": error, "settled": true});
+        let mut old = library("crops", &"a".repeat(64), BUILD);
+        old.version = "1.9.0".into();
+        let mut new = library("overlay", &"b".repeat(64), BUILD);
+        new.version = "3.0.10".into();
+        let text = serde_json::json!({
+            "schema": 1,
+            "build": BUILD,
+            "mods": [row(&old), row(&new)],
+            "failed": [
+                failed("z", "zoom", "3.0.3", wasm),
+                // The store built an older one, and the catalog installs the newest.
+                failed("c", "crops", "2.0.1", wasm),
+                // Native again since: it plays.
+                failed("o", "overlay", "3.0.9", wasm),
+                // Content only, no code: it stays.
+                failed("v", "voltz", "1.0.0", "This mod is not a native mod."),
+            ],
+        })
+        .to_string();
+        let hidden = not_played(&index(&text, BUILD).unwrap());
+        assert_eq!(hidden.into_iter().collect::<Vec<_>>(), ["crops", "zoom"]);
     }
 
     #[test]

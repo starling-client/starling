@@ -15,10 +15,10 @@ pub use launcher::browser;
 pub mod list;
 
 use browser::{
+    GAME, Kind, Project, Query, Source, SourceId, Support, Version,
     horizon::Registry,
     installed::{self, Entry, Installed},
     modrinth::Modrinth,
-    Kind, Project, Query, Source, SourceId, Support, Version, GAME,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -74,7 +74,7 @@ pub fn search(
                 .into_iter()
                 .filter(|p| p.support().installable())
                 .filter(|p| NATIVE_MODS_BUILD || !is_native_mod(p))
-                .filter(|p| !hidden_native_mod(p))
+                .filter(|p| !hidden_mod(p))
                 .skip(offset)
                 .take(limit)
                 .collect())
@@ -187,20 +187,21 @@ pub fn caution(project: &Project) -> Option<String> {
     }
 }
 
-/// The native mods this game can't play, which the Mods shelf leaves out: the game says which
+/// The registry's mods this game can't play (a native mod Compile can't build, a wasm mod), which
+/// the Mods shelf leaves out: the game says which
 /// (`horizon_client::starling_store::catalog_hidden`), once, before its first search.
-static HIDDEN_NATIVE_MODS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+static HIDDEN_MODS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
 
-/// Leaves the native mods `ids` off the Mods shelf. Only the first call counts.
-pub fn hide_native_mods(ids: impl IntoIterator<Item = String>) {
-    let _ = HIDDEN_NATIVE_MODS.set(ids.into_iter().collect());
+/// Leaves the registry's mods `ids` off the Mods shelf. Only the first call counts.
+pub fn hide_mods(ids: impl IntoIterator<Item = String>) {
+    let _ = HIDDEN_MODS.set(ids.into_iter().collect());
 }
 
-fn hidden_native_mod(project: &Project) -> bool {
-    HIDDEN_NATIVE_MODS
-        .get()
-        .is_some_and(|ids| ids.contains(&project.id))
-        && is_native_mod(project)
+fn hidden_mod(project: &Project) -> bool {
+    project.source == SourceId::Horizon
+        && HIDDEN_MODS
+            .get()
+            .is_some_and(|ids| ids.contains(&project.id))
 }
 
 /// Whether `project` is a native mod, which only runs once compiled into the game. The registry
