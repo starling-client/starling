@@ -196,3 +196,28 @@ Without the Create port and the old hooks (dropped on purpose), about 1,500 line
 - native-mods/wrench (240): the wrench mod's mixins.
 The full list is dropped.txt in the tools folder; each line must end as re-ported, already in Sunrise, or dropped
 on purpose with a reason.
+
+### State of that inventory (2026-11-22, after the re-ports; `cargo ndk check` passes at 4c7133f014)
+
+Re-ported: SRV name servers; the connection (remote/starling.rs: the stick's modes with the question and memory,
+Free Direction's held-back hits, the movement, setback and chunk-wait logs, the creative grid; and in Sunrise's
+files: `resolve_legacy`, abilities after a respawn, names with remote_name_tags, the overdue chunk budget on a phone,
+Ely.by and own skins with the wardrobe's cape, the touch shield, the account's name on real servers only, the look
+a placement tells).
+
+Already in Sunrise under its own shapes (nothing to bring; check on a server): attributes for a player made after
+the packet (respawn_attributes.rs), key.swapOffhand at the tick (play_keys.rs), a proxy's reconfiguration
+(raw_ingress.rs drops the level and the player), a stack's own `equippable` and `use_cooldown` (item_sync.rs,
+sunrise-items cooldowns.rs), armour and off hand in the creative sync (CREATIVE_SYNCED = 41), the grindstone and
+shulker hooks (mod API).
+
+Server side, Sunrise's whole by decision; Starling's are speed-ups to measure on a phone before re-porting:
+deferred world files (`save::later`), random_tick_sections' position cache, spawn_rules' spot table, mobs ai.rs
+and living.rs, the cheaper mob collisions.
+
+Still to decide or re-port:
+- Custom armour from server packs: custom_armor.rs is in the tree and nothing calls it (mobs/render.rs's
+  own_equipment and armor atlases, armor_stands.rs's layer_look). Sunrise draws a stack's own equipment asset through
+  equipment_piece.rs and cit_armor: try ItemsAdder/Nexo armour first, re-port only what is missing.
+- 3D skin layers; `remote_menu_clicks` for a mod's slots.click; fetched assets; the wrench mod's mixins.
+- The small files of dropped.txt (under 30 lines each) not yet read one by one.
