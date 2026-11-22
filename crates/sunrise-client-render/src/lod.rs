@@ -786,18 +786,10 @@ impl Plan {
         // blocks. Each step of coarseness keeps them twice as large (a quarter
         // of the cells): Reduced one, Mobile two.
         let held = previous.split.contains(&key);
-<<<<<<< sync-sunrise-1
         // How many tile sizes away a tile splits at Full detail, doubled: 8,
         // and 10 once split.
         let doubled: i64 = if held { 20 } else { 16 };
         let split = i64::from(key.size()) * doubled / (2 << coarseness.min(4));
-        // Beyond the old 1024-chunk limit the cells are at least as large as
-        // Reduced's: the whole world is 22 levels, not all of them worth full
-        // cells.
-        let world = key.distance(camera) >= WORLD_START;
-=======
-        let split = if held { 10 } else { 8 };
->>>>>>> sunrise/main
         // A zoomed view magnifies the tiles its cone covers, so those split
         // further; every other tile keeps the plan it would have had
         // ([`ZoomAim`]).
@@ -805,25 +797,11 @@ impl Plan {
             Some(aim) if aim.covers(key, camera) => i64::from(aim.boost),
             _ => 1,
         };
-<<<<<<< sync-sunrise-1
-        let threshold = if world {
-            split.min(i64::from(key.size()) * i64::from(WORLD_SPLIT))
-        } else {
-            split
-        } * boost;
+        let threshold = split * boost;
         // The 8 to 10 band above (scaled with it) is wide already. The ring of full detail
-        // around the camera and the world-wide threshold have none: a tile
-        // split last plan stays split until it is 5% past them, or it
-        // flickered between two levels as the camera moved a block to and
-        // fro across the line.
-=======
-        let threshold =
-            i64::from(key.size()) * i64::from(if reduced { split / 2 } else { split }) * boost;
-        // The 8 to 10 band above is wide already. The ring of full detail
         // around the camera has none: a tile split last plan stays split
         // until it is 5% past it, or it flickered between two levels as the
         // camera moved a block to and fro across the line.
->>>>>>> sunrise/main
         let hold = |bound: i64| {
             if held {
                 bound * RETURN.0 / RETURN.1
@@ -3623,45 +3601,6 @@ mod tests {
         );
     }
     #[test]
-<<<<<<< sync-sunrise-1
-    fn world_wide_plans_stay_small_and_cover_every_level() {
-        // About 10 000 nodes at a corner of the world, 9 000 at its centre.
-        const WORLD_PLAN_NODES: usize = 16_384;
-        for (camera, elevation) in [
-            ([0, 0], 0),
-            ([115, 135], 49_000_000),
-            ([-30_000_000, 29_999_000], 90),
-        ] {
-            let plan =
-                Plan::with_previous(camera, 12, MAX_CHUNKS, &Plan::default(), elevation, 0, None);
-            let reduced =
-                Plan::with_previous(camera, 12, MAX_CHUNKS, &Plan::default(), elevation, 1, None);
-            let top = plan.nodes.iter().map(|k| k.level).max().unwrap();
-            assert_eq!(top, MAX_LEVEL, "{camera:?} y={elevation}: roots stop short");
-            assert!(
-                plan.nodes.len() < WORLD_PLAN_NODES,
-                "{camera:?} y={elevation}: {} nodes",
-                plan.nodes.len()
-            );
-            assert!(
-                reduced.nodes.len() <= plan.nodes.len(),
-                "{camera:?} y={elevation}: reduced has {} nodes, full {}",
-                reduced.nodes.len(),
-                plan.nodes.len()
-            );
-            // Every level from the finest planned one up to the roots has tiles.
-            let finest = plan.nodes.iter().map(|k| k.level).min().unwrap();
-            for level in finest..=MAX_LEVEL {
-                assert!(
-                    plan.nodes.iter().any(|k| k.level == level),
-                    "{camera:?} y={elevation}: no level-{level} tile"
-                );
-            }
-        }
-    }
-    #[test]
-=======
->>>>>>> sunrise/main
     fn aerial_distance_avoids_unseen_full_detail_outside_the_near_area() {
         let ground = Plan::new([0, 0], 12, 1024);
         let high = Plan::with_previous([0, 0], 12, 1024, &Plan::default(), 1024, 0, None);

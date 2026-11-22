@@ -96,10 +96,7 @@ impl IPayloadHandler for Probe {
                     "deliberate handler error".into(),
                 ));
             }
-<<<<<<< sync-sunrise-1
-=======
             Mode::Panic => panic!("deliberate handler panic after staging"),
->>>>>>> sunrise/main
             Mode::Cancel => transport.close(),
             Mode::Reconfigure => transport.begin_configuration(),
             Mode::PublicationClosed => drop(self.receiver.lock().unwrap().take()),

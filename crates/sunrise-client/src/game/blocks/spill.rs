@@ -1004,22 +1004,6 @@ impl GameLevel<'_> {
             && mod_api::__private::listened(mod_api::HookId::BlockDrops)
             && let Ok(api_state) = state.try_into_api()
         {
-<<<<<<< sync-sunrise-1
-            let mut next_experience = experience;
-            let mut next_canceled = canceled;
-            // The block entity still standing here: a level-side break drops before it goes.
-            let block_entity = self.api_level.and_then(|level| {
-                let at = [pos.x, pos.y, pos.z];
-                let generation = self
-                    .world
-                    .block_entities
-                    .generation(&(pos.x, pos.y, pos.z))?;
-                Some(mod_api::__private::game::block_entity_ref(
-                    level, at, generation,
-                ))
-            });
-            self.native_block_drops(crate::game::native_hooks::BlockDropsCall {
-=======
             let tool_metadata = tool.and_then(|stack| {
                 if stack.count == 0 || &*stack.item == "minecraft:air" {
                     return None;
@@ -1053,18 +1037,10 @@ impl GameLevel<'_> {
                 items_registry: self.items,
             };
             self.native_block_drops(mod_api::__private::BlockDropsCall {
->>>>>>> sunrise/main
                 dimension: self.dimension,
                 pos,
                 state: api_state,
                 breaker,
-<<<<<<< sync-sunrise-1
-                block_entity,
-                tool,
-                drops: &mut snapshots,
-                experience: &mut next_experience,
-                cancel: &mut next_canceled,
-=======
                 breaker_entity,
                 block_entity: block_entity_ref,
                 block_entity_data,
@@ -1072,7 +1048,6 @@ impl GameLevel<'_> {
                 drops: mod_api::PreparedBlockDrops::new(&mut drops_access),
                 experience: &mut experience,
                 cancel: &mut canceled,
->>>>>>> sunrise/main
             });
         }
         if canceled || !self.rules.block_drops {
@@ -1360,57 +1335,8 @@ impl GameLevel<'_> {
         &mut self,
         pos: BlockPos,
         old: BlockStateId,
-<<<<<<< sync-sunrise-1
-        side_effects: bool,
-    ) -> bool {
-        use sunrise_core::nbt::Tag;
-        let chunk_key = (pos.x >> 4, pos.z >> 4);
-        let at = |t: &Tag| {
-            let int = |k: &str| match t.get(k) {
-                Some(Tag::Int(v)) => Some(*v),
-                _ => None,
-            };
-            int("x") == Some(pos.x) && int("y") == Some(pos.y) && int("z") == Some(pos.z)
-        };
-        let Some(chunk) = self.world.chunks.get_mut(&chunk_key) else {
-            return false;
-        };
-        let Some(saved) = chunk.saved.as_ref() else {
-            return false;
-        };
-        let Some(index) = saved.block_entities.iter().position(at) else {
-            return false;
-        };
-        let chunk = std::sync::Arc::make_mut(chunk);
-        let Some(saved) = chunk.saved.as_mut() else {
-            return false;
-        };
-        let tag = std::sync::Arc::make_mut(saved).block_entities.remove(index);
-        if !side_effects {
-            return true;
-        }
-        // A content mod's machine: everything it holds (ItemHelper.dropContents).
-        if super::machine_entities::is_machine_tag(&tag) {
-            for stack in super::machine_entities::held_items(&tag) {
-                self.drop_item_stack(pos, stack);
-            }
-            // A bearing's contraption: its blocks, as their items.
-            if let Some(c) = tag.get("Contraption") {
-                let c = super::bearings::Contraption::read(c, self.registry);
-                for (_, state) in c.blocks {
-                    let item = self.facts.get(state).item.clone();
-                    if &*item != "minecraft:air" {
-                        let stack = sunrise_client::items::ItemStack::new(&item, 1);
-                        self.drop_item_stack(pos, Some(stack));
-                    }
-                }
-            }
-            return true;
-        }
-=======
         tag: sunrise_core::nbt::Tag,
     ) {
->>>>>>> sunrise/main
         let name = self.facts.get(old).name.clone();
         let items = match removal::pre_remove(&name) {
             PreRemove::Contents { slots, .. } if &*name == "minecraft:decorated_pot" => {

@@ -16,14 +16,6 @@ use sunrise_client::{
     particles::{ParticleOptions, ParticleType},
     projectiles::{Projectile, ProjectileKind},
 };
-<<<<<<< sync-sunrise-1
-use mod_api::SoundSource;
-// Starling: the old name mods made for the old hooks use (native_compat.rs).
-#[allow(unused_imports)]
-pub use sunrise_client::starling_mod_api::NativeDispensed;
-// Its old home, for mixin code that names it here.
-=======
->>>>>>> sunrise/main
 use sunrise_core::{
     geometry::{Aabb, Direction, Vec3},
     position::BlockPos,

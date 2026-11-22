@@ -1,10 +1,7 @@
 //! Serializer/type separation and fatal resolution after conditions.
 use super::*;
-/// A file whose serializer no mod registered is left out and the rest load (vanilla's
-/// RecipeManager; ProjectE's assets without projecte_core used to take every recipe down), and
-/// its conditions still run first.
 #[test]
-fn unregistered_serializer_leaves_its_recipe_out_after_conditions() {
+fn unregistered_serializer_refuses_whole_load_after_false_conditions() {
     let root = tempfile::tempdir().unwrap();
     let folder = root.path().join("data/minecraft/recipe");
     std::fs::create_dir_all(&folder).unwrap();
@@ -17,23 +14,13 @@ fn unregistered_serializer_leaves_its_recipe_out_after_conditions() {
     .unwrap();
     let items = Items::for_tests(Default::default());
     let load = crate::test_resources::server_load();
-    let recipes = Recipes::load(root.path(), &items, &PackOverlay::NONE, &load).unwrap();
-    assert_eq!(recipes.crafting.len(), 1);
+    let error = Recipes::load(root.path(), &items, &PackOverlay::NONE, &load)
+        .err()
+        .unwrap()
+        .to_string();
     assert_eq!(
-<<<<<<< sync-sunrise-1
-        recipes.by_type["minecraft:crafting"][0].id,
-        "minecraft:valid"
-    );
-    assert!(
-        recipes
-            .by_type
-            .values()
-            .flat_map(|recipes| recipes.iter())
-            .all(|recipe| recipe.id != "minecraft:unknown")
-=======
         error,
         "2 recipes failed to load:\n  recipes: data/minecraft/recipe/known_bad.json refused: invalid result: {\"count\":100,\"id\":\"minecraft:stick\"}\n  recipe data/minecraft/recipe/unknown.json, unregistered recipe serializer absent:serializer"
->>>>>>> sunrise/main
     );
     std::fs::write(
         folder.join("unknown.json"),
@@ -135,7 +122,7 @@ fn read_only_machine_serializer_reports_separate_type_without_crafting() {
 }
 
 #[test]
-fn unknown_serializer_leaves_the_recipe_out_before_its_ingredient_is_read() {
+fn unknown_serializer_refuses_before_unclaimed_ingredient_is_dropped() {
     mod_platform::testing::with_mods(Vec::new().into(), || {
         let file: Value = serde_json::from_str(
             r#"{"type":"minecraft:future_serializer","ingredient":{"type":"absent:ingredient"}}"#,
@@ -143,10 +130,6 @@ fn unknown_serializer_leaves_the_recipe_out_before_its_ingredient_is_read() {
         .unwrap();
         let sources = vec![("minecraft:future".into(), file)];
         let context = crate::test_resources::server_load();
-<<<<<<< sync-sunrise-1
-        let resolved = ResolvedSources::resolve(sources.clone(), &context).unwrap();
-        assert!(resolved.recipes.is_empty());
-=======
         let error = ResolvedSources::resolve(sources.clone(), &Items::empty(), &context)
             .err()
             .unwrap()
@@ -155,19 +138,14 @@ fn unknown_serializer_leaves_the_recipe_out_before_its_ingredient_is_read() {
             error,
             "1 recipe failed to load:\n  recipe data/minecraft/recipe/future.json, unregistered recipe serializer minecraft:future_serializer"
         );
->>>>>>> sunrise/main
         let root = tempfile::tempdir().unwrap();
-        let recipes = Recipes::from_sources(
+        let error = Recipes::from_sources(
             root.path(),
             &Items::empty(),
             &PackOverlay::NONE,
             sources,
             &context,
         )
-<<<<<<< sync-sunrise-1
-        .unwrap();
-        assert!(recipes.by_type.is_empty());
-=======
         .err()
         .unwrap()
         .to_string();
@@ -175,7 +153,6 @@ fn unknown_serializer_leaves_the_recipe_out_before_its_ingredient_is_read() {
             error,
             "1 recipe failed to load:\n  recipe data/minecraft/recipe/future.json, unregistered recipe serializer minecraft:future_serializer"
         );
->>>>>>> sunrise/main
     });
 }
 

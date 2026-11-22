@@ -306,19 +306,7 @@ mod tests {
                 resource: globals_buffer.as_entire_binding(),
             }],
         });
-<<<<<<< sync-sunrise-1
-        let frame = NativeFrame::new(
-            &device,
-            None,
-            Vec::new(),
-            Default::default(),
-            None,
-            (sunrise_shader_api::Api::V0_1, false),
-            None,
-        );
-=======
         let frame = frame(&device);
->>>>>>> sunrise/main
         queue.write_buffer(
             &frame.buffer,
             0,

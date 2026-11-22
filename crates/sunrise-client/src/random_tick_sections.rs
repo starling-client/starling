@@ -133,8 +133,15 @@ struct ChunkPositions {
 /// ([`Self::may_tick`]) follow sections the same way.
 #[derive(Default)]
 pub struct RandomTickSections {
-<<<<<<< sync-sunrise-1
-    chunks: FxHashMap<(i32, i32), Cached>,
+    /// Where each chunk's entry is in `entries`.
+    keys: FxHashMap<(i32, i32), usize>,
+    /// The per-chunk answers, in the order `keys` hands them out. An index
+    /// stays valid while the chunk is loaded, so the next call for the same
+    /// chunk skips the map.
+    entries: Vec<Option<Cached>>,
+    free: Vec<usize>,
+    /// The chunk last asked for, so its sections don't each pay a map lookup.
+    last: Option<((i32, i32), usize)>,
     positions: Vec<ChunkPositions>,
     position_index: FxHashMap<(i32, i32), usize>,
     /// The chunk of the last [`Self::may_tick`]: a chunk's picks come in a row.
@@ -142,13 +149,22 @@ pub struct RandomTickSections {
 }
 impl RandomTickSections {
     pub fn clear(&mut self) {
-        self.chunks.clear();
+        self.keys.clear();
+        self.entries.clear();
+        self.free.clear();
         self.positions.clear();
         self.position_index.clear();
         self.last = None;
     }
     pub fn remove(&mut self, key: &(i32, i32)) {
-        self.chunks.remove(key);
+        let Some(index) = self.keys.remove(key) else {
+            return;
+        };
+        self.entries[index] = None;
+        self.free.push(index);
+        if self.last.is_some_and(|(last, _)| last == *key) {
+            self.last = None;
+        }
         if let Some(i) = self.position_index.remove(key) {
             self.positions.swap_remove(i);
             if let Some(moved) = self.positions.get(i) {
@@ -220,34 +236,6 @@ impl RandomTickSections {
             && positions.sections[s]
                 .as_ref()
                 .is_some_and(|p| p.bits[i / 64] & 1 << (i % 64) != 0)
-=======
-    /// Where each chunk's entry is in `entries`.
-    keys: FxHashMap<(i32, i32), usize>,
-    /// The per-chunk answers, in the order `keys` hands them out. An index
-    /// stays valid while the chunk is loaded, so the next call for the same
-    /// chunk skips the map.
-    entries: Vec<Option<Cached>>,
-    free: Vec<usize>,
-    /// The chunk last asked for, so its sections don't each pay a map lookup.
-    last: Option<((i32, i32), usize)>,
-}
-impl RandomTickSections {
-    pub fn clear(&mut self) {
-        self.keys.clear();
-        self.entries.clear();
-        self.free.clear();
-        self.last = None;
-    }
-    pub fn remove(&mut self, key: &(i32, i32)) {
-        let Some(index) = self.keys.remove(key) else {
-            return;
-        };
-        self.entries[index] = None;
-        self.free.push(index);
-        if self.last.is_some_and(|(last, _)| last == *key) {
-            self.last = None;
-        }
->>>>>>> sunrise/main
     }
     /// The sections of `chunk` holding a randomly ticking block or fluid.
     pub fn get(&mut self, key: (i32, i32), chunk: &Arc<Chunk>, facts: &BlockFacts) -> Sections {

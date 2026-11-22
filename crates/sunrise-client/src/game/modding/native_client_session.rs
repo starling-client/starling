@@ -3,15 +3,11 @@
 use super::{Game, remote::Remote};
 #[cfg(test)]
 use mod_api::prelude::*;
-<<<<<<< sync-sunrise-1
 use mod_api::{
     BlockBreakingState, BlockPos, ClientFrameStats, ClientServer, ClientTabList,
     ClientTabListEntry, PlayerRef,
 };
-=======
-use mod_api::{BlockBreakingState, BlockPos, ClientFrameStats, ClientServer, PlayerRef};
 use std::sync::Arc;
->>>>>>> sunrise/main
 
 impl Game<'_> {
     pub(super) fn native_session(&self) -> Option<&Remote> {

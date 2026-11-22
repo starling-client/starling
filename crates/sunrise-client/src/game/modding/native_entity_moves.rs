@@ -218,14 +218,6 @@ impl Game<'_> {
         }
         Some(0.0)
     }
-<<<<<<< sync-sunrise-1
-    /// A mob's body yaw (`LivingEntity.yBodyRot`); None for any other kind.
-    pub(super) fn entity_body_yaw(&self, entity: EntityRef) -> Option<f32> {
-        let Target::Mob(id) = self.native_entity_target(entity)? else {
-            return None;
-        };
-        Some(self.mobs.iter().find(|m| m.id == id)?.body_yaw)
-=======
     /// The yaw of the entity's body (`LivingEntity.yBodyRot`) in degrees as
     /// vanilla keeps it, not normalized: mobs only, None for players and every
     /// other kind, and for a stale handle.
@@ -236,7 +228,6 @@ impl Game<'_> {
             Target::Dragon(_) => Some(self.native_dragon(entity)?.yaw),
             _ => None,
         }
->>>>>>> sunrise/main
     }
     /// Turns a mob's head to `yaw` (`Entity.setYHeadRot`); its body follows
     /// as its AI turns it. Players' heads can turn too; false for other kinds

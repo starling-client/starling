@@ -109,57 +109,6 @@ use sunrise_core::{
     ticks::{ScheduleResult, TickPriority},
 };
 use sunrise_world::level::{BonemealCheck, PlaceContext};
-<<<<<<< sync-sunrise-1
-use mod_api::CommandSource;
-use mod_api::GameMode;
-use mod_api::GameTests;
-pub use mod_api::game::{PhantomSpawnResult, Shake, SleepProblem};
-// Starling: the old names mods made for the old hooks use (game/starling/native_compat.rs).
-#[allow(unused_imports)]
-pub(crate) use super::native_compat::NativeRecipeViewOld;
-#[allow(unused_imports)]
-pub use sunrise_client::starling_mod_api::{
-    NativeCommand, NativeDispensed, NativeLifecycleContext, NativeMinimap, NativeMod,
-    NativePanelEvent, NativeScreenView, NativeServerPlayer, NativeShake, NativeStack, NativeZoom,
-};
-use mod_api::{
-    self, Answered, BlockPlacement, BlockTintSources, CameraDrawContext, CauldronFluidContents,
-    CauldronInteractions, ClientAudioOptions, ClientChatOptions, ClientGraphicsOptions,
-    ClientGuiOptions, ClientInputOptions, ClientMiningPrediction, ClientModifiers,
-    ClientReloadListeners, ColorResolvers, CommandInvocation, EnchantmentDamageEffects,
-    EnchantmentInfo, EntityLayers, EntityRef, EntityRenderers, GameRuleActor, HandRender,
-    InsideEffects, InteractionAttempt, InteractionKey, ItemEntityRef, JsonAnimationType,
-    LayerDefinition, LifecycleContext, LivingRef, LoadConditions, NoteBlockChange,
-    ParticleProviders, PathComputationType, Placement, PlayerRef, PoiTypeExtensions,
-    RecipeBookCategory, ScreenId, ScreenOpening, ScreenshotImage, ServerReloadListeners,
-    ServerTickPhase, SpecialModelRenderers, TicketController, ToolUse, VillagerProfessions,
-    WorldPhase,
-};
-use mod_api::{
-    ActiveEffect, AttachmentStore, BlockClick, BlockUpdateFlags, BonemealSource, ChunkRef,
-    FluidStack, ItemClick, ItemDrop, LevelRef, LogicalSide, NeighbourUpdate, TooltipElement,
-    TriState, UsePhase,
-};
-use mod_api::{
-    BlockKey, DebugEntry, DebugRenderer, EffectKey, GuiLayer, HiddenParts, MapDecorationType,
-    ParticleGroup, PosedParts, RuntimeSprite, SkullModel, TaskId, TextureAtlasRegistration,
-};
-pub(crate) use mod_api::{
-    BlockRim, ClientPacket, ClientPayload, ColoredLight, ContainerLootFilled, ExplosionStart,
-    ItemFished, LootDrops, PanelEvent, PortalShape, ScreenView,
-};
-use mod_api::{
-    CameraType, Despawn, Identifier, MobRef, PermissionLevel, RailShape, SoundPlay, SoundRef,
-};
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
-=======
->>>>>>> sunrise/main
 use winit::{event::MouseButton, keyboard::KeyCode};
 use {
     sunrise_core::{

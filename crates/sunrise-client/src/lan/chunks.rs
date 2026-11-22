@@ -30,10 +30,6 @@ const NON_AIR: u8 = 1;
 const FLUID: u8 = 2;
 const ENTITY: u8 = 4;
 
-/// Starling: the block entity type a content mod's machine is sent as. No vanilla type has it
-/// (vanilla has fewer than a hundred); only a Starling with the same mods joins such a world.
-pub const MACHINE_ENTITY_TYPE: i32 = 4000;
-
 /// A mod block entity's update tag (`BlockEntity.getUpdateTag`), what
 /// clients get of it; none sends no tag.
 pub type ModUpdateTag = fn([i32; 3], &ModBlockEntity) -> Option<Compound>;
@@ -134,7 +130,6 @@ pub struct ChunkEncoder {
 }
 
 /// Per-state flags and biome ids: all a section's encoding reads.
-#[derive(Clone)]
 struct SectionCoder {
     flags: Vec<u8>,
     /// Network biome id per internal biome index.
@@ -878,32 +873,6 @@ impl ChunkEncoder {
             }
         }
     }
-<<<<<<< sync-sunrise-1
-    /// Whether the state holds a fluid (water, lava, or a waterlogged block).
-    pub fn has_fluid(&self, state: u32) -> bool {
-        self.coder
-            .flags
-            .get(state as usize)
-            .is_some_and(|f| f & FLUID != 0)
-    }
-    /// Starling: these states (content mods' machines, kinetics.rs) keep block entities, sent as
-    /// [`MACHINE_ENTITY_TYPE`] with the tag the world keeps for them.
-    pub fn mark_machines(&mut self, states: impl IntoIterator<Item = u32>) {
-        let coder = Arc::make_mut(&mut self.coder);
-        for state in states {
-            let i = state as usize;
-            if let (Some(t), Some(f)) = (self.entity_types.get_mut(i), coder.flags.get_mut(i)) {
-                *t = MACHINE_ENTITY_TYPE;
-                *f |= ENTITY;
-            }
-        }
-        self.cache
-            .get_mut()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-    }
-=======
->>>>>>> sunrise/main
     pub fn is_air(&self, state: u32) -> bool {
         self.coder
             .flags
@@ -1288,7 +1257,6 @@ impl ChunkEncoder {
                     tag: entity
                         .and_then(|e| self.update_tag(pos, state, e))
                         .or_else(|| pot_tag(chunk, pos))
-                        .or_else(|| machine_tag(chunk, pos))
                         .filter(|t| !matches!(t, Tag::Compound(c) if c.is_empty()))
                         .unwrap_or(Tag::End),
                 });
@@ -1532,31 +1500,6 @@ pub fn entity_tag(
 
 /// The update tag of the decorated pot at `pos` (DecoratedPotBlockEntity.getUpdateTag,
 /// saveCustomOnly). A pot is not a block entity here: its tag is the chunk's saved one.
-/// Starling: a content mod's machine's block entity as the chunk keeps it (its id is its
-/// block's), all but its position, which the packet has.
-pub fn machine_tag(chunk: &Chunk, pos: (i32, i32, i32)) -> Option<Tag> {
-    let at = chunk.saved.as_ref()?.block_entities.iter().find(|t| {
-        t.get("x") == Some(&Tag::Int(pos.0))
-            && t.get("y") == Some(&Tag::Int(pos.1))
-            && t.get("z") == Some(&Tag::Int(pos.2))
-    })?;
-    let id = match at.get("id") {
-        Some(Tag::String(id)) => id.to_string_lossy(),
-        _ => return None,
-    };
-    let Tag::Compound(fields) = at else {
-        return None;
-    };
-    if id.starts_with("minecraft:") {
-        return None;
-    }
-    let mut fields = fields.clone();
-    for k in ["x", "y", "z"] {
-        fields.remove(&sunrise_core::nbt::JavaString::from(k));
-    }
-    Some(Tag::Compound(fields))
-}
-
 pub fn pot_tag(chunk: &Chunk, pos: (i32, i32, i32)) -> Option<Tag> {
     let at = chunk.saved.as_ref()?.block_entities.iter().find(|t| {
         t.get("id") == Some(&Tag::String("minecraft:decorated_pot".into()))

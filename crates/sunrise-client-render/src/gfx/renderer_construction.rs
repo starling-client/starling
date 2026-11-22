@@ -26,6 +26,17 @@ impl Renderer {
         request: output::FrameRequest,
         display: output::DisplayReading,
     ) -> Result<Self> {
+        // The window is in the background (Android) while this replaces a renderer that let its
+        // surface go (`suspend`): no surface can be made on it now ("the underlying handle is not
+        // available", a fatal error when loading ended in the background). This one starts
+        // suspended too, with the previous one's window format, and makes its surface on `resume`
+        // (as an offscreen renderer never would).
+        // So is one made on the loading screen's device, whose surface the loading screen keeps
+        // drawing on until the handover (`adopt_surface`).
+        let waits_for_window = !offscreen
+            && (boot.is_some()
+                || previous
+                    .is_some_and(|p| p.suspended && p.surface.is_none() && p.offscreen.is_none()));
         let Opened {
             instance,
             surface,
@@ -34,39 +45,43 @@ impl Renderer {
             queue,
             device_lost,
             configured,
-        } = match previous {
-            // Reload resources on the same device; replacing live Vulkan
-            // devices can invalidate the driver's swapchain state on the same
-            // window.
-            Some(renderer) => {
-                describe_adapter(&renderer.adapter);
-                check_layers(&renderer.adapter, layers)?;
-                Opened {
-                    surface: if offscreen {
-                        None
-                    } else {
-                        let spare = renderer
-                            .spare_surface
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take();
-                        Some(match spare {
-                            Some(surface) => surface,
-                            None => renderer.instance.create_surface(window.clone())?,
-                        })
-                    },
-                    instance: renderer.instance.clone(),
-                    adapter: renderer.adapter.clone(),
-                    device: renderer.device.clone(),
-                    queue: renderer.queue.clone(),
-                    device_lost: renderer.device_lost.clone(),
-                    configured: None,
+        } = match boot {
+            // Opened by `open_device` too, with the window's configuration and capabilities.
+            Some(boot) => boot.into_opened(),
+            None => match previous {
+                // Reload resources on the same device; replacing live Vulkan
+                // devices can invalidate the driver's swapchain state on the same
+                // window.
+                Some(renderer) => {
+                    describe_adapter(&renderer.adapter);
+                    check_layers(&renderer.adapter, layers)?;
+                    Opened {
+                        surface: if offscreen || waits_for_window {
+                            None
+                        } else {
+                            let spare = renderer
+                                .spare_surface
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .take();
+                            Some(match spare {
+                                Some(surface) => surface,
+                                None => renderer.instance.create_surface(window.clone())?,
+                            })
+                        },
+                        instance: renderer.instance.clone(),
+                        adapter: renderer.adapter.clone(),
+                        device: renderer.device.clone(),
+                        queue: renderer.queue.clone(),
+                        device_lost: renderer.device_lost.clone(),
+                        configured: None,
+                    }
                 }
-            }
-            None => {
-                let _step = crate::spans::startup::step("renderer.open_device");
-                open_device(&window, offscreen, api, layers).await?
-            }
+                None => {
+                    let _step = crate::spans::startup::step("renderer.open_device");
+                    open_device(&window, offscreen, api, layers).await?
+                }
+            },
         };
         // Computed once: the sprite arrays, the shaders' constants and the
         // shader pack atlas all cut the sprites by it.
@@ -88,8 +103,20 @@ impl Renderer {
                 previous.map(|renderer| renderer.config.present_mode),
                 previous.is_none(),
             )?),
-            (None, _) => None,
+            // The window's own configuration, as the loading screen made it (`Lent`).
+            (None, configured) => configured.filter(|_| waits_for_window),
         };
+        // Until its first frame the window shows what was behind it (on Android, the
+        // launcher through the app's empty window): clear it now, before the pipelines
+        // take their few hundred milliseconds. Its own step: a driver that dies here
+        // (PowerVR Rogue's, in this first submit) is told apart from one that dies
+        // configuring.
+        if previous.is_none()
+            && let (Some(surface), Some((config, _))) = (&surface, &configured)
+        {
+            startup_step(format_args!("clearing the window"));
+            clear_surface(&device, &queue, surface, config.format);
+        }
         let (config, present_modes, hdr_output) = if let Some((config, caps)) = configured {
             let hdr_output = hdr::output(&caps);
             if previous.is_none() {
@@ -99,6 +126,13 @@ impl Renderer {
                 );
             }
             (config, caps.present_modes, hdr_output)
+        } else if let Some(previous) = previous.filter(|_| waits_for_window) {
+            // The window's own format, as the previous renderer configured it.
+            (
+                previous.config.clone(),
+                previous.present_modes.clone(),
+                previous.output_caps.hdr,
+            )
         } else {
             let format = wgpu::TextureFormat::Bgra8Unorm;
             let config = wgpu::SurfaceConfiguration {
@@ -125,8 +159,7 @@ impl Renderer {
             }
             (config, Vec::new(), hdr_output)
         };
-        let offscreen = surface
-            .is_none()
+        let offscreen = (surface.is_none() && !waits_for_window)
             .then(|| Self::offscreen_target(&device, &config));
         let wide_ok = draws_wide_frame(
             device.features(),
@@ -143,7 +176,8 @@ impl Renderer {
             adapter.get_downlevel_capabilities().flags,
             adapter.get_texture_format_features(hud_coverage::FORMAT),
         );
-        let hdr_driver = surface.is_some().then(|| output::window_driver(&info));
+        let hdr_driver =
+            (surface.is_some() || waits_for_window).then(|| output::window_driver(&info));
         let output_caps = output::OutputCapabilities {
             hdr: hdr_output,
             wide_frame: wide_ok,
@@ -165,10 +199,14 @@ impl Renderer {
         let kept = reuse.on(&device);
         let pipelines_step = crate::spans::startup::step("renderer.pipelines_textures");
         let terrain_step = crate::spans::startup::step("renderer.terrain_pipelines");
+        let gl = adapter.get_info().backend == wgpu::Backend::Gl;
         let gpu_timer = timing::GpuTimer::new(&device, &queue);
         let shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sunrise terrain"),
-            source: wgpu::ShaderSource::Wgsl(terrain_shader().into()),
+            source: wgpu::ShaderSource::Wgsl(
+                (include_str!("hdr_light.wgsl").to_owned() + &terrain_source::terrain_shader(gl))
+                    .into(),
+            ),
         });
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
             binding,
@@ -190,63 +228,75 @@ impl Renderer {
             ("SPRITE_ARRAYS", f64::from(sprite_arrays)),
             ("SPRITE_SPLIT", f64::from(split)),
         ];
+        let mut terrain_entries = vec![
+            entry(
+                0,
+                vf,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+            ),
+            entry(
+                1,
+                vf,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+            ),
+            entry(
+                1 + 1,
+                vf,
+                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            ),
+            entry(
+                3,
+                vf,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+            ),
+            entry(
+                4,
+                vf,
+                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            ),
+            entry(5, vf, sprite_array),
+            entry(6, vf, sprite_array),
+            entry(7, vf, sprite_array),
+            entry(8, vf, sprite_array),
+            entry(9, vf, sprite_array),
+            entry(10, vf, sprite_array),
+            entry(11, vf, sprite_array),
+            entry(
+                12,
+                vf,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+            ),
+        ];
+        if gl {
+            terrain_entries.push(entry(
+                13,
+                wgpu::ShaderStages::VERTEX,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+            ));
+        }
         let bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Sunrise terrain bindings"),
-            entries: &[
-                entry(
-                    0,
-                    vf,
-                    wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                ),
-                entry(
-                    1,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    1 + 1,
-                    vf,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
-                entry(
-                    3,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    4,
-                    vf,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
-                entry(5, vf, sprite_array),
-                entry(6, vf, sprite_array),
-                entry(7, vf, sprite_array),
-                entry(8, vf, sprite_array),
-                entry(9, vf, sprite_array),
-                entry(10, vf, sprite_array),
-                entry(11, vf, sprite_array),
-                entry(
-                    12,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-            ],
+            entries: &terrain_entries,
         });
         let layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Sunrise terrain layout"),
@@ -460,22 +510,27 @@ impl Renderer {
         // `solid` in two passes (terrain.wgsl's `opaque_quad`, `mesher::Part`), for the
         // world pass without a shader pack: no cutout first, through a shader that never
         // discards, then the rest.
-        let solid_opaque = solid_in(
-            &layout,
-            "Terrain solid opaque",
-            "vs_terrain_opaque",
-            "fs_opaque",
-            &terrain_buffers,
-            wgpu::Face::Back,
-        );
-        let solid_cutout = solid_in(
-            &layout,
-            "Terrain solid cutout",
-            "vs_terrain_cutout",
-            "fs_solid",
-            &terrain_buffers,
-            wgpu::Face::Back,
-        );
+        let split_terrain = splits_solid(&adapter.get_info());
+        let solid_split = split_terrain.then(|| {
+            (
+                solid_in(
+                    &layout,
+                    "Terrain solid opaque",
+                    "vs_terrain_opaque",
+                    "fs_opaque",
+                    &terrain_buffers,
+                    wgpu::Face::Back,
+                ),
+                solid_in(
+                    &layout,
+                    "Terrain solid cutout",
+                    "vs_terrain_cutout",
+                    "fs_solid",
+                    &terrain_buffers,
+                    wgpu::Face::Back,
+                ),
+            )
+        });
         // The water mirror's camera sees the world from the other side of the plane, and a
         // mirrored world view's picture is flipped (`world_views::Flipped`): each turns the
         // winding round, so their terrain culls the front.
@@ -702,6 +757,8 @@ impl Renderer {
         let overlay_crosshair =
             (overlay_format != frame_format || linear_light).then(|| crosshair(false));
         drop(terrain_step);
+        // The block sprites' arrays, the GUI atlas and the HUD's pipelines.
+        let textures_step = crate::spans::startup::step("renderer.textures_hud");
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Sunrise globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -881,7 +938,9 @@ impl Renderer {
             ..Default::default()
         });
         let emission_stats =
-            hdr_stats::EmissionStats::new(&device, split, sprite_textures.len() as u32);
+            hdr_stats::EmissionStats::new(&device, split, sprite_textures.len() as u32, gl);
+        let emissive_lookup = gl.then(|| emissive_lookup::Lookup::new(&device));
+        let emissive_view = emissive_lookup.as_ref().map(|lookup| &lookup.view);
         let group = terrain_group(
             &device,
             "Sunrise terrain resources",
@@ -892,6 +951,7 @@ impl Renderer {
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
+            emissive_view,
         );
         let fluid_sampler = device.create_sampler(&fluid::SAMPLER);
         let fluid_group = terrain_group(
@@ -916,6 +976,7 @@ impl Renderer {
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
+            emissive_view,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -927,6 +988,7 @@ impl Renderer {
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
+            emissive_view,
         );
         let mirror_group = terrain_group(
             &device,
@@ -938,6 +1000,7 @@ impl Renderer {
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
+            emissive_view,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -1065,14 +1128,23 @@ impl Renderer {
             hud_coverage,
         )?;
         hud.atlas_texture = Some(atlas.clone());
+        drop(textures_step);
         let entity_step = crate::spans::startup::step("renderer.entity_pipelines");
         let entity_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sunrise entities"),
-            source: wgpu::ShaderSource::Wgsl(entity_shader().into()),
+            source: wgpu::ShaderSource::Wgsl(if gl {
+                entity_source::legacy_overlay(&entity_shader()).into()
+            } else {
+                entity_shader().into()
+            }),
         });
         let static_entity_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sunrise static block entities"),
-            source: wgpu::ShaderSource::Wgsl(static_entity_shader().into()),
+            source: wgpu::ShaderSource::Wgsl(if gl {
+                entity_source::legacy_overlay(&static_entity_shader()).into()
+            } else {
+                static_entity_shader().into()
+            }),
         });
         let entity_bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Entity bindings"),
@@ -1951,9 +2023,9 @@ impl Renderer {
             .flags
             .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
         let flat_wanted = flat::wanted(&adapter, &device);
-        // Metal draws solid terrain in two passes (`split_solid`): meshes put all
+        // Metal and phones draw solid terrain in two passes (`splits_solid`): meshes put all
         // their opaque quads first, so each pass draws its part in a run or two.
-        crate::mesher::group_parts(adapter.get_info().backend == wgpu::Backend::Metal);
+        crate::mesher::group_parts(splits_solid(&adapter.get_info()));
         // Readable as storage where flat draws run: a shader pack's terrain program reads them.
         let arena = arena::Arena::new(
             &device,
@@ -1975,11 +2047,12 @@ impl Renderer {
             let min_sections = if flat::is_broken_intel_vulkan(&info)
                 || flat::is_adreno_dx12(&info)
                 || info.backend == wgpu::Backend::Metal
+                || flat::is_powervr_vulkan(&info)
                 || std::env::var("SUNRISE_FLAT_DRAWS").as_deref() == Ok("1")
             {
                 0
             } else if flat::for_vanilla(&info) {
-                flat::MIN_SECTIONS
+                flat::vanilla_min_sections(&info)
             } else {
                 // Only a shader pack's terrain and shadow pass draw flat here.
                 usize::MAX
@@ -2005,7 +2078,7 @@ impl Renderer {
         // With flat draws' page groups the per-section solid draws read their vertices from
         // the page too (`Flat::page_group`), in either layout of the solid quads
         // (`mesher::packed`): only the origins stay a vertex buffer, at slot 1.
-        let (solid, solid_opaque, solid_cutout, solid_mirror, flipped) = match &flat {
+        let (solid, solid_split, solid_mirror, flipped) = match &flat {
             Some(f) => {
                 let pulled_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Sunrise terrain layout (pulled)"),
@@ -2019,18 +2092,22 @@ impl Renderer {
                 let (back, front) = (wgpu::Face::Back, wgpu::Face::Front);
                 (
                     solid("Terrain solid", "vs_section", "fs_solid", back),
-                    solid(
-                        "Terrain solid opaque",
-                        "vs_section_opaque",
-                        "fs_opaque",
-                        back,
-                    ),
-                    solid(
-                        "Terrain solid cutout",
-                        "vs_section_cutout",
-                        "fs_solid",
-                        back,
-                    ),
+                    split_terrain.then(|| {
+                        (
+                            solid(
+                                "Terrain solid opaque",
+                                "vs_section_opaque",
+                                "fs_opaque",
+                                back,
+                            ),
+                            solid(
+                                "Terrain solid cutout",
+                                "vs_section_cutout",
+                                "fs_solid",
+                                back,
+                            ),
+                        )
+                    }),
                     pipeline_in(
                         &pulled_layout,
                         "Terrain solid (mirrored)",
@@ -2046,7 +2123,7 @@ impl Renderer {
                     solid("Terrain solid (flipped)", "vs_section", "fs_solid", front),
                 )
             }
-            None => (solid, solid_opaque, solid_cutout, solid_mirror, flipped),
+            None => (solid, solid_split, solid_mirror, flipped),
         };
         // The solid quads in the compact layout where every pass reads it; the first world
         // frames settle it for the picked pack (`follow_packed_layout`).
@@ -2067,11 +2144,16 @@ impl Renderer {
                     &sprite_constants,
                 )
             });
-        let multi_draw = device
+        let base_vertex = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::BASE_VERTEX);
+        let indirect_capable = device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
             && indirect_execution;
-        let batchable = translucent_batchable(&adapter.get_info(), multi_draw);
+        let multi_draw = indirect_capable && indirect_draws_wanted();
+        let batchable = translucent_batchable(&adapter.get_info(), indirect_capable);
         crate::graphics::offer_translucent_batching(batchable);
         let translucent_batching = batchable && translucent_batching;
         let gpu_culling_offer = gpu_culling::offer(
@@ -2108,6 +2190,70 @@ impl Renderer {
         if let (Some(flat), Some(arena)) = (&mut flat, &translucent_arena) {
             flat.set_translucent_page_vertices(arena.page_vertices());
         }
+        let make_solid_paths = |constants: &[(&str, f64)], cutout_fragment: &str| {
+            adreno::adreno_vulkan(&adapter.get_info())
+                .then(|| {
+                    solid_paths::SolidPaths::new(
+                        &adreno::TerrainModule {
+                            kept: &kept,
+                            shader: &shader,
+                            format: frame_format,
+                            constants,
+                        },
+                        cutout_fragment,
+                        &bindings,
+                        &layout,
+                        flat.as_ref().map(|flat| &flat.draw_layout),
+                        &terrain_buffers,
+                        // With flat draws the solid draws read the pages, as `solid_opaque` above.
+                        flat.is_some(),
+                    )
+                })
+                .flatten()
+        };
+        let solid_paths = make_solid_paths(&sprite_constants, "fs_cutout_static");
+        let solid_paths_sdr = make_solid_paths(&plain_constants, "fs_cutout_static_sdr");
+        let solid_settled_single = (cfg!(target_os = "android")
+            && info.backend == wgpu::Backend::Vulkan
+            && info.vendor == 0x13b5
+            && !splits_solid(&info))
+        .then(|| {
+            let constants = [
+                plain_constants[0],
+                plain_constants[1],
+                plain_constants[2],
+                ("SETTLED_TERRAIN", 1.0),
+            ];
+            let terrain = adreno::TerrainModule {
+                kept: &kept,
+                shader: &shader,
+                format: frame_format,
+                constants: &constants,
+            };
+            let pulled_layout = flat.as_ref().map(|flat| {
+                kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Settled terrain layout (pulled)"),
+                    bind_group_layouts: &[Some(&bindings), Some(&flat.draw_layout)],
+                    ..Default::default()
+                })
+            });
+            let origins = [None, terrain_buffers[1].clone()];
+            let (layout, vertex, buffers) = match pulled_layout.as_ref() {
+                Some(layout) => (layout, "vs_section", origins.as_slice()),
+                None => (&layout, "vs_terrain", terrain_buffers.as_slice()),
+            };
+            terrain.pipeline(
+                layout,
+                "Settled terrain single pass",
+                vertex,
+                "fs_cutout_static",
+                buffers,
+                Some(wgpu::Face::Back),
+                true,
+                None,
+            )
+        })
+        .flatten();
         // Without indirect draws (OpenGL before 4.0 without indirect execution, or
         // before 4.2 + GL_ARB_shader_draw_parameters without indirect first instance)
         // even creating an indirect buffer fails; one draw per section reads
@@ -2115,7 +2261,7 @@ impl Renderer {
         let indirect = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Section draws"),
             size: 1024 * 20,
-            usage: if multi_draw {
+            usage: if indirect_capable {
                 wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST
             } else {
                 wgpu::BufferUsages::COPY_DST
@@ -2141,18 +2287,40 @@ impl Renderer {
                 }
                 cull
             });
+        // Android starts with it off (`section-cull on` or SUNRISE_GPU_CULL=1 for A/B): on the
+        // tiled GPU measured (Adreno 740) it saved no GPU time, and a block the player placed or
+        // broke now and then left most of the terrain out of a frame, or a chunk out for longer.
+        let cull_on = cull.is_some() && (!cfg!(target_os = "android") || cull_env.is_ok());
         let depth = Self::depth(&device, &config);
-        let world_post = world_post::Post::new(&device, frame_format);
+        let world_post = world_post::Post::new(&device, frame_format, &adapter.get_info().name);
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
         let stars = stars::Stars::new(&device, (frame_format, linear_light));
         let custom_sky = custom_sky::CustomSky::new(&device, (frame_format, linear_light));
+        let late_sky = late_sky::wanted(&adapter_info)
+            .then(|| {
+                late_sky::LateSky::new(
+                    &adreno::TerrainModule {
+                        kept: &kept,
+                        shader: &shader,
+                        format: frame_format,
+                        constants: &sprite_constants,
+                    },
+                    &layout,
+                    (&sunrise_buffers, sunrise_blend),
+                    &celestial_descriptor,
+                    &stars,
+                )
+            })
+            .flatten();
+        let late_sky_on = late_sky::on_by_default(&adapter_info.name);
         let entity_outline = entity_outline::EntityOutline::new(
             &device,
             (&entity_shader, &entity_layout, &entity_vertex),
             overlay_format,
         );
-        let panorama = panorama::Panorama::new(&device, frame_format, panorama_faces);
+        let panorama = panorama::Panorama::new(&device, frame_format, panorama_faces, gl);
+        drop(rest_step);
         drop(pipelines_step);
         reuse.finish(generation);
         if previous.is_some() {
@@ -2163,15 +2331,16 @@ impl Renderer {
         }
         if previous.is_none() {
             startup_step(format_args!(
-                "pipelines ready (multi-draw {}, occlusion culling {}, GPU culling {}, GPU timer {})",
+                "pipelines ready (multi-draw {}, occlusion culling {}, GPU culling {}, GPU timer {}){}",
                 on_off(multi_draw),
-                on_off(cull.is_some()),
+                on_off(cull_on),
                 if gpu_culling_offer == crate::graphics::GpuCullingOffer::Offered {
                     "available"
                 } else {
                     "unavailable"
                 },
                 on_off(gpu_timer.is_some()),
+                memory_note(),
             ));
         }
         let mut world_primitives =
@@ -2214,14 +2383,20 @@ impl Renderer {
             device_lost,
             config,
             solid,
-            solid_opaque,
-            solid_cutout,
+            solid_split,
+            solid_paths,
+            solid_settled_single,
+            settled_single_on: true,
+            settled_single_active: false,
+            solid_paths_sdr,
+            cutout_sdr_on: true,
             translucent,
             translucent_mark,
             flat_on: flat.is_some(),
+            flat_quad_cache_on: true,
             packed_quads,
             packed_on: packed_wanted(),
-            cull_on: cull.is_some(),
+            cull_on,
             sides_on: true,
             gpu_culling: None,
             gpu_culling_offer,
@@ -2232,6 +2407,8 @@ impl Renderer {
             flat,
             visbuf,
             sky,
+            late_sky,
+            late_sky_on,
             sky_base,
             sunrise_pipeline,
             sunrise_buffer,
@@ -2395,6 +2572,8 @@ impl Renderer {
             indirect,
             indirect_capacity: 1024,
             multi_draw,
+            indirect_capable,
+            base_vertex,
             visible: Vec::new(),
             visible_lods: Vec::new(),
             shadow_visible: Vec::new(),
@@ -2428,6 +2607,7 @@ impl Renderer {
             hdr: None,
             hdr_lighting_setting: true,
             emission_stats,
+            emissive_lookup,
             output_caps,
             output_rejected: None,
             auto_off_since: None,
@@ -2436,6 +2616,10 @@ impl Renderer {
             frame_kept_logged: false,
             hdr_marker: None,
             hdr_driver,
+            // The start goes on in this renderer: the loading screen's is replaced by the
+            // world's before it presents a frame when the game opens a world at once
+            // (`--world`), and its marker would stay behind, every next start in OpenGL ES.
+            start_marker: previous.and_then(|p| p.start_marker.clone()),
             pack_post: None,
             pack_loading: None,
             native: None,
@@ -2467,7 +2651,8 @@ impl Renderer {
             post_effects: None,
             readback: readback::Readback::default(),
             info,
-            suspended: !drawable_size(size.width, size.height, max_side),
+            suspended: waits_for_window || !drawable_size(size.width, size.height, max_side),
+            detached: waits_for_window,
             acquire_validation_failures: 0,
             surface_unconfigured: false,
             drawn_sections: 0,

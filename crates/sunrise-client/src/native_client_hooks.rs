@@ -54,10 +54,6 @@ pub struct NativeClientHooks {
         BlockSoundCause,
         &mut BlockSoundType,
     ),
-<<<<<<< sync-sunrise-1
-    pub can_grindstone_repair: fn(&LoopContext, &crate::items::ItemStack, &mut bool),
-    pub can_fit_inside_container_items: fn(&LoopContext, &crate::items::ItemStack, &mut bool),
-=======
     /// `ItemPart::can_grindstone_repair` of the stack's item; `can_repair` arrives with
     /// vanilla's.
     pub can_grindstone_repair: fn(&LoopContext, &ItemStack, &mut bool),
@@ -68,7 +64,6 @@ pub struct NativeClientHooks {
     pub can_fit_inside_container_items: fn(&LoopContext, &ItemStack, &mut bool),
     /// `ItemPart::item_name` of the stack's item; `name` arrives as `None`, the default.
     pub item_name: fn(&LoopContext, &ItemStack, &mut Option<crate::text::Text>),
->>>>>>> sunrise/main
 }
 
 static HOOKS: OnceLock<NativeClientHooks> = OnceLock::new();
@@ -343,11 +338,6 @@ pub(crate) fn sound_type(
     }
 }
 
-<<<<<<< sync-sunrise-1
-pub(crate) fn can_grindstone_repair(
-    context: &LoopContext,
-    stack: &crate::items::ItemStack,
-=======
 /// Ask the installed adapter for the name the parts of `stack`'s item give it (`item_name`); with
 /// none installed, `name` stays the default.
 pub(crate) fn item_name(
@@ -365,7 +355,6 @@ pub(crate) fn item_name(
 pub(crate) fn can_grindstone_repair(
     context: &LoopContext,
     stack: &ItemStack,
->>>>>>> sunrise/main
     can_repair: &mut bool,
 ) {
     if let Some(hooks) = HOOKS.get() {
@@ -373,11 +362,6 @@ pub(crate) fn can_grindstone_repair(
     }
 }
 
-<<<<<<< sync-sunrise-1
-pub(crate) fn can_fit_inside_container_items(
-    context: &LoopContext,
-    stack: &crate::items::ItemStack,
-=======
 /// Ask the installed adapter for the parts of `stack`'s item (`is_combine_repairable`); with none
 /// installed, `repairable` keeps vanilla's answer.
 pub(crate) fn is_combine_repairable(
@@ -395,7 +379,6 @@ pub(crate) fn is_combine_repairable(
 pub(crate) fn can_fit_inside_container_items(
     context: &LoopContext,
     stack: &ItemStack,
->>>>>>> sunrise/main
     fits: &mut bool,
 ) {
     if let Some(hooks) = HOOKS.get() {

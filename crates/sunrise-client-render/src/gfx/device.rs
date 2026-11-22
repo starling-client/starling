@@ -40,6 +40,15 @@ pub(crate) fn instance_descriptor(
     if dx12 {
         wgpu::hal::dx12::disk_cache::set_file(dx12_shader_cache(&crate::logging::game_home()));
     }
+    // Vulkan on Android keeps no compiled pipelines between runs either: building them is
+    // about 3.5 s of a start on an Adreno 740. The driver's own cache data is kept in the app's
+    // files and handed back when the device opens (third_party/wgpu-hal/src/vulkan/disk_cache.rs).
+    #[cfg(target_os = "android")]
+    if descriptor.backends.contains(wgpu::Backends::VULKAN) {
+        wgpu::hal::vulkan::disk_cache::set_file(vulkan_pipeline_cache(
+            &crate::logging::private_home(),
+        ));
+    }
     if !cfg!(debug_assertions) && !dx12 {
         descriptor
             .flags
@@ -57,6 +66,11 @@ pub(crate) fn instance_descriptor(
 /// Where DX12 keeps the shaders it compiled, inside a game folder.
 pub fn dx12_shader_cache(home: &std::path::Path) -> std::path::PathBuf {
     home.join("cache").join("dx12-shaders.bin")
+}
+/// Where Vulkan keeps the pipelines the driver compiled, inside the game's private folder
+/// (`logging::private_home`).
+pub fn vulkan_pipeline_cache(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("cache").join("vulkan-pipelines.bin")
 }
 
 /// The window's display connection, so the OpenGL backend creates its EGL
@@ -268,9 +282,46 @@ pub(super) async fn open_device(
     layers: u32,
 ) -> Result<Opened> {
     let wgpu_backend = std::env::var_os("WGPU_BACKEND").is_some();
+    let mut api = api.with_env();
+    // A custom GPU driver (Android, gpu_drivers) replaces the system's libvulkan: Vulkan,
+    // whatever the setting says, and no sidestep to OpenGL ES for GPUs whose stock driver
+    // crashes (that is what the custom driver is for). Off Android nothing sets one.
+    let custom_driver = crate::gpu_drivers::active().map(|(id, _)| id);
+    if let Some(id) = custom_driver {
+        if api == GraphicsApi::OpenGl {
+            // An explicit OpenGL ES choice wins over a chosen driver: the way back when a
+            // custom Vulkan driver misbehaves past startup.
+            log::info!("Sunrise renderer: OpenGL ES chosen: the custom GPU driver {id} stays off");
+        } else {
+            if api != GraphicsApi::Vulkan {
+                log::info!(
+                    "Sunrise renderer: custom GPU driver {id} chosen: Vulkan, not {}",
+                    api.label()
+                );
+            } else {
+                log::info!("Sunrise renderer: custom GPU driver {id} chosen");
+            }
+            api = GraphicsApi::Vulkan;
+        }
+    }
+    if custom_driver.is_none()
+        && api == GraphicsApi::Auto
+        && !wgpu_backend
+        && cfg!(target_os = "android")
+        && let Some(gpu) = vulkan_gpu_name(window)
+            .await
+            .filter(|name| rogue_vulkan_crashes(name))
+    {
+        log::warn!(
+            "Sunrise renderer: {gpu}'s Vulkan driver crashes in its first frame (GE8320 drivers \
+             1.15 and 24.2) or draws terrain in pieces (#326); Auto uses OpenGL ES here, and \
+             Video Settings can still choose Vulkan"
+        );
+        api = GraphicsApi::OpenGl;
+    }
     let mut first = None;
     for (order, allow_cpu) in device_search(
-        api.with_env(),
+        api,
         std::env::consts::OS,
         // The machine's: the x64 build emulated on a Windows ARM64 PC has its GPU too (#7513).
         sunrise_system::machine_arch(),

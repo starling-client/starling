@@ -7,7 +7,6 @@ use std::{
 };
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
-<<<<<<< sync-sunrise-1
 static RECORDING: AtomicBool = AtomicBool::new(false);
 type Totals = (u64, f64, f64, f32);
 type Trace = std::collections::BTreeMap<(&'static str, &'static str), Totals>;
@@ -75,13 +74,6 @@ pub fn job<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
     value
 }
 
-thread_local! {
-    static SPANS: RefCell<Vec<Span>> = const { RefCell::new(Vec::new()) };
-    /// Spans recorded on this thread alone, wall time only ([`record_here`]).
-    static HERE: Cell<bool> = const { Cell::new(false) };
-    /// The caller that started local recording drains raw spans each rendered frame.
-    static DIAGNOSTIC_HERE: Cell<bool> = const { Cell::new(false) };
-=======
 const ONGOING: u8 = 1;
 const FRAME: u8 = 2;
 thread_local! {
@@ -90,7 +82,8 @@ thread_local! {
     static HERE: Cell<u8> = const { Cell::new(0) };
     /// Block-entity load writes and item-render entity visits in this raw-flight frame.
     static BLOCK_ENTITY_WORK: Cell<[u64; 2]> = const { Cell::new([0; 2]) };
->>>>>>> sunrise/main
+    /// The caller that started local recording drains raw spans each rendered frame.
+    static DIAGNOSTIC_HERE: Cell<bool> = const { Cell::new(false) };
     /// How many timed spans the thread is inside: the next span's [`Span::depth`].
     static DEPTH: Cell<u8> = const { Cell::new(0) };
     /// What this thread's slowest steps were busy with since it last took them ([`note`]).
@@ -228,14 +221,10 @@ impl Drop for FrameRecording {
 /// Whether this thread records spans: globally, here, or for a timeline capture.
 #[inline]
 pub fn recording_here() -> bool {
-<<<<<<< sync-sunrise-1
     ENABLED.load(Ordering::Relaxed)
-        || HERE.with(Cell::get)
-        || RECORDING.load(Ordering::Relaxed)
         || timeline::on()
-=======
-    ENABLED.load(Ordering::Relaxed) || timeline::on() || HERE.with(Cell::get) != 0
->>>>>>> sunrise/main
+        || RECORDING.load(Ordering::Relaxed)
+        || HERE.with(Cell::get) != 0
 }
 /// The thread's CPU time when spans are on for every thread (`SUNRISE_SPIKES`): spans recorded
 /// by `record_here` alone keep wall time only.

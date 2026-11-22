@@ -1,10 +1,3 @@
-<<<<<<< sync-sunrise-1
-//! `BundleItem`'s click overrides in a PICKUP click
-//! (`tryItemClickBehaviourOverride`).
-use super::{Env, ItemStack, Menu, tidy};
-use crate::bundle::{Contents, INSERT, INSERT_FAIL, REMOVE_ONE, can_be_in_bundle, toggle_selected};
-use sunrise_world::native_load_context::LoopContext;
-=======
 //! Vanilla `Item.overrideStackedOnOther` / `Item.overrideOtherStackedOnMe` (`BundleItem`'s click
 //! overrides in `AbstractContainerMenu.tryItemClickBehaviourOverride`), shared by both local/client
 //! `Menu` clicks and hosted LAN `View` clicks.
@@ -171,7 +164,7 @@ impl SlotView for MenuSlotView<'_, '_> {
         self.menu.safe_take(self.env, self.slot, count, max)
     }
 }
->>>>>>> sunrise/main
+use sunrise_world::native_load_context::LoopContext;
 
 impl Menu {
     /// The carried stack's `overrideStackedOnOther`, then the clicked
@@ -267,13 +260,6 @@ impl Menu {
         copy.carried_bundle_click(env, s, primary)
     }
 }
-<<<<<<< sync-sunrise-1
-
-/// `Item.canFitInsideContainerItems` (`ShulkerBoxSlot.mayPlace`): shulker
-/// boxes cannot nest.
-pub fn fits_inside_container_items(stack: &ItemStack) -> bool {
-    !stack.item.ends_with("shulker_box")
-}
 
 /// `ShulkerBoxSlot.mayPlace`: [`fits_inside_container_items`] as the parts of `stack`'s item
 /// answer it (`IItemExtension.canFitInsideContainerItems`).
@@ -293,5 +279,3 @@ pub fn native_can_fit_inside_container_items(
 ) {
     crate::native_client_hooks::can_fit_inside_container_items(context, stack, fits);
 }
-=======
->>>>>>> sunrise/main

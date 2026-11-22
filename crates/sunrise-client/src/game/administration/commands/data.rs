@@ -1233,14 +1233,10 @@ impl Game<'_> {
             }
             "block" => {
                 let p = self.block_pos_arg(ctx, &format!("{prefix}Pos"))?;
-                // A content mod's machine keeps its block entity as a saved tag (read only here).
-                let machine = self.machine_kind(p).is_some()
-                    && crate::game::spill::saved_entity(&self.world, p).is_some();
                 if !self.world.block_entities.contains_key(&(p[0], p[1], p[2]))
                     && self.comparator_data(p).is_none()
                     && self.pot_data(p).is_none()
                     && self.moving_piston_data(p).is_none()
-                    && !machine
                 {
                     return Err(err("commands.data.block.invalid", &[]));
                 }
@@ -1255,40 +1251,6 @@ impl Game<'_> {
     pub(in crate::game) fn data_of(&mut self, r: &DataRef) -> R<Tag> {
         match r {
             // EntityDataAccessor.getData: Entity.saveWithoutId.
-<<<<<<< sync-sunrise-1
-            DataRef::Entity(t) => {
-                let mut tag = self
-                    .command_target_nbt(*t)
-                    .ok_or_else(|| err("argument.entity.notfound.entity", &[]))?;
-                if let Tag::Compound(c) = &mut tag {
-                    c.remove(&"id".into());
-                }
-                Ok(tag)
-            }
-            DataRef::Block(p) => {
-                if let Some(tag) = self.comparator_data(*p).or_else(|| self.pot_data(*p)) {
-                    return Ok(tag);
-                }
-                let key = (p[0], p[1], p[2]);
-                let name = self.data_block_name(*p);
-                let Some(e) = self.world.block_entities.get(&key) else {
-                    // A block entity saved away by the spill (a depot's, say).
-                    return crate::game::spill::saved_entity(&self.world, *p)
-                        .ok_or_else(|| err("commands.data.block.invalid", &[]));
-                };
-                // BlockEntity.saveWithFullMetadata: no chunk-only keepPacked,
-                // and the lock and custom name the model does not hold.
-                let mut tag = save::block_entity_data(key, e, &name, self.world.block_lock(key));
-                if let (Some(custom), Tag::Compound(map)) =
-                    (self.world.block_names.get(&key), &mut tag)
-                {
-                    map.entry("CustomName".into())
-                        .or_insert_with(|| custom.clone());
-                }
-                Self::write_pending_loot(&self.world, key, &mut tag);
-                Ok(tag)
-            }
-=======
             DataRef::Entity(t) => self
                 .in_target_level(*t, |g| g.entity_tag_in_level(*t, false))
                 .flatten()
@@ -1296,7 +1258,6 @@ impl Game<'_> {
             DataRef::Block(p) => self
                 .block_entity_nbt(*p)
                 .ok_or_else(|| err("commands.data.block.invalid", &[])),
->>>>>>> sunrise/main
             DataRef::Storage(id) => Ok(self.score.storage.get(id)),
         }
     }

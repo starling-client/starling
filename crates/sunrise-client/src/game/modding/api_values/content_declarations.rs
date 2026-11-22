@@ -85,9 +85,6 @@ impl TryIntoEngine<()> for mod_api::BlockProperties {
                 .map(|value| push_reaction(value).0),
             occludes: self.occludes,
             destroy_overlay: self.destroy_overlay,
-<<<<<<< sync-sunrise-1
-            shape: None,
-=======
             offset: self.offset.map(|mode| match mode {
                 mod_api::OffsetType::None => engine::OffsetType::None,
                 mod_api::OffsetType::Xz => engine::OffsetType::Xz,
@@ -100,7 +97,6 @@ impl TryIntoEngine<()> for mod_api::BlockProperties {
             replaceable: self.replaceable,
             skip_same_block_faces: self.skip_same_block_faces,
             vegetation: self.vegetation,
->>>>>>> sunrise/main
         })
     }
 }
@@ -139,9 +135,6 @@ impl TryIntoEngine<()> for mod_api::Block {
                 values: light.values.clone(),
                 default: light.default,
             }),
-            kinetic: None,
-            machine: None,
-            models: Vec::new(),
             id: self.id.clone(),
             template: self.template.clone(),
             pick_item: self.pick_item.clone(),

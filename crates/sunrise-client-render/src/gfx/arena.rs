@@ -711,12 +711,8 @@ impl Arena {
                 .is_some_and(|p| p.free.0.len() == 1 && p.free.0.get(&0) == Some(&p.capacity))
                 && let Some(p) = page.take()
             {
-<<<<<<< sync-sunrise-1
-                emptied.push(p);
-=======
                 self.page_bytes -= p.bytes();
-                released.push(p.buffer);
->>>>>>> sunrise/main
+                emptied.push(p);
             }
         }
         let released = emptied
@@ -735,16 +731,12 @@ impl Arena {
     /// Drops every page; gives back their buffers, for a [`Graveyard`].
     pub fn clear(&mut self) -> Vec<wgpu::Buffer> {
         self.closing = None;
-<<<<<<< sync-sunrise-1
+        self.page_bytes = 0;
         let pages: Vec<Page> = self.pages.drain(..).flatten().collect();
         pages
             .into_iter()
             .filter_map(|p| self.keep_spare(p))
             .collect()
-=======
-        self.page_bytes = 0;
-        self.pages.drain(..).flatten().map(|p| p.buffer).collect()
->>>>>>> sunrise/main
     }
     /// Makes the first page's buffer ahead of the first upload (on the level
     /// loading screen), where the arena has no page and no spare: the first

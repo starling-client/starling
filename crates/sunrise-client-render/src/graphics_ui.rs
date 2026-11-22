@@ -560,54 +560,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
         ),
         (
             Page::Advanced,
-<<<<<<< sync-sunrise-1
-            vec![
-                (
-                    "Frames",
-                    vec![
-                        h(
-                            H::PresentMode,
-                            None,
-                            "How frames reach the screen while VSync is off.",
-                        ),
-                        h(
-                            H::Pacing,
-                            None,
-                            "Efficient sleeps until the next frame; Precise spins, like vanilla.",
-                        ),
-                        h(
-                            H::GraphicsApi,
-                            None,
-                            "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
-                        ),
-                        h(
-                            H::GpuDrivers,
-                            None,
-                            "A custom Vulkan driver, like Turnip, instead of the system's. Next start.",
-                        ),
-                        h(
-                            H::TranslucentBatching,
-                            Saves,
-                            "Water and glass in one buffer: fewer draw calls, a bit more VRAM. Next start.",
-                        ),
-                        h(
-                            H::RayTracing,
-                            None,
-                            "Experimental: hardware ray tracing for shader packs that use it. Next start.",
-                        ),
-                    ],
-                ),
-                (
-                    "Overlay",
-                    vec![h(
-                        H::Overlay,
-=======
             vec![(
                 "Frames",
                 vec![
                     h(
                         H::PresentMode,
->>>>>>> sunrise/main
                         None,
                         "How frames reach the screen while VSync is off.",
                     ),
@@ -622,9 +579,19 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
                     ),
                     h(
+                        H::GpuDrivers,
+                        None,
+                        "A custom Vulkan driver, like Turnip, instead of the system's. Next start.",
+                    ),
+                    h(
                         H::TranslucentBatching,
                         Saves,
                         "Water and glass in one buffer: fewer draw calls, a bit more VRAM. Next start.",
+                    ),
+                    h(
+                        H::RayTracing,
+                        None,
+                        "Experimental: hardware ray tracing for shader packs that use it. Next start.",
                     ),
                 ],
             )],
@@ -1085,18 +1052,6 @@ impl H {
                 "Smooth Gradients",
                 on_off(g.hdr_smooth_gradients && out.wide_frame_supported),
             ),
-<<<<<<< sync-sunrise-1
-            H::Overlay => labelled(
-                "Performance Overlay",
-                match g.overlay {
-                    Overlay::Off => "Off",
-                    Overlay::Fps => "FPS",
-                    Overlay::Graph => "FPS and Graph",
-                    Overlay::Stats => "Full Stats",
-                },
-            ),
-=======
->>>>>>> sunrise/main
         }
     }
     fn set_slider(self, s: &mut Settings, v: f32) {
@@ -1229,16 +1184,6 @@ impl H {
                     Pacing::Precise => Pacing::Efficient,
                 }
             }
-<<<<<<< sync-sunrise-1
-            H::Overlay => {
-                g.overlay = step(
-                    &[Overlay::Off, Overlay::Fps, Overlay::Graph, Overlay::Stats],
-                    g.overlay,
-                    back,
-                )
-            }
-=======
->>>>>>> sunrise/main
             _ => {}
         }
     }
@@ -1373,15 +1318,11 @@ impl Item {
     pub fn slider(self, s: &Settings) -> Option<f64> {
         match self {
             Item::Vanilla(o) => o.slider_position(s),
-<<<<<<< sync-sunrise-1
-            Item::Sunrise(h) => h.slider(s),
+            Item::Sunrise(h) => h.slider(s).map(f64::from),
             Item::Display(option) if option.margin_preview().is_some() => {
                 Some(option.value(s) as f32 / option.max() as f32)
             }
             Item::Display(_) => None,
-=======
-            Item::Sunrise(h) => h.slider(s).map(f64::from),
->>>>>>> sunrise/main
             Item::Extra(_) => None,
         }
     }
@@ -1417,15 +1358,11 @@ impl Item {
         match self {
             // Options.applyGraphicsPreset, as Video Settings' slider does it.
             Item::Vanilla(o) => crate::options_ui::set_slider(o, s, v),
-<<<<<<< sync-sunrise-1
-            Item::Sunrise(h) => h.set_slider(s, v),
+            Item::Sunrise(h) => h.set_slider(s, v as f32),
             Item::Display(option) if option.margin_preview().is_some() => {
                 option.set(s, (v * option.max() as f32).round() as i32);
             }
             Item::Display(_) => {}
-=======
-            Item::Sunrise(h) => h.set_slider(s, v as f32),
->>>>>>> sunrise/main
             Item::Extra(_) => {}
         }
         self.touched(s);

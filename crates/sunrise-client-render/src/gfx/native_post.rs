@@ -358,16 +358,13 @@ pub struct NativeFrame {
     /// Whether the pack's material reads `reflection` (`NativePack::new`): else no mirror
     /// is drawn and `has_reflection` stays 0.
     pub reflects: bool,
-<<<<<<< sync-sunrise-1
     /// The world's TLAS for `rt_trace`/`rt_occluded` ([ray_tracing] packs): the renderer's
     /// object, shared, so rebuilds into it reach every group bound with it.
     tlas: Option<wgpu::Tlas>,
-=======
     /// Whether the pack's material reads `opaque_depth` or `opaque_color`
     /// (`NativePack::new`): else they stay 1×1 and unwritten, and the world pass doesn't break
     /// before translucent terrain to copy them.
     pub reads_opaque: bool,
->>>>>>> sunrise/main
     /// Last frame's view-projection, camera and time (`write`).
     last: Option<([[f32; 4]; 4], glam::DVec3, std::time::Instant)>,
     /// The eased eye light (block, sky) and being in water and lava (`write`); NaN until the

@@ -1822,90 +1822,6 @@ impl ResolvedSources {
         context: &sunrise_world::native_load_context::LoadContext,
     ) -> Result<Self> {
         sources.sort_by_cached_key(|(name, _)| registration_key(name));
-<<<<<<< sync-sunrise-1
-        // A file whose serializer no mod registered is left out and the rest load, as vanilla's
-        // RecipeManager does with a file it cannot parse: a content mod without its code half
-        // (ProjectE's assets without projecte_core) then loses those recipes, not the world.
-        // One line per serializer, with the first file and how many went.
-        let mut unregistered = std::collections::BTreeMap::<String, (usize, String)>::new();
-        sources.retain(|(name, file)| {
-            let Some(serializer) = file["type"].as_str() else {
-                return true;
-            };
-            let Err(error) = mod_kinds::recipe_type(name, serializer) else {
-                return true;
-            };
-            unregistered
-                .entry(serializer.to_owned())
-                .or_insert((0, error))
-                .0 += 1;
-            false
-        });
-        for (count, first) in unregistered.into_values() {
-            log::error!("Sunrise: {first}; {count} recipe file(s) with it left out");
-        }
-        let listened = mod_api::__private::listened(mod_api::HookId::Ingredient);
-        let recipes = sources
-            .into_iter()
-            .filter_map(|(name, file)| {
-                let mut resolved = file.clone();
-                let parsed_here = resolved["type"]
-                    .as_str()
-                    .is_some_and(|t| t.starts_with("minecraft:"));
-                // Answers a file carries are forgeries; an unlisted slot
-                // would otherwise keep one.
-                let mut changed = Ingredient::forget_answers(&mut resolved);
-                if parsed_here {
-                    for key in INGREDIENT_KEYS {
-                        if let Some(slot) = resolved.get_mut(key) {
-                            changed |= Ingredient::resolve(slot, context);
-                        }
-                    }
-                    for key in INGREDIENT_MAPS {
-                        for slot in resolved
-                            .get_mut(key)
-                            .and_then(Value::as_object_mut)
-                            .into_iter()
-                            .flat_map(|map| map.values_mut())
-                        {
-                            changed |= Ingredient::resolve(slot, context);
-                        }
-                    }
-                }
-                if parsed_here {
-                    let kinds: Vec<_> = INGREDIENT_KEYS
-                        .iter()
-                        .filter_map(|key| resolved.get(*key))
-                        .chain(
-                            INGREDIENT_MAPS
-                                .iter()
-                                .filter_map(|key| resolved.get(*key)?.as_object())
-                                .flat_map(|map| map.values()),
-                        )
-                        .flat_map(Ingredient::custom_kinds)
-                        .collect();
-                    if !listened && let Some((kind, _)) = kinds.first() {
-                        // No mod answers the `ingredient` hook: the kind is
-                        // unregistered, and the whole file fails.
-                        log::error!(
-                            "recipes: {name} refused: ingredient kind {kind} is not registered by any mod"
-                        );
-                        return None;
-                    }
-                    for (kind, _) in kinds.iter().filter(|(_, empty)| *empty) {
-                        log::warn!(
-                            "recipes: {name}: ingredient kind {kind} matched no items; the recipe cannot be placed"
-                        );
-                    }
-                }
-                let file = Arc::new(file);
-                let resolved = if changed {
-                    Arc::new(resolved)
-                } else {
-                    Arc::clone(&file)
-                };
-                Some(ResolvedRecipe {
-=======
         Self::resolve_collecting(sources, items, context)?.checked()
     }
     /// `resolve` for `sources` already in their final order.
@@ -1927,7 +1843,6 @@ impl ResolvedSources {
             let file = Arc::new(file);
             let Some(serializer) = file["type"].as_str() else {
                 resolved.recipes.push(Arc::new(ResolvedRecipe {
->>>>>>> sunrise/main
                     name,
                     file,
                     recipe_type: None,
@@ -1993,57 +1908,6 @@ fn resolve_custom_ingredient(
         record(format!("invalid ingredient kind {kind}"));
         return None;
     }
-<<<<<<< sync-sunrise-1
-
-    /// `RecipeManager.getRecipe`: look up a crafting recipe by its id name.
-    pub fn recipe(&self, name: &str) -> Option<&Recipe> {
-        let bare = name.strip_prefix("minecraft:").unwrap_or(name);
-        self.crafting
-            .iter()
-            .find(|(n, _)| n == name || n == bare)
-            .map(|(_, r)| r)
-    }
-
-    pub fn load(
-        root: &Path,
-        items: &Items,
-        overlay: &PackOverlay,
-        context: &sunrise_world::native_load_context::LoadContext,
-    ) -> Result<Self> {
-        let sources = ResolvedSources::load(root, overlay, context)?;
-        Self::from_resolved(root, items, overlay, &sources)
-    }
-    /// The tables from condition-selected recipe sources (recipe_sources::sources' shape).
-    /// The owning source load or server has already decided conditions; resolve ingredients here.
-    pub fn from_sources(
-        root: &Path,
-        items: &Items,
-        overlay: &PackOverlay,
-        sources: Vec<(String, Value)>,
-        context: &sunrise_world::native_load_context::LoadContext,
-    ) -> Result<Self> {
-        Self::from_resolved(
-            root,
-            items,
-            overlay,
-            &ResolvedSources::resolve(sources, context)?,
-        )
-    }
-    /// The tables from the condition-selected recipes of one owning load. Unknown serializers
-    /// were left out by [`ResolvedSources::resolve`]; malformed known recipes keep the
-    /// skip-one-file policy.
-    /// root and overlay give the enchantment tags the tables keep.
-    pub fn from_resolved(
-        root: &Path,
-        items: &Items,
-        overlay: &PackOverlay,
-        sources: &ResolvedSources,
-    ) -> Result<Self> {
-        for recipe in &sources.recipes {
-            if let Some(serializer) = recipe.file["type"].as_str() {
-                mod_kinds::recipe_type(&recipe.name, serializer)?;
-            }
-=======
     let Some(context) = listener else {
         record(format!(
             "ingredient kind {kind} was not answered by any mod"
@@ -2055,7 +1919,6 @@ fn resolve_custom_ingredient(
         Err(error) => {
             record(format!("ingredient kind {kind}: {error}"));
             return None;
->>>>>>> sunrise/main
         }
     };
     let mut definition = None;
@@ -3657,20 +3520,20 @@ mod tests {
                 )
                 .unwrap();
                 let items = Items::for_tests(HashMap::new());
-                // A file whose serializer nobody registered is left out and the rest load.
-                let with_later = Recipes::load(
+                let error = Recipes::load(
                     &root,
                     &items,
                     &PackOverlay::NONE,
                     &crate::test_resources::server_load(),
                 )
-                .unwrap();
+                .err()
+                .unwrap()
+                .to_string();
                 assert!(
-                    !with_later
-                        .by_type
-                        .contains_key("minecraft:from_a_later_version")
+                    error.contains("later.json")
+                        && error.contains("minecraft:from_a_later_version"),
+                    "{error}"
                 );
-                assert_eq!(with_later.by_type["mymod:crusher"].len(), 2);
                 fs::remove_file(root.join("data/minecraft/recipe/later.json")).unwrap();
                 let recipes = Recipes::load(
                     &root,

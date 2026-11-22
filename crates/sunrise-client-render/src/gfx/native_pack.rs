@@ -515,33 +515,7 @@ file = \"material.wgsl\"
             entities: empty,
             weather_groups: [empty, empty],
             pbr: None,
-<<<<<<< sync-sunrise-1
-        };
-        let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.1\"\n\
-            [sky]\nfile = \"sky.wgsl\"\n";
-        let files = [
-            (MANIFEST, manifest),
-            (
-                "sky.wgsl",
-                "fn sky(input: SkyInput) -> vec4<f32> { return input.color; }\n",
-            ),
-        ]
-        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
-        .into();
-        let report = check(&Pack::from_files(files).unwrap()).unwrap();
-        let built = NativePack::new(
-            &device,
-            &queue,
-            &terrain,
-            report,
-            &[],
-            Default::default(),
-            None,
-        );
-        assert!(built.is_err(), "the pack should be refused");
-=======
         }
->>>>>>> sunrise/main
     }
 
     fn option(id: &str, kind: OptionKind) -> PackOption {

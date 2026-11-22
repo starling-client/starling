@@ -1,7 +1,6 @@
 use super::*;
 use sunrise_client::chunk::ColumnLayout;
 use sunrise_core::geometry::Vec3;
-<<<<<<< sync-sunrise-1:crates/sunrise-client/src/game/interface/occlusion_culling/occlusion_culling_tests.rs
 use std::path::Path;
 
 #[test]
@@ -93,8 +92,6 @@ fn vanilla_models_and_animations_stay_inside_the_precheck_envelope() {
         "insufficient real model coverage: {checked}"
     );
 }
-=======
->>>>>>> sunrise/main:crates/sunrise-client-gameplay/src/occlusion_culling/occlusion_culling_tests.rs
 
 #[test]
 fn a_hole_inside_a_coarse_envelope_remains_visible() {

@@ -418,53 +418,8 @@ impl Hub {
                             group: world.connection_group(x, y, z),
                         })
                         .collect(),
-<<<<<<< sync-sunrise-1
-                })
-            };
-            self.send_to_holders(&holders, &packet.encode());
-            if recording {
-                let bounds = crate::lan::prediction::bounds(&positions);
-                for i in in_level(&holders) {
-                    self.guests.update(i, |g| {
-                        crate::lan::prediction::note_changes(g, self.ticks, bounds, &positions);
-                    });
-                }
-            }
-            // Block entities with data the client shows.
-            for &(x, y, z) in &positions {
-                let state = world.block(x, y, z).0;
-                if !self
-                    .encoder
-                    .entity_matches(state, world.block_entities.get(&(x, y, z)))
-                {
-                    continue;
-                }
-                // A decorated pot is no block entity: its tag is the chunk's saved one.
-                let state = world.block(x, y, z).0;
-                let tag = match world.block_entities.get(&(x, y, z)) {
-                    Some(entity) => self.encoder.change_tag((x, y, z), state, entity),
-                    None => world.chunks.get(&(x >> 4, z >> 4)).and_then(|c| {
-                        crate::lan::chunks::pot_tag(c, (x, y, z))
-                            .or_else(|| crate::lan::chunks::machine_tag(c, (x, y, z)))
-                    }),
-                };
-                let Some(tag) = tag else {
-                    continue;
-                };
-                let Some(kind) = self.encoder.entity_type(state) else {
-                    continue;
-                };
-                let body = C::BlockEntityData(play::BlockEntityData {
-                    pos: [x, y, z],
-                    kind,
-                    tag,
-                })
-                .encode();
-                self.send_to_holders(&holders, &body);
-=======
                 });
                 self.send_to_holders_grouped(&holders, &body, &[groups], None);
->>>>>>> sunrise/main
             }
         }
         if let Some(log) = &mut world.connection_group_log {

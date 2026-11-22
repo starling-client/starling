@@ -192,11 +192,6 @@ impl Game<'_> {
         let mut resume_from = 0;
         let mut resume_sampled = None;
         let mut resume_guest = None;
-<<<<<<< sync-sunrise-1
-        // The mob ticks' time and count, summed (spans: SUNRISE_SPIKES).
-        let timed = sunrise_client::spans::enabled();
-        let (mut tick_ms, mut ticked_count) = (0.0f32, 0usize);
-=======
         // The slot of the mob whose own Pre was just told (a type a mod named): it resumes there
         // with its checks done.
         let mut told_at: Option<usize> = None;
@@ -209,7 +204,6 @@ impl Game<'_> {
         // writes and issue its Post while the rows are back in the owner.
         let mut tell_post: Option<(u32, std::sync::Arc<sunrise_client::mobs::MobType>)> = None;
         let mut section_yield = false;
->>>>>>> sunrise/main
         loop {
             let mut pause = None;
             let mut sting = None;
@@ -678,7 +672,6 @@ impl Game<'_> {
                             &mut movement,
                         ),
                     };
-                    let started_at = timed.then(std::time::Instant::now);
                     let progress =
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run_tick)) {
                             Ok(progress) => progress,
@@ -707,10 +700,6 @@ impl Game<'_> {
                                 break;
                             }
                         };
-                    if let Some(t) = started_at {
-                        tick_ms += t.elapsed().as_secs_f32() * 1000.0;
-                        ticked_count += 1;
-                    }
                     let kept = match progress {
                         sunrise_client::mobs::ai::TickProgress::Complete(kept) => {
                             movement = None;
@@ -1143,9 +1132,6 @@ impl Game<'_> {
             resume_air_answer = air_answer;
             retried_rider = retry_rider;
         }
-        sunrise_client::spans::add("entities.mob_tick", tick_ms);
-        sunrise_client::spans::add("entities.ticked_count", ticked_count as f32);
-        sunrise_client::mobs::ai::parts::flush();
         laps.lap("creature_loop");
         if dispatch_panic.is_none() {
             if positions.is_none() {

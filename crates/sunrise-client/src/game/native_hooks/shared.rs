@@ -132,7 +132,10 @@ impl Game<'_> {
             return self.screen_view_now();
         };
         let renderer = self.renderer.as_ref()?;
-        let batch = self.interface_batch([renderer.config.width, renderer.config.height]);
+        let batch = HudBatch::new(
+            [renderer.config.width, renderer.config.height],
+            self.settings.gui_scale_inputs(),
+        );
         Some(ScreenView::from(mod_api::__private::built::ScreenView {
             id,
             menu: None,
@@ -1226,15 +1229,11 @@ impl Game<'_> {
     }
     /// Deliver a non-repeat key press to the native panel.
     pub(super) fn native_panel_key_event(&mut self, key: KeyCode, pressed: bool, repeat: bool) {
-        if repeat {
-            return;
-        }
-        if let Some(name) = keybinds::key_name(key) {
-            if pressed {
-                self.native_panel_key(name);
-            }
-            // Starling: and to the mods made for the old hooks, down and up (native_compat.rs).
-            self.native_key(name, pressed);
+        if pressed
+            && !repeat
+            && let Some(name) = keybinds::key_name(key)
+        {
+            self.native_panel_key(name);
         }
     }
     /// Whether any mod listens to a hook given the open screen's
@@ -1504,7 +1503,10 @@ impl Game<'_> {
             return None;
         }
         let renderer = self.renderer.as_ref()?;
-        let batch = self.interface_batch([renderer.config.width, renderer.config.height]);
+        let batch = HudBatch::new(
+            [renderer.config.width, renderer.config.height],
+            self.settings.gui_scale_inputs(),
+        );
         if self.screen != Screen::Playing {
             return Some(self.screen_view(&batch, self.screen));
         }
@@ -1620,8 +1622,6 @@ impl Game<'_> {
         &mut self,
         packet: &sunrise_protocol::packets::play::Clientbound,
     ) {
-        // Starling: the old hook, which mods made for Sunrise's API read the decoded packet in.
-        self.native_client_packet_old(packet);
         if !mod_api::__private::listened(mod_api::HookId::ClientPacket) {
             return;
         }
@@ -2303,594 +2303,6 @@ fn dimension_id(dimension: LevelDimension) -> &'static str {
     }
 }
 
-<<<<<<< sync-sunrise-1
-/// Server-level helpers for native mods.
-#[allow(dead_code)]
-impl GameLevel<'_> {
-    /// Play a sound event for nearby players in this server level. The return
-    /// value means queued, not heard. A `minecraft:` event must be registered:
-    /// an unknown one is dropped at dispatch. Another namespace's event (a
-    /// mod's, `mymod:machine_hum`) is sent by name, as vanilla sends a sound
-    /// that isn't in its registry (`Holder.direct`, a variable range): players
-    /// hear it if their resources define it (`assets/mymod/sounds.json`, a
-    /// content mod's).
-    pub(super) fn native_play_sound(
-        &mut self,
-        sound: &str,
-        at: [f64; 3],
-        source: usize,
-        volume: f32,
-        pitch: f32,
-    ) -> bool {
-        if !self.native_authoritative || !mod_sound_ok(sound, at, source, volume, pitch) {
-            return false;
-        }
-        // `Level.playSound` draws `soundSeedGenerator.nextLong` at the call;
-        // without a host nothing can be sent.
-        let Some(seed) = self.sound_seeds.map(|hub| hub.next_sound_seed()) else {
-            return false;
-        };
-        self.native_sounds.push(super::creatures::NativeSound {
-            dimension: dimension_id(self.dimension),
-            sound: sound.to_owned(),
-            at,
-            source: source as i32,
-            volume,
-            pitch,
-            seed,
-            except: None,
-            entity: None,
-        });
-        true
-    }
-
-    /// Queue particles in this authoritative level. A zero count sends one
-    /// directional particle. The return value means accepted, not delivered.
-    /// Block particle types require their block state; item, trail and
-    /// vibration particles are not supported by the current network dispatch.
-    /// `ParticleOptions::named("mymod:spark")` sends a mod's own type
-    ///: Sunrise clients draw it from the sprite
-    /// set in the mod's `assets/<namespace>/particles/<path>.json`, a client
-    /// without that file draws nothing, and vanilla clients aren't sent it.
-    pub(super) fn native_send_particles(
-        &mut self,
-        options: &ParticleOptions,
-        state: Option<BlockStateId>,
-        at: [f64; 3],
-        spread: [f64; 3],
-        speed: f64,
-        count: i32,
-    ) -> bool {
-        let state_ok = |id| self.registry.state(id).is_some();
-        if !self.native_authoritative
-            || !mod_particles_ok(options, state, state_ok, at, spread, speed)
-        {
-            return false;
-        }
-        self.native_particles
-            .push(super::lan_particles::QueuedParticle {
-                dimension: dimension_id(self.dimension),
-                options: options.clone(),
-                state,
-                at,
-                spread,
-                speed: [speed; 3],
-                count,
-                randomization: 0,
-            });
-        true
-    }
-    /// `EntityBlock.newBlockEntity` of block `name`: a declared mod type
-    /// starts with the data `native_block_entity` gives, a mod's sign, else
-    /// Sunrise's own. The one place both whole-block write paths make it.
-    pub(super) fn new_block_entity(&self, name: &str) -> Option<BlockEntity> {
-        let mut nbt = None;
-        if sunrise_client::block_entity_types::type_for(name).is_some() {
-            self.native_block_entity(name, self.registry.default_state(name)?, &mut nbt);
-        }
-        block_entity_for_block(self.registry, self.facts, name, nbt.unwrap_or_default())
-    }
-    /// Creates a declared state-aware block entity from its actual state. No answer
-    /// means no entity; the registered declaration owns its type identity.
-    pub(super) fn new_block_entity_for_state(&self, state: BlockStateId) -> Option<BlockEntity> {
-        let name = &self.registry.state(state)?.name;
-        if self.world.block_entities.stateful_entity(state.0) {
-            let mut nbt = None;
-            self.native_block_entity(name, state, &mut nbt);
-            return block_entity_for_block(self.registry, self.facts, name, nbt?);
-        }
-        self.new_block_entity(name)
-    }
-    /// Replaces the block at `pos` with `state` through `Level.setBlock`, as
-    /// `Game::native_set_block` does for the Host, from a hook that gets the
-    /// level's `ticks`: the old block's block entity is removed and the new
-    /// block's is created in the write (`LevelChunk.setBlockState`), and the
-    /// write's level events stay queued for the caller, in order; a mod block
-    /// entity starts with the data `native_block_entity` gives. True when the block changed; false off an
-    /// authoritative server, for a position that is not loaded or outside the
-    /// build height, an invalid state, or an unchanged state. Never loads a
-    /// chunk.
-    pub(super) fn native_set_block(
-        &mut self,
-        ticks: &mut Ticks,
-        pos: [i32; 3],
-        state: BlockStateId,
-        flags: i32,
-    ) -> bool {
-        if !self.native_authoritative
-            || !self.world.is_loaded_at(pos[0], pos[1], pos[2])
-            || self.registry.state(state).is_none()
-        {
-            return false;
-        }
-        let at = BlockPos::new(pos[0], pos[1], pos[2]);
-        let previous = self.world.block(pos[0], pos[1], pos[2]);
-        let b = self.behaviours;
-        let changed = b.set_block(self, ticks, at, state, flags);
-        let landed = self.world.block(pos[0], pos[1], pos[2]);
-        if !self.world.block_entities.stateful_entity(landed.0)
-            && block_entity_to_create(self.facts, changed, previous, state, landed).is_some()
-            && let Some(entity) = self.new_block_entity_for_state(landed)
-        {
-            put_block_entity(self.world, pos, entity);
-        }
-        changed
-    }
-    /// `Level.removeBlock`: replace a block with its fluid's legacy block.
-    pub(super) fn remove_block_write(
-        &mut self,
-        ticks: &mut Ticks,
-        pos: [i32; 3],
-        moved: bool,
-    ) -> bool {
-        if !self.native_authoritative || !self.world.is_loaded_at(pos[0], pos[1], pos[2]) {
-            return false;
-        }
-        self.behaviours
-            .remove_block(self, ticks, BlockPos::new(pos[0], pos[1], pos[2]), moved)
-    }
-    /// Schedules a tick of `block` (a block name) at `pos` in `delay` game
-    /// ticks, as a falling block's shape update schedules its fall
-    /// (`ScheduledTickAccess.scheduleTick(pos, block, delay)`, normal
-    /// priority); false for an unknown block or a position that isn't
-    /// loaded. A tick of that block already queued there is kept and counts
-    /// as scheduled. `ticks` is the hook's.
-    pub(super) fn native_schedule_block_tick(
-        &self,
-        ticks: &mut Ticks,
-        pos: [i32; 3],
-        block: BlockKey,
-        delay: i32,
-    ) -> bool {
-        let Some(block) = crate::game::api_values::behavior_block(block, self.behaviours) else {
-            return false;
-        };
-        let at = BlockPos::new(pos[0], pos[1], pos[2]);
-        let time = self.game_time();
-        ticks.schedule_block(time, at, block, delay, TickPriority::Normal)
-            != ScheduleResult::MissingChunk
-    }
-    /// Schedules a tick of `fluid` (`minecraft:water`, `minecraft:lava`,
-    /// `minecraft:flowing_water`...) at `pos` in `delay` game ticks, as a
-    /// waterlogged block's shape update schedules its water in 5
-    /// (`ScheduledTickAccess.scheduleTick(pos, fluid, delay)`); false for
-    /// an unknown fluid or a position that isn't loaded. A tick of that
-    /// fluid already queued there is kept and counts as scheduled. `ticks` is
-    /// the hook's.
-    pub(super) fn native_schedule_fluid_tick(
-        &self,
-        ticks: &mut Ticks,
-        pos: [i32; 3],
-        fluid: &str,
-        delay: i32,
-    ) -> bool {
-        let Some(kind) = FluidKind::from_name(fluid) else {
-            return false;
-        };
-        let at = BlockPos::new(pos[0], pos[1], pos[2]);
-        let time = self.game_time();
-        ticks.schedule_fluid(time, at, kind, delay) != ScheduleResult::MissingChunk
-    }
-    /// The state `state` with its property `key` set to `value`, as a mod block
-    /// builds the state it is placed in: `native_state_with_property(cable,
-    /// "facing", "east")` (`BlockState.setValue`). A block's own declared
-    /// properties (`state_properties` in its block file) are set the same way.
-    /// `state` itself when the property already has that value; None when the
-    /// block has no such property, or the property no such value.
-    pub(super) fn native_state_with_property(
-        &self,
-        state: BlockStateId,
-        key: &str,
-        value: &str,
-    ) -> Option<BlockStateId> {
-        with_property(self.registry, state, key, value)
-    }
-    /// The block `state` is a state of (`BlockState.getBlock()`): its name,
-    /// `mymod:cable`. `native_state_for_placement` is asked for every block
-    /// placed and given the block's default state: compare this with your
-    /// block to answer only for it. None for an unknown state.
-    pub(super) fn native_state_block(&self, state: BlockStateId) -> Option<&str> {
-        self.registry.state(state).map(|s| &*s.name)
-    }
-}
-
-/// `EntityBlock.newBlockEntity` of block `name`: a declared mod type starting
-/// with `initial` data, a mod's sign, else Sunrise's own. Shared by the
-/// Host's and a level hook's whole-block writes.
-fn block_entity_for_block(
-    registry: &BlockRegistry,
-    facts: &sunrise_client::blocks::BlockFacts,
-    name: &str,
-    initial: Compound,
-) -> Option<BlockEntity> {
-    if let Some(kind) = sunrise_client::block_entity_types::type_for(name) {
-        return Some(BlockEntity::Mod(Box::new(EngineBlockEntity::new(
-            kind.to_owned(),
-            ModBlockEntityFields {
-                nbt: initial,
-                ..Default::default()
-            },
-        ))));
-    }
-    // Undeclared content blocks retain their template's vanilla behaviour.
-    // `SignBlock.newBlockEntity`: a mod's sign is one by its template's class.
-    if !name.starts_with("minecraft:")
-        && let Some(state) = registry.default_state(name)
-        && let Some(form) = facts.get(state).sign_form()
-    {
-        let text = facts.sign_text(name).map_or_else(Default::default, |d| {
-            sunrise_client::signs::SignText {
-                color: d.color,
-                glowing: d.glowing,
-                ..Default::default()
-            }
-        });
-        return Some(BlockEntity::Sign(sunrise_client::signs::SignData {
-            hanging: form.hanging,
-            front: text.clone(),
-            back: text,
-            ..Default::default()
-        }));
-    }
-    BlockEntity::for_block(name)
-}
-
-/// After a `Level.setBlock` of `state` over `previous`: the block whose block
-/// entity the write creates, when the write changed the block's name and the
-/// new block landed.
-fn block_entity_to_create(
-    facts: &sunrise_client::blocks::BlockFacts,
-    changed: bool,
-    previous: BlockStateId,
-    state: BlockStateId,
-    landed: BlockStateId,
-) -> Option<String> {
-    let new = &facts.get(state).name;
-    (changed && facts.get(previous).name != *new && facts.get(landed).name == *new)
-        .then(|| new.to_string())
-}
-
-/// Stores a new block entity at `pos`, keeping an existing one of the same kind.
-fn put_block_entity(world: &mut sunrise_client::world::World, pos: [i32; 3], entity: BlockEntity) {
-    let key = (pos[0], pos[1], pos[2]);
-    if world
-        .block_entities
-        .get(&key)
-        .is_none_or(|existing| std::mem::discriminant(existing) != std::mem::discriminant(&entity))
-    {
-        world.block_entities.insert(key, entity);
-    }
-}
-
-/// Helpers for native mods, kept as stable as the hook points.
-// Native mods use these; nothing in Sunrise does.
-#[allow(dead_code)]
-impl Game<'_> {
-    /// Sets a block in the current authoritative level through `Level.setBlock`.
-    /// Returns false for another dimension, an invalid state, or no change.
-    /// `flags` selects vanilla's neighbour, shape and client updates. A block
-    /// entity block gets its block entity.
-    pub(super) fn native_set_block(
-        &mut self,
-        dimension: &str,
-        pos: [i32; 3],
-        state: BlockStateId,
-        flags: i32,
-    ) -> bool {
-        if (self.serving.is_none() && self.options.dedicated.is_none())
-            || dimension != self.dim.id()
-            || self.pack.assets.registry.state(state).is_none()
-        {
-            return false;
-        }
-        let changed =
-            self.with_level(|_, level, ticks| level.native_set_block(ticks, pos, state, flags));
-        let _ = self.process_level_events();
-        changed
-    }
-    /// The item entities of the server level `dimension` whose box meets
-    /// the box `min`..`max`, in the level's order: vanilla's
-    /// `Level.getEntitiesOfClass(ItemEntity.class, box, ENTITY_STILL_ALIVE)`, as a
-    /// hopper's `getItemsAtAndAbove` asks for its block and the one above
-    /// (`[x, y, z]`..`[x + 1, y + 2, z + 1]`). Empty for a level not in place
-    /// (as `native_set_block`) and on a client of a server.
-    pub(super) fn native_item_entities(
-        &self,
-        dimension: &str,
-        min: [f64; 3],
-        max: [f64; 3],
-    ) -> Vec<NativeItemEntity> {
-        if (self.serving.is_none() && self.options.dedicated.is_none())
-            || dimension != self.dim.id()
-        {
-            return Vec::new();
-        }
-        self.dropped
-            .iter()
-            .filter(|e| e.stack.count > 0 && box_meets(&e.bounds(), min, max))
-            .map(|e| NativeItemEntity {
-                id: e.id,
-                position: [e.position.x, e.position.y, e.position.z],
-                stack: e.stack.clone(),
-                // The helper exposes an unsigned delay; keep its projection.
-                pickup_delay: e.pickup_delay.clamp(0, i64::from(u32::MAX)) as u32,
-            })
-            .collect()
-    }
-    /// Runs `change` on the mod block entity at `pos` (a generator charging
-    /// the machine beside it) and returns what it returns; none for any
-    /// other block entity, and for the one ticking now, which is out of the
-    /// world. Afterwards, as its `setChanged` would, its chunk is saved next
-    /// time and, when its items changed, comparators read it again.
-    pub(super) fn native_with_mod_block_entity<R>(
-        &mut self,
-        pos: [i32; 3],
-        change: impl FnOnce(&mut EngineBlockEntity) -> R,
-    ) -> Option<R> {
-        let key = (pos[0], pos[1], pos[2]);
-        let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&key) else {
-            return None;
-        };
-        if m.id().is_empty() {
-            return None;
-        }
-        let items = m.items.clone();
-        let out = change(m);
-        let moved = m.items != items;
-        self.world.modified.insert((key.0 >> 4, key.2 >> 4));
-        if moved {
-            self.container_changed(key);
-        }
-        Some(out)
-    }
-    /// This `Game` is the window's, not a server's.
-    pub(super) fn native_window(&self) -> bool {
-        self.options.execution_role == ExecutionRole::Client
-    }
-    /// `ParticleEngine.countParticles`: every live group. Sunrise keeps vanilla's groups
-    /// apart: ordinary particles, firework starters and elder guardians in the engine,
-    /// and ITEM_PICKUP in `pickups`.
-    pub(super) fn client_particle_count(&self) -> usize {
-        self.particles.group_count() + self.pickups.live.len()
-    }
-    /// `ParticleEngine.clearParticles` over every group Sunrise keeps apart: the engine's
-    /// particles, starters, queue and emitters, the item pickups and the elder guardian
-    /// apparition. Leaving a level and switching levels clear through it too.
-    pub(super) fn clear_client_particles(&mut self) {
-        self.mod_clear_particles.set(false);
-        self.particles.clear();
-        self.pickups.clear();
-    }
-    /// Applies a client mod's `clear_particles` if one is waiting. Called at the start of
-    /// each particle tick, after `RenderFrameEvent.Pre`, and at particle extraction, after
-    /// HUD, screen and entity callbacks. Extraction also discards its geometry if a model
-    /// callback asks to clear while it is being built, even while paused or tick-frozen.
-    pub(super) fn apply_mod_particle_clear(&mut self) {
-        if self.mod_clear_particles.take() {
-            self.clear_client_particles();
-        }
-    }
-    /// Draws one vanilla HUD layer between the mods' hooks: first the mods' layers
-    /// placed below it (`draw_mod_gui_layers`), then `native_gui_layer_pre` (which
-    /// may hide it), the layer, then `native_gui_layer_post`. `None` when a mod hid
-    /// the layer.
-    pub(super) fn gui_layer<R>(
-        &mut self,
-        layer: &str,
-        batch: &mut HudBatch,
-        draw: impl FnOnce(&mut Self, &mut HudBatch) -> R,
-    ) -> Option<R> {
-        self.draw_mod_gui_layers(Some(layer), batch);
-        let mut canceled = false;
-        self.native_gui_layer_pre(layer, batch, &mut canceled);
-        // Starling: the hooks Sunrise's mods have, with `&mut self` (starling/native_compat.rs).
-        self.native_gui_layer_pre_old(layer, batch, &mut canceled);
-        let drawn = (!canceled).then(|| draw(self, batch));
-        self.native_gui_layer_post(layer, batch);
-        self.native_gui_layer_post_old(layer, batch);
-        drawn
-    }
-    /// `GuiLayerManager.renderInner` for the mods' layers (`native_register_gui_layers`) not
-    /// drawn yet this frame and placed below vanilla layer `until`, or for all that are left
-    /// with `None`, at the HUD's end. Each fires `native_gui_layer_pre` (which may hide it),
-    /// `native_gui_layer_draw`, then `native_gui_layer_post`, as a vanilla layer does. So a
-    /// vanilla layer that is not drawn this frame keeps its place: the mods' layers around it
-    /// draw at the next layer that is. Nothing while the HUD is hidden, and nothing to look up
-    /// when no mod registered a layer.
-    pub(super) fn draw_mod_gui_layers(&mut self, until: Option<&str>, batch: &mut HudBatch) {
-        let order = sunrise_client::gui_layers::order();
-        let Some(next) = self.hud_layer_next.filter(|_| order.has_mod_layers()) else {
-            return;
-        };
-        let end = match until {
-            Some(layer) => match order.position(layer) {
-                Some(at) => at,
-                None => return,
-            },
-            None => order.len(),
-        };
-        for at in next..end {
-            let Some(layer) = order.mod_layer(at) else {
-                continue;
-            };
-            let mut canceled = false;
-            self.native_gui_layer_pre(layer, batch, &mut canceled);
-            self.native_gui_layer_pre_old(layer, batch, &mut canceled);
-            if !canceled {
-                self.native_gui_layer_draw(layer, batch);
-            }
-            self.native_gui_layer_post(layer, batch);
-            self.native_gui_layer_post_old(layer, batch);
-        }
-        // Past `until` itself: it is drawn next, by `gui_layer`.
-        self.hud_layer_next = Some(next.max(end + usize::from(until.is_some())));
-    }
-    /// Whether a box in `corner` shows: F3's debug screen takes both top
-    /// corners (its left and right columns), and a bottom corner while one
-    /// of its charts is drawn there.
-    pub(super) fn native_corner_shown(&self, corner: Corner) -> bool {
-        let charts = self.debug_charts.corners(!self.has_singleplayer_server());
-        !debug_takes(corner, self.debug, charts)
-    }
-    /// A mod's own screen closes (Escape, or `mod_screen_close`).
-    pub(super) fn close_mod_screen(&mut self) {
-        if self.screen == Screen::Mod {
-            self.set_screen(Screen::Playing);
-            if self.screen == Screen::Mod {
-                // `screen_opening` kept it open.
-                return;
-            }
-            self.capture(true);
-        }
-        self.native_mod_screen = None;
-    }
-    /// A data file of the game's resources, content mods' included
-    /// (`data/mymod/machines.json`), when there is one: what a mod's content
-    /// says, read at runtime. Only relative paths of plain names. API 20.
-    pub(super) fn native_data(&self, path: &str) -> Option<Vec<u8>> {
-        let plain = |p: &str| !p.is_empty() && p != "." && p != ".." && !p.contains('\\');
-        if !path.starts_with("data/") || !path.split('/').all(plain) {
-            return None;
-        }
-        fs::read(self.options.resources.join(path)).ok()
-    }
-    pub(super) fn native_block_collision_in(
-        &self,
-        world: &sunrise_client::world::World,
-        pos: [i32; 3],
-    ) -> Vec<[f64; 6]> {
-        self.block_collision_shape_in(world, pos)
-            .boxes()
-            .iter()
-            .map(|bounds| {
-                let min = bounds.min_position();
-                let max = bounds.max_position();
-                [min.x, min.y, min.z, max.x, max.y, max.z]
-            })
-            .collect()
-    }
-    /// The window's width and height in physical pixels, independent of GUI
-    /// scale; none on a server or when no window exists.
-    pub(super) fn native_physical_window_size(&self) -> Option<[u32; 2]> {
-        let size = self.window.as_ref()?.inner_size();
-        Some([size.width, size.height])
-    }
-    /// The areas the game itself draws beside the open screen's window: the
-    /// container build's, or the frame's own arithmetic with no build yet.
-    fn screen_own_exclusion(&self, batch: &HudBatch) -> Vec<[f32; 4]> {
-        if !matches!(self.screen, Screen::Inventory | Screen::Creative) {
-            return Vec::new();
-        }
-        match self.built_container(batch) {
-            Some(layout) => layout.exclusion(),
-            None => self.container_layout(batch).exclusion(),
-        }
-    }
-    /// The player, in a world.
-    pub(super) fn native_player(&self) -> Option<NativePlayer> {
-        let p = self.player.as_ref()?;
-        Some(NativePlayer {
-            x: p.position.x,
-            y: p.position.y,
-            z: p.position.z,
-            yaw: self.yaw,
-            pitch: self.pitch,
-            dimension: self.dim.id(),
-        })
-    }
-    /// The frame counter: frames in the last second, the slowest frame and
-    /// the 1% low of the last 5 seconds, in frames per second.
-    pub(super) fn native_frame_rate(&self) -> (u32, u32, u32) {
-        self.frame_reading()
-    }
-    /// Attack and use clicks in the last second.
-    pub(super) fn native_clicks(&mut self) -> (u32, u32) {
-        self.click_reading()
-    }
-    /// A line in chat from the client.
-    pub(super) fn native_chat(&mut self, text: &str) {
-        let focused = self.screen == Screen::Chat;
-        let line = Text::literal(text);
-        let ticks = self.visual_ticks();
-        let atlas = &self.gui.atlas;
-        self.ui
-            .chat
-            .add(atlas, line, None, ChatSource::Client, ticks, focused);
-    }
-    /// A native mod's own folder: `sunrise-mods/.sunrise-mod-data/<id>/`,
-    /// where the WebAssembly mod of the same id kept its storage, so a
-    /// player's settings carry over. Not created here.
-    pub(super) fn native_data_dir(&self, mod_id: &str) -> PathBuf {
-        Self::mod_data_root().join(mod_id)
-    }
-    pub(super) fn mod_data_root() -> PathBuf {
-        Self::game_dir()
-            .join(mod_list::DIR)
-            .join(".sunrise-mod-data")
-    }
-    /// The game's `config/` folder beside `options.txt`, shared by every mod
-    /// as on Fabric and NeoForge. The same folder on the window, its server
-    /// thread and a LAN host; a dedicated server's is in its own folder,
-    /// beside `server.properties`. Made when missing. Mods reach their own
-    /// files in it through `Host::config_files`.
-    pub(super) fn native_config_dir() -> std::io::Result<PathBuf> {
-        config_dir(&Self::game_dir())
-    }
-    /// Shows these recipes in the panel instead of its items, as many as
-    /// fit a page, under `title` and a back button, with a row of `tabs`
-    /// (each an icon; `tab` is the selected one) between them. At most 256
-    /// recipes and 16 tabs; no recipes shows the items again. The same title
-    /// and tab again keep the page the player turned to.
-    pub(super) fn native_panel_recipes(
-        &mut self,
-        mod_id: &str,
-        title: &str,
-        tabs: Vec<mod_api::Stack>,
-        tab: u32,
-        views: Vec<NativeRecipeView>,
-    ) {
-        let page = RecipePage::new(title, tabs, tab, views);
-        self.panel.show_recipes(mod_id, page);
-    }
-    /// No world is open: a client without a player (the title screen). A
-    /// server's `Game` (the server thread, a dedicated server, a LAN host)
-    /// has no player of its own, and is always in its world.
-    fn outside_world(&self) -> bool {
-        self.player.is_none() && self.options.execution_role.is_client()
-    }
-    /// Every item and recipe the game knows, made once (the same for every
-    /// call); none outside a world. They are the window's own (the content
-    /// mods' and vanilla's), with the server's recipes of the types a mod had
-    /// it send (`native_datapack_sync`) in their place; made again when those
-    /// arrive (`native_recipes_received`).
-    pub(super) fn native_recipes(&mut self) -> Option<Arc<NativeRecipes>> {
-        self.player.as_ref()?;
-        self.made_recipes()
-    }
-}
-
-=======
->>>>>>> sunrise/main
 /// A mob's kind as the hook points name it (`minecraft:zombie`).
 pub(super) fn mob_kind(mob: &sunrise_client::mobs::Mob) -> String {
     crate::game::native_namespaced_id::namespaced(&mob.kind.id)
@@ -3158,12 +2570,6 @@ impl Game<'_> {
         stack: Option<&ItemStack>,
     ) -> BlockClickAnswer {
         let (mut use_block, mut use_item) = (TriState::Default, TriState::Default);
-        // Starling: the old hook first, for the mods made for it (native_compat.rs).
-        let mut canceled = false;
-        self.native_right_click_block_old(hit.pos, hit.face, &mut canceled);
-        if canceled {
-            return BlockClickAnswer::Canceled(mod_api::InteractionResult::Pass);
-        }
         if !mod_api::__private::listened(mod_api::HookId::RightClickBlock) {
             return BlockClickAnswer::Go {
                 use_block,
@@ -3338,8 +2744,6 @@ impl Game<'_> {
         for (player, name) in players {
             self.native_player_logged_out(player, &name);
         }
-        // Starling: no tick follows to send what they said (old_mod_net.rs).
-        self.flush_old_mod_net();
     }
     /// The mobs from index `from` on are new in the world.
     pub(super) fn native_mobs_joined(&mut self, from: usize, natural: bool) {
@@ -3908,8 +3312,6 @@ impl Game<'_> {
             row.native = Some(NativePage { mappings, settings });
             self.settings.mods.installed.push(row);
         }
-        // Starling: and the mods made for the old hooks (native_compat.rs).
-        self.list_old_native_mods();
     }
     /// The settings mod `mod_id` registered, with their kept values, as its page shows them.
     fn native_page_settings(&self, mod_id: &str) -> Vec<NativeSetting> {
@@ -3951,10 +3353,6 @@ impl Game<'_> {
     /// Setting `j` of native mod `i`'s page (its index in Options > Mods) changed on the page:
     /// kept as the mod registered it, then the mod is told (`setting_changed`).
     pub(super) fn native_setting_event(&mut self, i: usize, j: usize) {
-        // Starling: a button of a mod made for the old hooks (native_compat.rs).
-        if self.old_native_setting_event(i, j) {
-            return;
-        }
         let Some(row) = self.settings.mods.installed.get(i) else {
             return;
         };
@@ -3978,10 +3376,6 @@ impl Game<'_> {
     }
     /// Native mod `i`'s page opened: its settings' kept values read again.
     pub(super) fn native_settings_refresh(&mut self, i: usize) {
-        // Starling: the buttons of a mod made for the old hooks (native_compat.rs).
-        if self.old_native_settings_refresh(i) {
-            return;
-        }
         let Some(id) = self.settings.mods.installed.get(i).map(|m| m.id.clone()) else {
             return;
         };

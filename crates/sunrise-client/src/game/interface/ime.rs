@@ -77,16 +77,12 @@ impl Game<'_> {
 
     /// Allow the input method while a text box has focus or a bound preset editor takes text.
     pub(super) fn sync_ime(&mut self) {
-<<<<<<< sync-sunrise-1
         // On Android asking for the input method shows the keyboard: there a tap on the field
         // decides (touch.rs), not its focus.
         if cfg!(target_os = "android") {
             return;
         }
-        let want = self.text_field_focused();
-=======
         let want = self.text_field_focused() || self.preset_editor_title().is_some();
->>>>>>> sunrise/main
         if want != self.ime_allowed
             && let Some(window) = &self.window
         {

@@ -1073,46 +1073,6 @@ pub fn is_monster(s: Species) -> bool {
             | S::Wither
     )
 }
-/// The parts of every mob's tick, summed over a game tick while spans are recorded
-/// (`SUNRISE_SPIKES`): [`PARTS`]' names, milliseconds.
-pub mod parts {
-    use std::cell::Cell;
-    pub const PARTS: [&str; 10] = [
-        "mob.despawn",
-        "mob.base",
-        "mob.goals",
-        "mob.travel",
-        "mob.push",
-        "mob.after",
-        "travel.collide",
-        "travel.fall_fluids",
-        "travel.support",
-        "travel.emission",
-    ];
-    thread_local! {
-        static SUMS: [Cell<f32>; 10] = const { [const { Cell::new(0.0) }; 10] };
-    }
-    /// `f`, its time added to part `i` when spans are on.
-    #[inline]
-    pub fn time<T>(i: usize, f: impl FnOnce() -> T) -> T {
-        if !crate::spans::enabled() {
-            return f();
-        }
-        let started = std::time::Instant::now();
-        let out = f();
-        SUMS.with(|s| s[i].set(s[i].get() + started.elapsed().as_secs_f32() * 1000.0));
-        out
-    }
-    /// The sums since the last call, as spans.
-    pub fn flush() {
-        SUMS.with(|s| {
-            for (i, name) in PARTS.iter().enumerate() {
-                crate::spans::add(name, s[i].replace(0.0));
-            }
-        });
-    }
-}
-
 /// One full entity tick. Returns false when the mob is gone.
 /// `Mob.getTarget` / `Mob.setTarget` (`asValidTarget`): a player in creative
 /// or spectator mode or in Peaceful is never a mob's target, however the target was set (an
@@ -1361,7 +1321,7 @@ fn tick_until_pause(
         return TickProgress::Complete(false);
     }
     // ServerLevel.tick checks despawning before ticking the entity.
-    if !parts::time(0, || check_despawn(m, w)) {
+    if !check_despawn(m, w) {
         m.removed = true;
         return TickProgress::Complete(false);
     }
@@ -1396,9 +1356,6 @@ fn tick_until_pause(
     if m.species() == Species::Strider {
         super::strider::pre_tick(m, w, events);
     }
-<<<<<<< sync-sunrise-1
-    let was_on_fire = parts::time(1, || base_tick(m, w, level, events));
-=======
     let progress = base_tick(m, w, level, events);
     finish_base_progress(m, w, level, events, progress, known_speed, movement)
 }
@@ -1527,7 +1484,6 @@ fn after_base_tick(
     known_speed: Vec3,
     movement: Option<&mut Option<MobMovement>>,
 ) -> TickProgress {
->>>>>>> sunrise/main
     if m.impulse_grace_time > 0 {
         m.impulse_grace_time -= 1;
     }
@@ -3338,11 +3294,7 @@ fn ai_step(
         super::piglin::before_goals(m, w, level.random(), events);
     }
     if m.alive() && !immobile {
-<<<<<<< sync-sunrise-1
-        parts::time(2, || super::dab::step(m, w, level, events));
-=======
         server_ai_until_pause(m, w, level, events, pause_movement)?;
->>>>>>> sunrise/main
     } else {
         m.ai.jumping = false;
         m.ai.xxa = 0.0;
@@ -3366,32 +3318,6 @@ fn ai_step_after_server_ai(
     );
     update_fall_flying(m, w, events);
     reset_effect_fall_distance(m);
-<<<<<<< sync-sunrise-1
-    parts::time(3, || {
-        if super::equine::moved_by_client(m) {
-            // LivingEntity.travelRidden: the rider's client moves it
-            // (handleMoveVehicle), so the server only stops it.
-            m.velocity = Vec3::ZERO;
-        } else if !(m.species() == Species::Mannequin && m.extra.immovable) {
-            // Mannequin.isEffectiveAi: an immovable one never travels.
-            m.travel(w, level, input, events);
-            // A fall's hurt (checkFallDamage) teleports at once.
-            hurt_teleports(m, w, events);
-        }
-    });
-    // LivingEntity.aiStep: applyEffectsFromBlocks follows travel.
-    m.apply_effects_from_blocks(w, events);
-    parts::time(4, || push_entities(m, w, level, events));
-    hurt_by_water(m, w, level, events);
-    // Spider.tick: climbing while pressed against a wall.
-    if m.kind.flags.climber {
-        m.climbing = m.horizontal_collision;
-    }
-    ageable_step(m, w, level, events);
-    animal_step(m, events);
-    burn_undead(m, w, events);
-    species_ai_step(m, w, level, events);
-=======
     if super::equine::moved_by_client(m) {
         // LivingEntity.travelRidden: the rider's client moves it
         // (handleMoveVehicle), so the server only stops it.
@@ -3404,7 +3330,6 @@ fn ai_step_after_server_ai(
         hurt_teleports(m, w, events);
     }
     ControlFlow::Continue(())
->>>>>>> sunrise/main
 }
 
 /// The end of `LivingEntity.aiStep`: a mob that water hurts (an enderman, a

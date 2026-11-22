@@ -109,7 +109,6 @@ pub fn game_home() -> PathBuf {
     }
 }
 
-<<<<<<< sync-sunrise-1
 /// What the game keeps apart from the player's folder: `SUNRISE_PRIVATE`, else the game folder.
 /// Android shows the game folder in shared storage and keeps the prepared resources, the caches,
 /// the import inbox and the control endpoint in the app's own files.
@@ -120,20 +119,14 @@ pub fn private_home() -> PathBuf {
     }
 }
 
-/// Derived caches (`.sunrise-cache`): in the folder the game runs in, or in `SUNRISE_PRIVATE`
-/// when that is set apart (shared storage on Android has no symlinks for pack overlays).
+/// The content overlay's `.sunrise-cache`: in `SUNRISE_PRIVATE` when that is set apart (Starling:
+/// shared storage on Android has no symlinks for pack overlays), else in the private home when
+/// `--home` or `SUNRISE_HOME` names one, else in the game folder. Without startup (e.g. in
+/// tests), use a named `SUNRISE_HOME` or the working directory.
 pub fn cache_dir() -> PathBuf {
-    match std::env::var_os("SUNRISE_PRIVATE").filter(|h| !h.is_empty()) {
-        Some(h) => PathBuf::from(h).join(".sunrise-cache"),
-        None => std::env::current_dir()
-            .unwrap_or_default()
-            .join(".sunrise-cache"),
+    if let Some(private) = std::env::var_os("SUNRISE_PRIVATE").filter(|h| !h.is_empty()) {
+        return PathBuf::from(private).join(".sunrise-cache");
     }
-=======
-/// The content overlay's `.sunrise-cache`: in the private home when `--home` or
-/// `SUNRISE_HOME` names one, else in the game folder. Without startup (e.g. in tests),
-/// use a named `SUNRISE_HOME` or the working directory.
-pub fn cache_dir() -> PathBuf {
     if let Some((_, cache_home)) = HOME.get() {
         return cache_home.join(".sunrise-cache");
     }
@@ -142,7 +135,6 @@ pub fn cache_dir() -> PathBuf {
         None => std::env::current_dir().unwrap_or_default(),
     }
     .join(".sunrise-cache")
->>>>>>> sunrise/main
 }
 
 /// `logs/` and `crash-reports/` of a game folder.
@@ -500,7 +492,6 @@ impl Floods {
 
 static LOGGER: std::sync::OnceLock<Logger<'static>> = std::sync::OnceLock::new();
 
-<<<<<<< sync-sunrise-1
 /// Where messages are printed instead of stderr, which a platform may discard (Android's
 /// logcat, set by sunrise-android). It gets every message the file gets, and other crates'
 /// warnings too (the graphics driver's, wgpu's), since nothing else shows them there.
@@ -511,10 +502,7 @@ pub fn set_console(console: fn(log::Level, &str)) {
     let _ = CONSOLE.set(console);
 }
 
-/// The most lines the tap keeps between two drains (`take_tapped`); older ones are dropped.
-=======
 /// The most lines the tap keeps between two drains (`take_tapped`); new overflow is dropped.
->>>>>>> sunrise/main
 pub const TAP_LINES: usize = 4096;
 
 /// The most bytes of a line's message the tap keeps; the rest is cut off at a character boundary.
@@ -739,11 +727,10 @@ impl log::Log for Logger<'_> {
             ),
             _ => {}
         }
-<<<<<<< sync-sunrise-1
-        let stderr = (console.is_none() && sunrise).then(|| message.clone());
-        tap(thread, level, &message);
-=======
-        let stderr = if sunrise {
+        // A platform console (Android's logcat) had the message in place of stderr.
+        let stderr = if console.is_some() {
+            Echo::Quiet
+        } else if sunrise {
             Echo::Plain(message.clone())
         } else if self
             .stderr_targets
@@ -754,7 +741,6 @@ impl log::Log for Logger<'_> {
         } else {
             Echo::Quiet
         };
->>>>>>> sunrise/main
         self.send(thread, level, &message, stderr);
         if gate == Gate::Last {
             self.send(

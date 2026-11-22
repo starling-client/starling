@@ -282,6 +282,10 @@ pub struct Frame<'a> {
     /// `Screen.extractBlurredBackground`: blur the frame by this radius
     /// (`menuBackgroundBlurriness`) before the screen is drawn over it.
     pub menu_blur: Option<f32>,
+    /// The world under this blurred menu does not move (a paused single-player game): the
+    /// blurred frame may be kept, and once kept, drawn again in place of the world and the blur
+    /// (`Renderer::has_menu_blur_cache`).
+    pub menu_blur_cache: bool,
     /// `Options.chunkSectionFadeInTime`, in seconds: how long a section takes to fade in once
     /// uploaded (0 draws it whole at once).
     pub chunk_fade: f32,

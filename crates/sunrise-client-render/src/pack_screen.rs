@@ -887,14 +887,10 @@ impl PackScreen {
                 return (action, true);
             }
         }
-<<<<<<< sync-sunrise-1
         if self.on_catalog(x, y) {
             return Action::Catalog;
         }
-        Action::None
-=======
         (Action::None, false)
->>>>>>> sunrise/main
     }
     /// `PackEntry.mouseClicked`; true when the entry clicked is still the
     /// list's own (nothing was repopulated).

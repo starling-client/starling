@@ -66,7 +66,6 @@ pub(in crate::gfx) fn sunrise_scene() -> bool {
     asked(std::env::var("SUNRISE_RAY_TRACING").ok().as_deref())
 }
 
-<<<<<<< sync-sunrise-1
 /// The Ray Tracing switch's offer (#470): greyed out where the adapter has no ray queries,
 /// with the device extensions it lacks, which the log names too.
 pub(super) fn note_offer(adapter: &wgpu::Adapter) {
@@ -110,11 +109,7 @@ pub(super) fn note_offer(adapter: &wgpu::Adapter) {
     }
 }
 
-/// Whether `SUNRISE_RAY_TRACING` set to `var` asks for ray tracing: only in a `sunrise-extras`
-/// build.
-=======
 /// Whether `SUNRISE_RAY_TRACING` set to `var` asks for ray tracing: only `1` does.
->>>>>>> sunrise/main
 fn asked(var: Option<&str>) -> bool {
     var == Some("1")
 }

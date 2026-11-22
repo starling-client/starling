@@ -34,15 +34,6 @@ impl IPayloadHandler for Step {
         bytes: PayloadBytes,
         context: &mut dyn IPayloadContext,
     ) -> Result<(), mod_api::PayloadHandleError> {
-<<<<<<< sync-sunrise-1
-        self.step(bytes, context)
-            .map_err(mod_api::PayloadHandleError::Failed)
-    }
-}
-impl Step {
-    fn step(&self, bytes: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), String> {
-=======
->>>>>>> sunrise/main
         assert_eq!(std::thread::current().name(), Some("Server thread"));
         let round = bytes.0[0];
         let player = context

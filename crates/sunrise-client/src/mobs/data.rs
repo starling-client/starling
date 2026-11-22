@@ -194,10 +194,6 @@ pub struct MobData {
     pub frame_models: super::render::BakedFrameModels,
     /// Replaced when the resource packs change (the rest of `MobData` never is).
     pub villager_hats: std::sync::RwLock<super::villager_hats::VillagerHats>,
-    /// Equipment textures that are custom armour (`custom_armor`), replaced with the packs too.
-    pub armor_atlases: std::sync::RwLock<HashMap<String, crate::custom_armor::ArmorAtlas>>,
-    /// Every namespace's equipment assets (`equipment`), replaced with the packs too.
-    pub equipment: std::sync::RwLock<crate::equipment::Layers>,
     /// The packs' custom entity models (OptiFine CEM); replaced when the resource packs change.
     pub cem: std::sync::RwLock<std::sync::Arc<super::cem::CemModels>>,
     /// The packs' random entity textures, replaced with them too.
@@ -245,8 +241,6 @@ impl MobData {
         .unwrap_or_default();
         data.villager_hats =
             std::sync::RwLock::new(super::villager_hats::VillagerHats::load(source));
-        data.armor_atlases = std::sync::RwLock::new(crate::custom_armor::load(root));
-        data.equipment = std::sync::RwLock::new(crate::equipment::load(root));
         let random = sunrise_optifine::random_textures::RandomTextures::scan(source);
         let blinks = sunrise_optifine::blink::Blinks::scan(source, &random);
         let mut emissive = sunrise_optifine::emissive::Emissive::scan(source, &random);
@@ -372,12 +366,7 @@ impl MobData {
             heightmaps,
             animations,
             villager_hats: Default::default(),
-<<<<<<< sync-sunrise-1
-            armor_atlases: Default::default(),
-            equipment: Default::default(),
-=======
             frame_models: Default::default(),
->>>>>>> sunrise/main
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
@@ -441,12 +430,7 @@ impl MobData {
             heightmaps: HashMap::new(),
             animations: HashMap::new(),
             villager_hats: Default::default(),
-<<<<<<< sync-sunrise-1
-            armor_atlases: Default::default(),
-            equipment: Default::default(),
-=======
             frame_models: Default::default(),
->>>>>>> sunrise/main
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),

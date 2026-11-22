@@ -188,23 +188,12 @@ impl Game<'_> {
         }
     }
 
-<<<<<<< sync-sunrise-1
-    /// The first half of `as_guest`: the guest's state in place of the
-    /// game's, which the returned swap keeps until `leave_guest`. The host
-    /// stays in `self.lan`, so the guest can reach other players. Guest turns
-    /// can nest: the acting guest and their queued packets are restored.
-    pub(in crate::game) fn enter_guest(&mut self, conn: u32) -> Option<GuestSwap> {
-        // Starling: the old hook, for the mods made for it (native_compat.rs).
-        self.old_enter_guest(conn);
-        self.enter_guest_in_dimension(conn, self.dim)
-=======
     /// Record that a panic interrupted `conn`'s turn: the crash save keeps that player's last
     /// saved file. The record clears at the start of the next server tick.
     pub(in crate::game) fn record_interrupted_turn(&mut self, conn: u32) {
         if !self.interrupted_turns.contains(&conn) {
             self.interrupted_turns.push(conn);
         }
->>>>>>> sunrise/main
     }
 
     /// Record every swap still open: a panic going through them leaves each of their players'

@@ -8,23 +8,9 @@ impl Game<'_> {
         self.fire_movement_input_update(call);
     }
 
-<<<<<<< sync-sunrise-1
-impl Game<'_> {
-    /// Apply the listener's keys or independent axes before local movement and
-    /// packet construction. A key edit wins over all axis edits, including a
-    /// controller's old vector; opposing keys remain independently observable.
-    pub(in crate::game) fn mod_movement_keys(
-        &self,
-        mut keys: sunrise_client::sprint::Keys,
-    ) -> sunrise_client::sprint::Keys {
-        // Starling: the old hook first, for the mods made for it (native_compat.rs).
-        keys = self.old_movement_keys(keys);
-        if !mod_api::__private::enabled_listened(mod_api::HookId::MovementInput) {
-=======
     /// Lend both parts of the sampled input together, without deriving either from edits to the other.
     pub(in crate::game) fn update_movement_input(&self, keys: Keys) -> Keys {
         if !mod_api::__private::enabled_listened(mod_api::HookId::MovementInputUpdate) {
->>>>>>> sunrise/main
             return keys;
         }
         let mut input = MovementInput {

@@ -857,10 +857,6 @@ impl Levels {
     pub(super) fn parked_dims(&self) -> Vec<Dim> {
         self.parked.keys().copied().collect()
     }
-    /// The save folders of the levels not in place, to wait for their writes.
-    pub(super) fn parked_saves(&self) -> Vec<Arc<SaveDir>> {
-        self.parked.values().map(|p| p.save.clone()).collect()
-    }
 }
 
 impl Game<'_> {
@@ -1538,13 +1534,8 @@ impl Game<'_> {
             if observe_level && let Some(level) = self.level(dim.id()) {
                 self.native_level_tick_post(level);
             }
-<<<<<<< sync-sunrise-1
-            // Starling: the old hook, for the mods made for it (native_compat.rs).
-            self.native_level_tick_post_old(dim.id());
-=======
             #[cfg(feature = "state-digest")]
             self.state_digest_tick(dim, running);
->>>>>>> sunrise/main
             sunrise_client::spans::time("server_debug", || self.publish_server_debug(dim));
             // An entity that crossed into a level that already ticked this
             // server tick is in it when the tick ends (`addDuringTeleport`).

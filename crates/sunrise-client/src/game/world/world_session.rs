@@ -20,18 +20,12 @@ impl Game<'_> {
     /// What the title screen asked for, from a click or Enter.
     pub(super) fn title_action(&mut self, action: Action) -> Result<()> {
         match action {
-<<<<<<< sync-sunrise-1
-            // A splitscreen player's title never ends the process (P1's does).
-            Action::Quit if self.options.split_guest => {}
-            Action::Quit => event_loop.exit(),
+            Action::Quit => self.begin_closing_save(true)?,
             Action::Launcher => {
                 #[cfg(target_os = "android")]
                 crate::ha_launcher::back_to_launcher();
                 event_loop.exit();
             }
-=======
-            Action::Quit => self.begin_closing_save(true)?,
->>>>>>> sunrise/main
             Action::Options => self.open_options(true),
             Action::Accessibility => {
                 self.open_options_at(true, sunrise_client::options_ui::Page::Accessibility)

@@ -1,16 +1,9 @@
 //! The save screen freezes simulation, but keeps pumping window events while
 //! snapshots are prepared in small batches and the region workers drain.
 use super::{Game, loading_frame};
-<<<<<<< sync-sunrise-1
-use sunrise_client::{Result, hud::HudBatch, save::SaveDir};
-use std::{
-    collections::{HashSet, VecDeque},
-    sync::Arc,
-=======
 use std::{
     collections::{HashSet, VecDeque},
     sync::mpsc::{Receiver, TryRecvError},
->>>>>>> sunrise/main
     time::{Duration, Instant},
 };
 use sunrise_client::{Result, hud::HudBatch};
@@ -120,74 +113,6 @@ impl Game<'_> {
         }
         self.capture(false);
         Ok(())
-    }
-
-    /// The focus goes first when the game leaves the screen on a phone (home, the recent apps, a
-    /// call), before the window, and the system may end the process from then on: the world is
-    /// saved at once, as Bedrock does. Apart from `handle_window_event`: horizon-mixins refuses to
-    /// hook a function with a `#[cfg]` in it (E_UNSUPPORTED_CFG).
-    pub(super) fn save_when_focus_leaves(&mut self, event: &winit::event::WindowEvent) {
-        if !cfg!(target_os = "android") {
-            return;
-        }
-        if let winit::event::WindowEvent::Focused(focused) = event {
-            // Out of focus but still on screen (a floating app over it, the recent apps, the
-            // notification shade), the window keeps its surface and `suspended` never comes: the
-            // sound goes with the focus, as the game pauses with it (Options' "Pause in the
-            // Background", vanilla's pauseOnLostFocus). Turned off, the game plays on, heard.
-            let pauses = self.settings.file.bool("pauseOnLostFocus");
-            if *focused {
-                self.saved_for_background = false;
-                self.audio.resume_output();
-            } else {
-                self.save_for_background();
-                if pauses {
-                    self.audio.suspend_output();
-                }
-            }
-        }
-    }
-
-    /// The game left the screen (Android: the focus went, or the window), and from now on the
-    /// system may end the process without a word: the world is saved where it stands, once each
-    /// time the game goes, as Bedrock does, and the log is flushed. It is the autosave's save
-    /// (vanilla's when the pause menu opens): the files go to the writer threads and nothing waits
-    /// for them, neither the window nor Android's UI thread behind it (a full save waits for the
-    /// generation in flight, seconds on a phone). The log says when they are written.
-    pub(super) fn save_for_background(&mut self) {
-        if !std::mem::replace(&mut self.saved_for_background, true)
-            && self.title.is_none()
-            && self.pending_save.is_none()
-            && self.integrated_starting.is_none()
-            && self.pending_entry.is_none()
-        {
-            if let Some(server) = &self.integrated {
-                log::info!("Sunrise: saving the world, the game left the screen");
-                // Out of sight the world waits as saved; the next frame pauses it or not again.
-                if !self.is_published() {
-                    server.set_paused(true);
-                }
-                server.execute(|g| {
-                    let started = Instant::now();
-                    match g.save_game_with(false) {
-                        Ok(()) => {
-                            let mut saves = g.levels.parked_saves();
-                            saves.push(g.save.clone());
-                            log_when_written(saves, started);
-                        }
-                        Err(e) => log::warn!("Sunrise: failed to save the world: {e}"),
-                    }
-                });
-            } else if self.remote.is_none() {
-                log::info!("Sunrise: saving the world, the game left the screen");
-                let started = Instant::now();
-                match self.save_game_with(false) {
-                    Ok(()) => log_when_written(vec![self.save.clone()], started),
-                    Err(e) => log::warn!("Sunrise: failed to save the world: {e}"),
-                }
-            }
-        }
-        sunrise_client::logging::flush();
     }
 
     /// Control saves acknowledge only after durable completion, while their
@@ -505,28 +430,6 @@ impl Game<'_> {
             scaled: false,
             background: true,
         });
-    }
-}
-
-/// Logs, from a thread of its own, once the writer threads have put a save that did not wait on
-/// disk: in a bug report it shows whether the process ended before.
-fn log_when_written(saves: Vec<Arc<SaveDir>>, started: Instant) {
-    let waiter = std::thread::Builder::new()
-        .name("Save waiter".into())
-        .spawn(move || {
-            let written = saves.iter().try_for_each(|save| save.flush());
-            sunrise_client::save::later::flush();
-            match written {
-                Ok(()) => log::info!(
-                    "Sunrise: the world is saved ({:.2} s)",
-                    started.elapsed().as_secs_f32()
-                ),
-                Err(e) => log::warn!("Sunrise: failed to save the world: {e}"),
-            }
-            sunrise_client::logging::flush();
-        });
-    if let Err(e) = waiter {
-        log::warn!("Sunrise: could not wait for the save: {e}");
     }
 }
 

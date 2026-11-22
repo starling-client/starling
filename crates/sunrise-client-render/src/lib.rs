@@ -1,12 +1,9 @@
 //! The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer,
 //! the HUD, menus and settings. Gameplay (sunrise-client) builds on it; nothing here reaches gameplay.
 #![forbid(unsafe_code)]
-<<<<<<< sync-sunrise-1
 pub mod android_display;
 pub mod android_gamepad;
 pub mod android_runtime;
-=======
->>>>>>> sunrise/main
 pub mod assets;
 pub mod atlas_sources;
 pub mod audio;
@@ -75,6 +72,7 @@ pub mod inventory_effects;
 pub mod java_text;
 mod jei_sprites;
 pub mod jigsaw_block;
+pub mod keypad;
 pub mod moving_colliders;
 pub mod terrain_model;
 pub use sunrise_polytone::creative_tabs as polytone_creative_tabs;
@@ -172,6 +170,7 @@ pub mod tab_list;
 pub mod test_block;
 pub mod test_instance_block;
 pub mod testgen;
+pub mod touch;
 pub mod trims;
 pub mod ui;
 pub mod vault;

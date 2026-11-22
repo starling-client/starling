@@ -366,16 +366,22 @@ impl Renderer {
                     );
                     hdr.keep_world(encoder, timing.as_mut());
                 }
-                None => blur.apply(
-                    device,
-                    &self.queue,
-                    encoder,
-                    target_texture,
-                    view_target,
-                    size,
-                    radius,
-                    timing.as_mut(),
-                ),
+                None => {
+                    blur.apply(
+                        device,
+                        &self.queue,
+                        encoder,
+                        target_texture,
+                        view_target,
+                        size,
+                        radius,
+                        timing.as_mut(),
+                    );
+                    // HDR output never draws the kept frame back (`has_menu_blur_cache`).
+                    if frame.menu_blur_cache && overlay.real {
+                        blur.keep(encoder, target_texture, size, radius);
+                    }
+                }
             }
             if let Some(view) = &coverage {
                 hud_coverage::clear(encoder, view);

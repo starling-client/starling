@@ -232,12 +232,8 @@ fn pause_icon_focus_ids(friends: bool) -> Vec<u8> {
         .map(|i| if i == FRIENDS_ICON { 10 } else { 12 + i as u8 })
         .collect()
 }
-<<<<<<< sync-sunrise-1
-const SPLIT_SETTINGS: &str = "sunrise.pages.split_settings";
 /// Starling on Android: the row back to the launcher (`ha_launcher`), the world saved first.
 const LAUNCHER: &str = "starling.launcher.button";
-=======
->>>>>>> sunrise/main
 /// The pause menu's first id for the pages crates registered there: id `ADDED_PAGES + i` opens
 /// registered page `i`.
 const ADDED_PAGES: u8 = 40;
@@ -521,8 +517,6 @@ impl Game<'_> {
             13 => self.confirm_trusted_link(feedback_link(), Screen::Paused),
             // PauseScreen: `new SocialInteractionsScreen(this)`.
             15 => self.open_social(true),
-<<<<<<< sync-sunrise-1
-            30 => self.open_split_settings(),
             // The world saves and the game ends as Quit does; the app starts again in the
             // launcher (android::finish_and_exit).
             31 => {
@@ -530,8 +524,6 @@ impl Game<'_> {
                 crate::ha_launcher::back_to_launcher();
                 self.begin_closing_save(true)?;
             }
-=======
->>>>>>> sunrise/main
             id @ ADDED_PAGES.. => {
                 let page = usize::from(id - ADDED_PAGES);
                 self.open_options_at(false, sunrise_client::options_ui::Page::Added(page));
@@ -560,19 +552,11 @@ impl Game<'_> {
                 page.place() == sunrise_hooks::pages::Place::Pause
                     && *i < usize::from(u8::MAX - ADDED_PAGES)
             })
-<<<<<<< sync-sunrise-1
-            .map(|(i, page)| (page.title(), ADDED_PAGES + i as u8));
-        split
-            .then_some((SPLIT_SETTINGS, 30))
-            .into_iter()
-            .chain(added)
+            .map(|(i, page)| (page.title(), ADDED_PAGES + i as u8))
             .chain(
                 (cfg!(target_os = "android") && !self.options.split_guest)
                     .then_some((LAUNCHER, 31)),
             )
-=======
-            .map(|(i, page)| (page.title(), ADDED_PAGES + i as u8))
->>>>>>> sunrise/main
     }
     pub(super) fn pause_click(&mut self) -> Result<bool> {
         let (w, h) = {

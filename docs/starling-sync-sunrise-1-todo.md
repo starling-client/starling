@@ -49,3 +49,32 @@
   checksums (our line dropped as a duplicate) and no longer swaps the title banner to "RUST EDITION".
 - Compile store (mod-builds, 2026-11-22): the base is rebuilt in the sandbox's environment under cache key store2-;
   mod.yml/catalog.yml read it once branch store2-readers is merged.
+- Sunrise deleted the Android input modules the base had taken from Starling (c878ccf19f): android_gamepad.rs,
+  android_runtime.rs (+tests), keypad.rs, touch.rs and touch/* in sunrise-client-render. The merge dropped them without
+  a conflict (Starling hadn't changed them since the base); they are back from Starling's side, declared in lib.rs.
+  The list of every file Starling had that the merged tree lacks is in the tools folder (gone-after-merge.txt, 1531
+  paths, mostly Sunrise's own moves): check it against what Starling's code still names once the build runs.
+- FEATURE TO RE-PORT: the Stats performance overlay (`Overlay::Stats`, stats_overlay.rs, our perf_overlay.rs edits in
+  ours-diffs). Sunrise moved the overlay to the crate sunrise-perf-overlay and its key out of sunrise-graphics.txt;
+  graphics.rs took that. Anything of ours still naming `g.overlay`/`Overlay::Stats` must go through the new crate.
+- ui.rs: `load_skin(root)` (Starling's low-budget skin: button takes, pressed label) lost its caller: Sunrise took read_metadata out of ui.rs. Call it where the resource root is (re)loaded.
+- options_ui.rs: the wardrobe's drag on the skin preview (the `Page::Skin && self.wardrobe_enabled` block of the click
+  handler) is out: Sunrise's click handler now returns `(Vec<Event>, bool)` and lost its splitscreen pages. Put the
+  block back in that shape (ours-diffs/options_ui.7.wardrobe-click.diff).
+- SERVER SIDE IS SUNRISE'S (owner's call, 2026-11-22: only the client's conflicts get hand care). 39 files of
+  sunrise-client's gameplay, world, LAN, network messages, mobs and mod hooks took Sunrise's whole; Starling's diff of
+  each is in the tools folder (ours-diffs/server/*.diff). What must come back on top, by feature:
+  - Create and content mods: mod_content.rs (+103), mod_content/load_conditions.rs (+110), lan/chunks.rs (+47),
+    crafting.rs (recipes whose serializer is gone are left out).
+  - Old native mods' names (native_hooks/*, game/world/levels.rs, lan_actions/turns.rs, dispenser.rs): the
+    compatibility for mods made for Starling 0.8.0.
+  - Worlds: save.rs (+246: level.dat_old when level.dat is missing and the like) and game/world/saving.rs (+92).
+  - Android in game/world/integrated.rs (+37: worker stacks) and native_hooks/shared.rs (safe zones).
+  - mobs/render.rs (+94) and mobs/data.rs: ItemsAdder's custom armour and dyed leather on servers.
+  - mobs/ai.rs and mobs/living.rs: the cheaper mob collisions (see PERF TO RE-PORT above).
+  - The API backport's host side (stations.rs, menu.rs, native_client_hooks.rs, native_player_*.rs, spill.rs,
+    armor_stands.rs, use_hand.rs): Sunrise has its own.
+- gfx.rs is Sunrise's; 72 of Starling's 112 edits there are carried into gfx/*.rs by exact context. The 40 left are in
+  ours-diffs/crates_sunrise-client-render_src_gfx.rs.N.rej (rejs.py lists them with where their neighbours are now):
+  the renderer's Android fields (solid_split, late sky, flat cache, start marker), Adreno 506's depth format, the
+  loading screen's lent device, the black first frame, the paused-menu blur frame, ray tracing's world.

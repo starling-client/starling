@@ -108,8 +108,6 @@ pub enum Event {
     Brand(String),
     /// The server runs mods' quiet commands (`sunrise_protocol::quiet`).
     QuietCommands,
-    /// Starling: the server carries the old mod messages (`sunrise_protocol::mod_net`).
-    ModNet,
     /// The server supports private custom recipe-book synchronization.
     CustomBooks,
     /// The server samples far terrain for this client (`lod_net`).
@@ -237,21 +235,12 @@ impl Event {
             Self::Status(s) | Self::Brand(s) | Self::DecodeError(s) | Self::CodeOfConduct(s) => {
                 s.capacity()
             }
-<<<<<<< sync-sunrise-1
-            Self::QuietCommands
-            | Self::ModNet
-            | Self::CustomBooks
-            | Self::Reconfiguring
-            | Self::ClearDialog
-            | Self::PackPop(_) => 0,
-=======
             Self::Bundle(bundle) => bundle.owned_bytes(),
             Self::Reconfiguring(_) => size_of::<PhaseChange>(),
             Self::FinishConfiguration(task) => task.owned_bytes(),
             Self::Configuration(task) => task.owned_bytes(),
             Self::Cookie(task) => size_of::<CookieTask>() + task.cookie.owned_bytes(),
             Self::QuietCommands | Self::CustomBooks | Self::ClearDialog | Self::PackPop(_) => 0,
->>>>>>> sunrise/main
             Self::FarTerrain(crate::lod_net::Offer {
                 distance: _,
                 in_flight: _,
@@ -1212,11 +1201,6 @@ fn run(
     c.send(&cfg::Serverbound::ClientInformation(info).encode())
         .map_err(e)?;
     let (mut reader, writer) = c.split();
-<<<<<<< sync-sunrise-1
-    *shared_writer.lock().unwrap() =
-        Some(QueuedWriter::new(writer).map_err(|error| Reason::plain(error.to_string()))?);
-    let registries = match configure(
-=======
     let writer = QueuedWriter::new(writer).map_err(|error| Reason::plain(error.to_string()))?;
     if let Some(queue) = payloads
         .connection
@@ -1227,7 +1211,6 @@ fn run(
     }
     *shared_writer.lock().unwrap() = Some(writer);
     let registries = configure(
->>>>>>> sunrise/main
         &mut reader,
         shared_writer,
         configuring,
@@ -1236,19 +1219,10 @@ fn run(
         cookies,
         resources,
         payloads,
-<<<<<<< sync-sunrise-1
-    )? {
-        Ok(registries) => registries,
-        Err(kicked) => return Ok(kicked),
-    };
-    let _ = send.send(Event::Joined {
-        registries: Arc::new(registries),
-=======
     )?;
     let registries = Arc::new(registries);
     let _ = send.send_wait(Event::Joined {
         registries: registries.clone(),
->>>>>>> sunrise/main
         uuid: profile.uuid,
         name: profile.name,
     });
@@ -1695,13 +1669,7 @@ fn receive_play(
                     .recv()
                     .map_err(|_| Reason::plain("Disconnected"))?
                     .map_err(|error| Reason::plain(connection_lost(error, lang)))?;
-<<<<<<< sync-sunrise-1
-                    configuring.store(true, Ordering::Relaxed);
-                }
-                let registries = match configure(
-=======
                 let snapshot = configure(
->>>>>>> sunrise/main
                     reader,
                     shared_writer,
                     configuring,
@@ -1710,18 +1678,10 @@ fn receive_play(
                     cookies,
                     resources,
                     payloads,
-<<<<<<< sync-sunrise-1
-                )? {
-                    Ok(registries) => registries,
-                    Err(kicked) => return Ok(kicked),
-                };
-                let _ = send.send(Event::Reconfigured(Arc::new(registries)));
-=======
                 )?;
                 registries = Arc::new(snapshot);
                 io = new_listener();
                 let _ = send.send_wait(Event::Reconfigured(registries.clone()));
->>>>>>> sunrise/main
             }
             play::Clientbound::CookieRequest(q) => {
                 io.common.queue_cookie(send, Cookie::Request(q))?;
@@ -1797,8 +1757,7 @@ fn receive_application(
 }
 
 /// The configuration phase: registries, tags and known packs until the
-/// server finishes it (ClientConfigurationPacketListenerImpl). Err: the connection failed;
-/// Ok(Err): the server ended it, with its reason.
+/// server finishes it (ClientConfigurationPacketListenerImpl).
 fn configure(
     reader: &mut ConnReader,
     writer: &Arc<Mutex<Option<QueuedWriter>>>,
@@ -1808,16 +1767,11 @@ fn configure(
     cookies: &Cookies,
     resources: &ItemData,
     payloads: &Arc<crate::raw_payloads::Transport>,
-<<<<<<< sync-sunrise-1
-) -> Result<Result<Dynamic, Reason>, Reason> {
-    let mut registries = Dynamic::default();
-=======
 ) -> Result<Dynamic, Reason> {
     use sunrise_protocol::payload_negotiation::Phase;
     let io = CommonIo::new(writer, cookies, Phase::Configuration);
     let config = Arc::new(Configuration::default());
     let mut menu_extra_revision = 0;
->>>>>>> sunrise/main
     let mut content_verified = false;
     let mut features = None;
     let mut negotiation =
@@ -1995,20 +1949,10 @@ fn configure(
             cfg::Clientbound::ServerLinks(p) => {
                 let _ = send.send_wait(Event::ServerLinks(p.links));
             }
-            // The server ends the connection either way: a kick or a transfer during
-            // configuration is not retried as a failed connection.
             cfg::Clientbound::Transfer(p) => {
-<<<<<<< sync-sunrise-1
-                let _ = send.send(Event::Transfer {
-                    host: p.host,
-                    port: p.port,
-                });
-                return Ok(Err(Reason::keyed("disconnect.transfer", lang)));
-=======
                 io.queue_transfer(send, p)?;
->>>>>>> sunrise/main
             }
-            cfg::Clientbound::Disconnect(d) => return Ok(Err(Reason::tag(&d.reason, lang))),
+            cfg::Clientbound::Disconnect(d) => return Err(Reason::tag(&d.reason, lang)),
             cfg::Clientbound::FinishConfiguration(_) => {
                 use configuration::{FinishConfiguration, PlayPreparation};
                 // A prior callback may still hold main work. Let the reader
@@ -2036,26 +1980,7 @@ fn configure(
                 if let Some(features) = features {
                     let _ = send.send_wait(Event::Features(features));
                 }
-<<<<<<< sync-sunrise-1
-                crate::datapack_net::finish_transfer().map_err(Reason::plain)?;
-                registries.custom_components = content_verified;
-                payloads
-                    .finish_configuration_with(|| {
-                        let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
-                        let w = w.as_mut().ok_or_else(|| "Disconnected".to_owned())?;
-                        w.transition_protocol(
-                            sunrise_protocol::payload_negotiation::Phase::Play,
-                            &cfg::Serverbound::FinishConfiguration(Empty).encode(),
-                        )
-                        .map_err(|e| connection_lost(e, lang))?;
-                        configuring.store(false, Ordering::Release);
-                        Ok(())
-                    })
-                    .map_err(Reason::plain)?;
-                return Ok(Ok(registries));
-=======
                 return Ok(registries);
->>>>>>> sunrise/main
             }
             _ => {}
         }
@@ -2064,25 +1989,8 @@ fn configure(
 
 #[sunrise_mod_api_macros::replaceable]
 fn receive_brand(payload: &cfg::CustomPayload, send: &ingress::Producer<Event>) {
-<<<<<<< sync-sunrise-1
-    if payload.channel == "minecraft:brand"
-        && let Ok(brand) = sunrise_protocol::buf::Reader::new(&payload.data).string(32767)
-    {
-        let _ = send.send(Event::Brand(brand));
-    } else if payload.channel == sunrise_protocol::quiet::CHANNEL {
-        let _ = send.send(Event::QuietCommands);
-    } else if payload.channel == sunrise_protocol::mod_net::CHANNEL {
-        let _ = send.send(Event::ModNet);
-    } else if payload.channel == sunrise_protocol::custom_book::CHANNEL {
-        let _ = send.send(Event::CustomBooks);
-    } else if payload.channel == crate::lod_net::CHANNEL
-        && let Some(offer) = crate::lod_net::Offer::decode(&payload.data)
-    {
-        let _ = send.send(Event::FarTerrain(offer));
-=======
     if let Some(event) = brand_event(payload) {
         let _ = send.send_wait(event);
->>>>>>> sunrise/main
     }
 }
 
@@ -2711,8 +2619,7 @@ mod tests {
             thread
                 .join()
                 .unwrap()
-                .unwrap_or_else(|reason| panic!("configuration failed: {}", reason.text))
-                .unwrap_or_else(|reason| panic!("configuration ended: {}", reason.text));
+                .unwrap_or_else(|reason| panic!("configuration failed: {}", reason.text));
             drop(shared_writer);
             std::fs::remove_dir_all(root).unwrap();
         }
@@ -3560,12 +3467,9 @@ mod tests {
             assert_eq!(cfg::Serverbound::decode(id, &body).unwrap(), expected);
         }
         // A failure reads as 0 and fails the assertion below.
-        // Starling's configure answers a kick apart from a failure: either reads as 0.
         let revision = thread
             .join()
             .unwrap()
-            .ok()
-            .and_then(Result::ok)
             .map(|registries| registries.menu_extra_revision)
             .unwrap_or(0);
         drop(writer);

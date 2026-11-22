@@ -13,6 +13,59 @@ impl Renderer {
         self.flat_on = on;
         Ok(())
     }
+    /// Drops the blurred menu frame kept for `Frame::menu_blur_cache`: the next blurred
+    /// frame draws the world again (the menu was left, or a setting changed under it).
+    pub fn forget_menu_blur(&mut self) {
+        if let Some(blur) = &mut self.menu_blur {
+            blur.forget();
+        }
+    }
+    /// Whether a frame of a menu blurred by `radius` with `Frame::menu_blur_cache` draws the
+    /// kept blurred frame, without the world: one is kept for this window's size and radius,
+    /// and no screenshot, HDR output or SDR finish of a 0.2 pack (`overlay_format`) needs the
+    /// whole frame. Adapted from Vasysik/sunrise-android (`has_cached_menu_blur`, its commit
+    /// 77b9e17f76), MIT.
+    pub fn has_menu_blur_cache(&self, radius: f32) -> bool {
+        self.config.usage.contains(wgpu::TextureUsages::COPY_SRC)
+            && self.screenshot.is_none()
+            && self.hdr.is_none()
+            && self.output.frame.overlay_format == self.output.frame.format
+            && self
+                .menu_blur
+                .as_ref()
+                .is_some_and(|b| b.kept([self.config.width, self.config.height], radius))
+    }
+    /// Whether per-section draws are indirect multi-draws rather than one call per section.
+    pub fn indirect_draws(&self) -> bool {
+        self.multi_draw
+    }
+    /// Switches per-section draws between indirect multi-draws, where the device takes them,
+    /// and one call per section, for A/B checks.
+    pub fn set_indirect_draws(&mut self, on: bool) {
+        self.multi_draw = on && self.indirect_capable;
+    }
+    /// Whether frames that may take it draw the sky after solid terrain (`late_sky`).
+    pub fn late_sky_on(&self) -> bool {
+        self.late_sky_on
+    }
+    /// Switches drawing the sky after solid terrain, for A/B checks.
+    pub fn set_late_sky(&mut self, on: bool) -> Result<()> {
+        if on && self.late_sky.is_none() {
+            return Err("the late sky is off on this device".into());
+        }
+        self.late_sky_on = on;
+        Ok(())
+    }
+    /// Which A/B switches this device takes: flat draws, indirect multi-draws, the late sky
+    /// and occlusion culling (Starling's performance test offers only these).
+    pub fn draw_choices(&self) -> [bool; 4] {
+        [
+            self.flat.is_some(),
+            self.indirect_capable,
+            self.late_sky.is_some(),
+            self.cull.is_some(),
+        ]
+    }
     /// Whether one of Sunrise's own packs reads the water mirror, which needs the frame's
     /// `water_plane`.
     pub fn wants_water_plane(&self) -> bool {

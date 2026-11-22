@@ -20,7 +20,15 @@ impl Renderer {
         let facts = MeshFacts::of(mesh);
         let fading = self.before_mesh(key, &facts);
         let section = self.upload_mesh(mesh);
+        let uploaded = section.is_some();
         self.after_mesh(key, &facts, section, fading);
+        // Ray tracing's triangle soup (#470, experimental), on a ray-query device with a
+        // ray-tracing pack: solid quads baked into world space for one BLAS per section.
+        if uploaded && self.rt_enabled() && !mesh.solid.is_empty() {
+            let origin = rt::section_origin(key);
+            self.rt
+                .note_upload(key, rt::expand_section_positions(&mesh.solid, origin));
+        }
     }
     /// Section `key`'s new mesh drawn from now on, its quads uploaded (`section`: none when it
     /// has none, or the arena had no room).
@@ -306,7 +314,15 @@ impl Renderer {
                 pass.set_bind_group(1, group, &[]);
             }
             pass.set_index_buffer(indices, wgpu::IndexFormat::Uint32);
-            if self.multi_draw {
+            if !self.base_vertex {
+                // Android fork fallback: GLES 3.0 has no base-vertex draws.
+                // Rebase the selected arena's bounded binding instead.
+                for d in &draws[i..i + run] {
+                    let offset = u64::from(d[3]) * std::mem::size_of::<TerrainVertex>() as u64;
+                    pass.set_vertex_buffer(0, vertices.slice(offset..));
+                    pass.draw_indexed(d[2]..d[2] + d[0], 0, d[4]..d[4] + 1);
+                }
+            } else if self.multi_draw {
                 let offset = (i - base as usize) as u64 * 20;
                 pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
             } else {
@@ -667,8 +683,11 @@ impl Renderer {
         self.lod_pending = None;
         self.detail_columns.clear();
         self.detail_revision += 1;
-        // A dimension change drops every page at once: freed later, off this thread.
+        // A dimension change drops every page at once: freed later, off this thread. One
+        // page's buffer stays for the next level's first sections, or is made now, while
+        // its loading screen shows (`Arena::prewarm`).
         self.graveyard.add(self.arena.clear());
+        self.arena.prewarm(&self.device);
         if let Some(gpu) = &mut self.gpu_culling {
             gpu.records.clear();
             // The chunk fade-in time they were decided with stays.
@@ -892,6 +911,7 @@ impl Renderer {
                     // Far terrain draws the column: it fades out over it.
                     self.leave_section(key);
                 } else if let Some(section) = self.sections.remove(key) {
+                    self.rt.forget(key);
                     released.push(section);
                 }
             }
@@ -923,6 +943,9 @@ impl Renderer {
         self.light_revision += (before - self.light_blocks.len()) as u64;
         self.section_uploaded.retain(|key, _| kept(key));
         let released = self.sections.remove_columns(&gone);
+        for &(x, z) in columns {
+            self.rt.forget_column(x, z);
+        }
         self.release_meshes(released);
     }
     /// Gives the removed sections' quads back to their arenas; the sections themselves

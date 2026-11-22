@@ -499,39 +499,14 @@ impl Hub {
         Some(window)
     }
 
-<<<<<<< sync-sunrise-1
-    /// The guest's open native menu `window` takes `items` (padded with empty slots, the extra
-    /// ones dropped) and sends them at once, as `AbstractContainerMenu.sendAllDataToRemote`
-    /// does: every slot and the carried stack in one content packet, the title and the screen
-    /// kept. False, with nothing changed or sent, for another window or a menu the game runs.
-=======
     /// Replaces what the guest's open native menu `window` shows with `items` (padded to its
     /// slots, extra ones dropped) and sends them at once, as
     /// `AbstractContainerMenu.sendAllDataToRemote`: the screen stays open.
->>>>>>> sunrise/main
     pub fn set_native_menu_items(
         &mut self,
         conn: u32,
         window: i32,
         mut items: Vec<Option<ItemStack>>,
-<<<<<<< sync-sunrise-1
-    ) -> bool {
-        let Some(i) = self.guests.iter().position(|g| g.conn == conn) else {
-            return false;
-        };
-        let Some(size) = self.guests[i]
-            .menu
-            .as_ref()
-            .filter(|m| m.window == window && m.slots == Slots::Native)
-            .map(|m| m.size)
-        else {
-            return false;
-        };
-        items.resize(size, None);
-        self.guests.update(i, |g| g.native_menu = items.clone());
-        self.send_menu_content(i, items);
-        true
-=======
         send: bool,
     ) -> Result<(), mod_api::MenuItemsRefusal> {
         use mod_api::MenuItemsRefusal;
@@ -556,7 +531,6 @@ impl Hub {
             self.guests.update(i, |g| g.native_menu = items);
         }
         Ok(())
->>>>>>> sunrise/main
     }
 
     /// Open a trading window for a guest (`Merchant.openTradingScreen`):

@@ -105,13 +105,8 @@ impl Game<'_> {
             let shown = Corner::ALL.map(|corner| !(self.debug && corner == Corner::TopLeft));
             extras_hud::draw_layers(layers, batch, &self.gui.atlas, corners, shown);
         }
-<<<<<<< sync-sunrise-1
-        self.draw_pvp_hud(batch, &mut corners);
-        self.native_render_gui_post(batch, &mut corners);
         // Starling: the old hook, for the mods made for it (native_compat.rs).
         self.native_hud(batch, &mut corners);
-=======
->>>>>>> sunrise/main
     }
     /// The height the status effect icons take at the top right
     /// (`Hud.extractEffects`: beneficial at y 1, harmful at y 26).

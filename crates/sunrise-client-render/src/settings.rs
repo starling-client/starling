@@ -447,12 +447,8 @@ impl Settings {
             .parent()
             .map(|dir| crate::mod_list::ModList::load(&crate::logging::shared_dir(dir)))
             .unwrap_or_default();
-<<<<<<< sync-sunrise-1
         let keypad = crate::keypad::Settings::load(&path.with_file_name("sunrise-keypad.json"));
-        let mut settings = match fs::read(path) {
-=======
         let settings = match fs::read(path) {
->>>>>>> sunrise/main
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
                 Self {
@@ -776,14 +772,7 @@ impl Settings {
         if let Some(dir) = path.parent() {
             self.sunrise.save(dir);
             self.controller.save(dir);
-<<<<<<< sync-sunrise-1
             let _ = self.keypad.save(&dir.join("sunrise-keypad.json"));
-            let mut extras = self.extras.clone();
-            extras.emote_key = self.keys.get("key.emote").to_owned();
-            extras.save(dir);
-            sunrise_hooks::settings::engine::save_own(dir, &[crate::extras::FILE]);
-            self.mods.save(&crate::logging::shared_dir(dir));
-=======
             self.extras.save(dir);
             for (file, e) in sunrise_hooks::settings::engine::save_own(
                 dir,
@@ -808,7 +797,6 @@ impl Settings {
         } else {
             self.sunrise.shader_pack = new_key.to_owned();
             self.extras.last_shader_pack = new_key.to_owned();
->>>>>>> sunrise/main
         }
     }
     /// Volume of a sound source (master excluded).

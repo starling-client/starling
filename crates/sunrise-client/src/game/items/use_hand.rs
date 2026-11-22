@@ -85,21 +85,6 @@ impl Game<'_> {
         if use_block.or(!(sneaking && hands_full))
             && let Some(hit) = block_hit
         {
-            // Create's arm in hand marks what it works with (arms.rs).
-            if self.use_arm_item(hit.pos) {
-                self.swing_arm();
-                return Ok(true);
-            }
-            // A content mod's machine (Create's depot, millstone: processing.rs).
-            if self.use_machine(hit.pos, hit.face) {
-                self.swing_arm();
-                return Ok(true);
-            }
-            // Create's belt connector on a shaft (belts.rs).
-            if self.use_belt_connector(hit.pos, sneaking) {
-                self.swing_arm();
-                return Ok(true);
-            }
             let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
             let mut block_answer =
                 self.use_item_on_block(hit, self.hand, held.as_ref(), mod_api::UsePhase::Block);
@@ -432,16 +417,6 @@ impl Game<'_> {
         let (Some(stack), Some(info)) = (stack, info) else {
             return Ok(false);
         };
-        // Starling: the old hook first, for the mods made for it (native_compat.rs): a claimed
-        // use swings the hand, and neither the item's useOn nor its use runs.
-        if let Some(hit) = block_hit {
-            let mut claimed = false;
-            self.native_use_item_on_old(&stack, hit.pos, hit.face, &mut claimed);
-            if claimed {
-                self.swing_arm();
-                return Ok(true);
-            }
-        }
         if let Some(hit) = block_hit
             && let Some(answer) = self.item_on_interaction(hit, self.hand, &stack)
         {
@@ -654,22 +629,14 @@ impl Game<'_> {
             _ => Direction::East,
         };
         // BlockItem.place through the vanilla placement rules.
-        let (yaw, pitch) = self.interaction_rotation();
         let ctx = PlaceContext {
             clicked_pos: BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
             face,
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
-<<<<<<< sync-sunrise-1
-            inside: false,
-            yaw,
-            pitch,
-            sneaking: self.keys.held(Mapping::Sneak),
-=======
             inside: hit.inside,
             yaw: self.yaw,
             pitch: self.pitch,
             sneaking: self.held_mapping(Mapping::Sneak),
->>>>>>> sunrise/main
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };
@@ -687,43 +654,6 @@ impl Game<'_> {
         };
         let pos = placed.context.pos;
         let target = [pos.x, pos.y, pos.z];
-<<<<<<< sync-sunrise-1
-        let game_master = self.can_use_game_master_blocks();
-        let state = self.lectern_placed(target, state, &stack, game_master)?;
-        let state = self.apply_item_block_state(target, state, &stack)?;
-        // Create's arm takes the points marked for it.
-        self.arm_placed(target);
-        let key = (target[0], target[1], target[2]);
-        if !self.world.block_entities.stateful_entity(state.0)
-            && let Some(entity) = self.new_block_entity_for_state(state)
-        {
-            self.world.block_entities.insert(key, entity);
-        }
-        if self.world.block_entities.get(&key).is_some() {
-            self.apply_placed_item(target, &stack, game_master);
-            // Block.setPlacedBy.
-            match self.world.block_entities.get(&key) {
-                Some(BlockEntity::CommandBlock(_)) => {
-                    let data = stack.data().is_some_and(|d| {
-                        d.other(sunrise_client::block_entity_item::BLOCK_ENTITY_DATA)
-                            .is_some()
-                    });
-                    self.command_block_placed(key, !data);
-                }
-                Some(BlockEntity::StructureBlock(_)) => self.structure_block_placed(key),
-                Some(BlockEntity::JigsawBlock(_)) => self.jigsaw_block_placed(key),
-                Some(BlockEntity::TestBlock(_)) => self.test_block_placed(key),
-                Some(BlockEntity::Jukebox(_)) => self.jukebox_placed(target, &stack),
-                Some(BlockEntity::Sign(sign)) if !sign.waxed && sign.front.has_editable_text() => {
-                    self.open_text_edit(key, true)
-                }
-                _ => {}
-            }
-        }
-        let placer = self.native_acting_player();
-        self.block_item_placed(&stack, placer, pos, &ctx);
-=======
->>>>>>> sunrise/main
         // BlockItem.place's SUCCESS: the client swings with its own prediction.
         self.swing_arm_predicted();
         // BlockItem.place's sound is among the level events;
@@ -740,13 +670,6 @@ impl Game<'_> {
         }
         self.process_level_events()?;
         self.award_stat("used", &stack.item, 1);
-<<<<<<< sync-sunrise-1
-        self.trigger_block("minecraft:placed_block", target, &stack);
-        // Starling: the old hook, for the mods made for it (native_compat.rs).
-        self.native_place_block(&stack, target, state);
-        self.check_wither_spawn(target)?;
-=======
->>>>>>> sunrise/main
         self.check_golem_spawn(target)?;
         self.consume_placed(&stack);
         // ItemStack.useOn applies the pre-use stack's component side effects

@@ -46,13 +46,12 @@ pub(crate) fn parse_nine_slice(v: &serde_json::Value) -> Option<NineSlice> {
         stretch_inner: s["stretch_inner"].as_bool().unwrap_or(false),
     })
 }
-<<<<<<< sync-sunrise-1
 /// Starling's low-budget skin (`assets/starling/skin.json`, packaging/lowbudget): how many takes
 /// of each button it drew (`widget/button_1`...), and the writing on a pressed one (RGB, 0: none).
 static BUTTON_TAKES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 static PRESSED_LABEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-fn load_skin(root: &ResourceSource) {
+pub fn load_skin(root: &ResourceSource) {
     use std::sync::atomic::Ordering::Relaxed;
     let skin: serde_json::Value = root
         .read("assets/starling/skin.json")
@@ -90,85 +89,6 @@ pub fn pressed_label() -> Option<u32> {
     }
 }
 
-/// Read `gui.scaling` metadata for every GUI sprite under `root`.
-pub fn load_metadata(root: &ResourceSource) {
-    set_metadata(read_metadata(root));
-}
-/// The GUI sprites' nine-slice metadata of a resource root, read off the
-/// render thread by a pack reload ([`read_metadata`]) and put in use with
-/// [`set_metadata`].
-pub struct UiMetadata(HashMap<String, NineSlice>);
-/// Puts read metadata in use ([`load_metadata`] in two halves).
-pub fn set_metadata(metadata: UiMetadata) {
-    *NINE_SLICE.write().unwrap_or_else(|e| e.into_inner()) = Some(metadata.0);
-}
-/// Reads the metadata [`load_metadata`] puts in use, without putting it in use. Another
-/// namespace's sprites are named with it (`lobby:gui/sprites/...`), as the GUI atlas packs them.
-pub fn read_metadata(root: &ResourceSource) -> UiMetadata {
-    load_skin(root);
-    let mut map = HashMap::new();
-    for namespace in root.namespaces("assets") {
-        let base = format!("assets/{namespace}/textures/");
-        let prefix = match namespace.as_str() {
-            "minecraft" => String::new(),
-            namespace => format!("{namespace}:"),
-        };
-        for name in root.list(&format!("{base}gui/sprites/")) {
-            let Some(stripped) = name.strip_suffix(".png.mcmeta") else {
-                continue;
-            };
-            let Ok(text) = root.read_to_string(&name) else {
-                continue;
-            };
-            let Some(nine_slice) = crate::packs::first_json(text.as_bytes())
-                .ok()
-                .as_ref()
-                .and_then(parse_nine_slice)
-            else {
-                continue;
-            };
-            let key = stripped.strip_prefix(base.as_str()).unwrap_or_default();
-            map.insert(format!("{prefix}{key}"), nine_slice);
-        }
-    }
-    UiMetadata(map)
-}
-/// The sprite's nine-slice metadata, when its `.png.mcmeta` has any.
-fn nine_slice_metadata(sprite: &str) -> Option<NineSlice> {
-    NINE_SLICE
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .and_then(|m| m.get(sprite).copied())
-}
-/// The sprite's nine-slice metadata; without any (no resources loaded), its
-/// GUI size and the widgets' usual borders.
-fn scaling(sprite: &str, r: &Rect) -> NineSlice {
-    nine_slice_metadata(sprite).unwrap_or(NineSlice {
-        width: r.w,
-        height: r.h,
-        border: match sprite {
-            "sunrise/jei/button_enabled_v2"
-            | "sunrise/jei/button_disabled_v2"
-            | "sunrise/jei/button_highlight_v2" => [6; 4],
-            "sunrise/jei/search_background_v2" => [6; 4],
-            "sunrise/jei/interactive_ingredient_tooltip_background" => [16; 4],
-            "sunrise/jei/recipe_preview_background_v2" => [16; 4],
-            "sunrise/jei/scrollbar_background_v2" => [6; 4],
-            "sunrise/jei/scrollbar_marker_v2" => [2, 2, 2, 1],
-            "gui/sprites/widget/button"
-            | "gui/sprites/widget/button_highlighted"
-            | "gui/sprites/widget/button_disabled" => [3; 4],
-            "gui/sprites/widget/slider_handle" | "gui/sprites/widget/slider_handle_highlighted" => {
-                [2, 2, 2, 3]
-            }
-            _ => [1; 4],
-        },
-        stretch_inner: false,
-    })
-}
-=======
->>>>>>> sunrise/main
 /// The region `[x, y, w, h]` of a sprite `size` GUI pixels large, in its
 /// own units (`TextureAtlasSprite.getU(x / width)`).
 fn sub(r: Rect, size: [f32; 2], [x, y, w, h]: [f32; 4]) -> Rect {
@@ -202,7 +122,6 @@ fn tile(batch: &mut HudBatch, r: Rect, size: [f32; 2], src: [f32; 4], dst: [f32;
         y += sh;
     }
 }
-<<<<<<< sync-sunrise-1
 /// A GUI sprite drawn at a size as vanilla's `blitSprite` does: nine-sliced when its `.mcmeta`
 /// says so (the buttons), stretched otherwise (an icon).
 pub fn sprite_sized(
@@ -227,18 +146,12 @@ pub fn sprite_sized(
         batch.rect_uv(x, y, w, h, r, color);
     }
 }
-/// `GuiGraphicsExtractor.blitNineSlicedSprite`: the corners at their size,
-/// the edges and centre tiled (or stretched with `stretch_inner`), all in
-/// the sprite's `gui.scaling` units, so a high-resolution pack's sprite draws
-/// as the default one does.
-=======
 /// `GuiGraphicsExtractor.blitSprite`: a sprite over `w` × `h` as its `gui.scaling` says: the
 /// corners at their size and the edges and centre tiled (or stretched with `stretch_inner`), all
 /// in the sprite's `gui.scaling` units so a high-resolution pack's sprite draws as the default
 /// one does, or stretched when it has no scaling, as vanilla's default (`tile`, which no vanilla
 /// sprite uses, isn't read yet: it stretches). The sprite the atlas published decides: a sprite
 /// its list removed or failed draws as the missing sprite, stretched, with no scaling of its own.
->>>>>>> sunrise/main
 pub fn nine_slice(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -709,12 +622,8 @@ pub(crate) fn focused_button(
         active,
         hover,
         focused,
-<<<<<<< sync-sunrise-1
         room.max(left_padding),
-=======
-        room,
         None,
->>>>>>> sunrise/main
         |rect| crate::widgets::Narratable::button(label.plain(), rect, active),
     );
 }
@@ -760,16 +669,6 @@ fn button_with_room(
     if let Some(sprite) = custom {
         batch.rect_uv(x, y, w, h, sprite, u32::MAX);
     } else {
-<<<<<<< sync-sunrise-1
-        "gui/sprites/widget/button"
-    };
-    let sprite = button_take(sprite, x.round() as i32, y.round() as i32);
-    nine_slice(batch, atlas, &sprite, x, y, w, h, u32::MAX);
-    let color = match pressed_label() {
-        Some(rgb) if active && hover => rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 255),
-        _ if active => rgba(255, 255, 255, 255),
-        _ => rgba(160, 160, 160, 255),
-=======
         let vanilla = if !active {
             "widget/button_disabled"
         } else if highlighted {
@@ -777,13 +676,15 @@ fn button_with_room(
         } else {
             "widget/button"
         };
-        nine_slice(batch, atlas, vanilla, x, y, w, h, u32::MAX);
+        let vanilla = button_take(vanilla, x.round() as i32, y.round() as i32);
+        nine_slice(batch, atlas, &vanilla, x, y, w, h, u32::MAX);
     }
-    let color = if active {
-        rgba(255, 255, 255, 255)
-    } else {
-        rgba(160, 160, 160, 255)
->>>>>>> sunrise/main
+    let color = match pressed_label() {
+        Some(rgb) if active && highlighted => {
+            rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 255)
+        }
+        _ if active => rgba(255, 255, 255, 255),
+        _ => rgba(160, 160, 160, 255),
     };
     // Centre the label (keeping it out from under a glyph), then apply the mod's offset.
     let offset = sprites

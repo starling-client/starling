@@ -56,6 +56,7 @@ impl Renderer {
                     material_maps: true,
                     ids: None,
                     cull: true,
+                    prepass: false,
                 }),
                 block_ids,
                 celestial: self
@@ -102,10 +103,7 @@ impl Renderer {
                     .map(|t| t.as_ref().map(|t| t.create_view(&Default::default()))),
             );
         }
-        let report = post.as_ref().map(|p| {
-            let programs = p.programs().into_iter().map(str::to_owned).collect();
-            (programs, p.notes.clone())
-        });
+        let report = post.as_ref().map(pack_post::PackPost::report);
         self.pack_post = Some((dimension, post));
         if self.pack_post.as_ref().is_some_and(|p| p.1.is_some()) {
             self.native = None;
@@ -163,13 +161,14 @@ impl Renderer {
         }
         Ok(())
     }
-    /// As `set_shader_pack` with a pack, but its pipelines build on a thread of their own while
-    /// the game keeps drawing without one: the driver compiles a big pack's programs for seconds.
+    /// As `set_shader_pack` with the pack `pack` returns, but its programs are translated and their
+    /// pipelines built on a thread of their own while the game keeps drawing without one: the
+    /// driver compiles a big pack's programs for seconds (about five on a phone).
     /// `poll_shader_pack` runs it once they are built. `label` and `started` come back with it.
     pub fn load_shader_pack(
         &mut self,
         dimension: i32,
-        pack: sunrise_shaders::Post,
+        pack: impl FnOnce() -> sunrise_shaders::Post + Send + 'static,
         block_ids: Vec<i32>,
         label: String,
         started: std::time::Instant,
@@ -234,6 +233,7 @@ impl Renderer {
                     material_maps: true,
                     ids: None,
                     cull: true,
+                    prepass: false,
                 }),
                 block_ids: &block_ids,
                 celestial,
@@ -241,11 +241,13 @@ impl Renderer {
                 weather: true,
                 hand: true,
             };
-            pack_post::PackPost::new(&device, &queue, &adapter, pack, format, world, &cancelled)
+            pack_post::PackPost::new(&device, &queue, &adapter, pack(), format, world, &cancelled)
         };
         // A pack is not the game's code: a panic building it turns the pack off (#3525).
         let thread = std::thread::Builder::new()
             .name("Shader pack".into())
+            // naga's GLSL front end recurses into a pack's longest expressions.
+            .stack_size(16 << 20)
             .spawn(move || crate::crash::contain(build));
         match thread {
             Ok(thread) => {
@@ -347,6 +349,22 @@ impl Renderer {
             self.native = None;
             return Ok(Vec::new());
         };
+        // Hardware ray tracing needs a ray-query device: refuse the pack with its name
+        // rather than failing its pipelines' TLAS binding.
+        if report.manifest.ray_tracing.is_some() && !self.ray_tracing() {
+            return Err(format!(
+                "{} needs a ray-tracing GPU (Advanced graphics' Ray Tracing): \
+                 this device offers no ray queries",
+                report.manifest.name
+            ));
+        }
+        // The TLAS the pack's bind groups share: created empty here, filled as sections
+        // build BLASes. The object is stable, so the groups stay valid across rebuilds.
+        let tlas = report
+            .manifest
+            .ray_tracing
+            .as_ref()
+            .map(|_| self.rt.ensure_tlas(&self.device).clone());
         let terrain = native_material::TerrainShape {
             globals: &self.terrain_layout,
             flat: self.flat.as_ref().map(|f| &f.draw_layout),
@@ -366,14 +384,20 @@ impl Renderer {
             report,
             &constants,
             lights,
+            tlas.as_ref(),
         )?;
         self.native = pack.draws().then_some(pack);
         if self.native.is_some() {
             self.pack_post = None;
+            self.pack_loading = None;
             self.pack_atlas = None;
             self.pack_material_atlases = None;
         }
         Ok(labels)
+    }
+    /// Whether the packs loaded from now on draw terrain's depth before shading it.
+    pub fn set_pack_prepass(&self, on: bool) {
+        pack_post::set_prepass(on);
     }
     /// What a shader pack's gbuffers programs read from Sunrise's geometry: the sky's, and
     /// terrain's in the pack's block atlas (made here when missing; none when it does not fit).
@@ -447,12 +471,30 @@ impl Renderer {
             self.pack_atlas = atlas;
             self.queue.submit([encoder.finish()]);
         }
+        // Flat draws whenever the device has them (`render` keeps them on with a pack): the
+        // per-section draws give the pack no face normals and no `mc_Entity`.
         self.pack_terrain_flat = flat;
         Some(
             self.pack_atlas
                 .as_ref()?
                 .terrain_inputs(self.pack_terrain_flat),
         )
+    }
+    /// No shader pack, and none loaded or being made for any dimension: the next frame loads
+    /// the chosen one.
+    pub fn forget_shader_pack(&mut self) {
+        let _ = self.set_shader_pack(0, None, &[]);
+        self.pack_post = None;
+    }
+    /// Diagnostic distributions from the existing pass timers, without another profiler.
+    pub fn diagnostic_pass_times(&self) -> serde_json::Value {
+        let shader = match (&self.pack_post, &self.native) {
+            (Some((_, Some(post))), _) => post.timing.as_ref(),
+            (_, Some(native)) => native.timing.as_ref(),
+            _ => None,
+        };
+        serde_json::json!({"world":self.own_timing.as_ref().map(pack_timing::PassTiming::distributions),
+            "shader":shader.map(pack_timing::PassTiming::distributions)})
     }
     /// The macros this renderer gives shader packs: the GL extensions this device has
     /// (subgroups, when it has them), and the vendor, renderer and mipmap levels
@@ -473,7 +515,7 @@ impl Renderer {
         }
     }
 
-    /// The dimension the shader pack was last set for.
+    /// The dimension the shader pack was last set or started for.
     pub fn shader_pack_dimension(&self) -> Option<i32> {
         let loading = self.pack_loading.as_ref().map(|l| l.dimension);
         loading.or_else(|| self.pack_post.as_ref().map(|p| p.0))

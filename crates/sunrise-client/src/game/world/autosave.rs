@@ -135,7 +135,6 @@ impl Game<'_> {
         if dedicated {
             dedicated::events::record_server("saving", serde_json::json!({}));
         }
-<<<<<<< sync-sunrise-1
         if wait {
             self.save_level(true)?;
             self.save_parked_levels(true)?;
@@ -152,17 +151,11 @@ impl Game<'_> {
                 let _ = self.finish_player_autosaves(false);
                 Result::<()>::Ok(())
             })?;
-=======
-        self.save_level(wait)?;
-        self.save_parked_levels(wait)?;
-        self.save_game_metadata()?;
-        let _ = self.finish_player_autosaves(wait);
         if wait {
             self.message = Some((
                 sunrise_client::lang::get("commands.save.success"),
                 Instant::now(),
             ));
->>>>>>> sunrise/main
         }
         self.native_world_saved(wait);
         if dedicated {

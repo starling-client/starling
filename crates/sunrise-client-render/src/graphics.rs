@@ -368,23 +368,6 @@ pub enum Pacing {
     Precise,
 }
 
-<<<<<<< sync-sunrise-1
-/// The performance overlay drawn over the HUD.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Overlay {
-    #[default]
-    Off,
-    /// Frames per second and frame time.
-    Fps,
-    /// The numbers and a graph of recent frame times.
-    Graph,
-    /// Everything that tells why a frame is slow: frame times with the 1% low, memory, chunks,
-    /// meshing, draw calls, temperatures and throttling (stats_overlay.rs).
-    Stats,
-}
-
-=======
->>>>>>> sunrise/main
 /// How finely far terrain is drawn (`FarDetail` in the LOD options).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum FarDetail {
@@ -1355,26 +1338,14 @@ impl Graphics {
                 "rayTracing" => g.ray_tracing = flag(g.ray_tracing),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
-<<<<<<< sync-sunrise-1
                 // Starling's pick before it took this page's key (`off`: none).
                 "shaders" if g.shader_pack.is_empty() && value != "off" => {
                     g.shader_pack = value.to_owned()
                 }
                 "shadersProfile" => g.shader_profile = value.to_owned(),
-                "overlay" => {
-                    g.overlay = match value {
-                        "fps" => Overlay::Fps,
-                        "graph" => Overlay::Graph,
-                        "stats" => Overlay::Stats,
-                        _ => Overlay::Off,
-                    }
-                }
-                _ => {}
-=======
                 // Keys older versions saved that no setting or store reads: dropped on the next save.
                 "level" | "shaderPack" | "hdrKey" | "cullLeaves" | "translucentBatching" => {}
                 key => g.unclaimed.push((key.to_owned(), value.to_owned())),
->>>>>>> sunrise/main
             }
         }
         // The share was 25 to 100% of Paper White. 100% is Auto, and so is any share of an
@@ -1390,11 +1361,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-<<<<<<< sync-sunrise-1
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nshadersProfile:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nparallelTick:{}\nrayTracing:{}\n",
-=======
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nparallelTick:{}\n",
->>>>>>> sunrise/main
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nshadersProfile:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nparallelTick:{}\nrayTracing:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1425,15 +1392,6 @@ impl Graphics {
                 Pacing::Precise => "precise",
             },
             self.workers,
-<<<<<<< sync-sunrise-1
-            match self.overlay {
-                Overlay::Off => "off",
-                Overlay::Fps => "fps",
-                Overlay::Graph => "graph",
-                Overlay::Stats => "stats",
-            },
-=======
->>>>>>> sunrise/main
             self.resolution_scale,
             bool_text(self.dynamic_resolution),
             self.target_fps,

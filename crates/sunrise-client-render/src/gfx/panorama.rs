@@ -167,7 +167,6 @@ fn projection(width: u32, height: u32, yaw: f32, pitch: f32) -> Mat4 {
         * Mat4::from_rotation_y(yaw.to_radians())
 }
 
-<<<<<<< sync-sunrise-1
 // Explicit cube geometry adapted from the MIT Android fork; see THIRD_PARTY_NOTICES.md.
 fn cube_vertices() -> [[f32; 3]; 36] {
     let corners = [
@@ -216,10 +215,7 @@ fn reduced_texels(size: u32, pixels: Vec<u8>, maximum: u32) -> (u32, Vec<u8>) {
     (side, smaller)
 }
 
-pub(super) struct Panorama {
-=======
 pub(crate) struct Panorama {
->>>>>>> sunrise/main
     pipeline: wgpu::RenderPipeline,
     vertices: wgpu::Buffer,
     maximum_side: u32,
@@ -383,42 +379,25 @@ impl Panorama {
     }
 
     fn cube(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::BindGroup {
-<<<<<<< sync-sunrise-1
-        let (side, pixels) =
-            reduced_texels(self.faces.size, self.faces.texels(), self.maximum_side);
-=======
-        // Don't decode faces this device can't hold. A rejected redraw also uses the
-        // placeholder's extent and texels together.
+        // Starling: faces larger than this device holds are reduced to what it holds (a phone's GPU
+        // takes 4096 or less), where Sunrise draws a placeholder. A failed decode still does.
         let size = self.faces.size;
-        let max = device.limits().max_texture_dimension_2d;
-        let texels = if size > max {
-            log::warn!(
-                "Sunrise: the {size}-pixel title panorama is larger than this device's {max}-pixel textures"
-            );
-            None
-        } else {
-            self.faces
-                .texels()
-                .map_err(|error| {
-                    log::warn!("Sunrise: could not redraw the title panorama: {error}")
-                })
-                .ok()
-        };
-        let (size, texels) =
-            texels.map_or_else(|| (1, PLACEHOLDER.repeat(6)), |texels| (size, texels));
->>>>>>> sunrise/main
+        let texels = self
+            .faces
+            .texels()
+            .map_err(|error| log::warn!("Sunrise: could not redraw the title panorama: {error}"))
+            .ok();
+        let (size, texels) = texels.map_or_else(
+            || (1, PLACEHOLDER.repeat(6)),
+            |texels| reduced_texels(size, texels, self.maximum_side),
+        );
         let texture = device.create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
                 label: Some("Title panorama cube"),
                 size: wgpu::Extent3d {
-<<<<<<< sync-sunrise-1
-                    width: side,
-                    height: side,
-=======
                     width: size,
                     height: size,
->>>>>>> sunrise/main
                     depth_or_array_layers: 6,
                 },
                 mip_level_count: 1,
@@ -429,11 +408,7 @@ impl Panorama {
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
-<<<<<<< sync-sunrise-1
-            &pixels,
-=======
             &texels,
->>>>>>> sunrise/main
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::Cube),

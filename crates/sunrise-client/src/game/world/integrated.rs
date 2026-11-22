@@ -51,26 +51,9 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const NO_ANSWER: &str =
     "the integrated server stopped or did not answer within 10 s (the game log says which)";
 
-<<<<<<< sync-sunrise-1
-/// The server thread holds its `Game` by value and runs every tick on it.
-/// It reserves the same guest limit and host headroom as the main thread.
-#[cfg(not(all(target_os = "android", target_pointer_width = "32")))]
-const SERVER_THREAD_STACK: usize =
-    sunrise_guest_stack::GUEST_STACK_BYTES + sunrise_guest_stack::HOST_HEADROOM;
-
-/// 32-bit Android keeps the original server stack: its wasm runs on Pulley, whose frames are on the
-/// heap, and its address space is short (`sunrise_guest_stack::builder`).
-#[cfg(all(target_os = "android", target_pointer_width = "32"))]
-const SERVER_THREAD_STACK: usize = 8 * 1024 * 1024;
-
-/// The server thread's stack size: [`SERVER_THREAD_STACK`], or what `RUST_MIN_STACK` asks for
-/// when that is larger. std reads the variable only for a thread spawned without a size, and
-/// harnesses raise it for this thread (`tools/test_wind_burst_hook.py`, the parity tools).
-=======
 /// The server thread holds its `Game` by value and runs every tick on it. It uses the game
 /// worker stack floor or a larger `RUST_MIN_STACK` requested by a harness. std only reads that
 /// variable for threads spawned without an explicit size.
->>>>>>> sunrise/main
 fn server_thread_stack() -> usize {
     static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *SIZE.get_or_init(|| stack_for(std::env::var("RUST_MIN_STACK").ok().as_deref()))
@@ -298,18 +281,8 @@ impl Integrated {
             }))
         })
     }
-<<<<<<< sync-sunrise-1
-    /// `MinecraftServer.execute`: run `f` on the server thread between two ticks, without
-    /// waiting for it.
-    pub fn execute(&self, f: impl FnOnce(&mut Game<'_>) + Send + 'static) {
-        let _ = self.post(f);
-    }
-    /// `execute`: run `f` on the server thread between two ticks, without
-    /// waiting for it. False once the server has stopped.
-=======
     /// Tests only: `f` on the server thread between two ticks, not awaited.
     #[cfg(test)]
->>>>>>> sunrise/main
     pub fn post(&self, f: impl FnOnce(&mut Game<'_>) + Send + 'static) -> bool {
         self.tell(OwnerRequest::InTest(Box::new(f)))
     }
@@ -508,19 +481,9 @@ impl Game<'_> {
             self.options.pregen || self.settings.extras.pregen,
         );
         let auth = sunrise_client::auth::current();
-        let player = match &auth {
-            Some(account)
-                if sunrise_client::accounts::in_game()
-                    && sunrise_client::accounts::profiles().player().is_some() =>
-            {
-                account.name.clone()
-            }
-            Some(account) => std::env::current_dir()
-                .ok()
-                .and_then(|dir| sunrise_client::offline_name::chosen(&dir))
-                .unwrap_or_else(|| account.name.clone()),
-            None => self.options.player_name(),
-        };
+        let player = auth
+            .as_ref()
+            .map_or_else(|| self.options.player_name(), |a| a.name.clone());
         let new_world = create.is_some();
         let rule_registry = create.map_or_else(
             || Arc::new(crate::game::api_values::game_rule_registry()),
@@ -647,9 +610,6 @@ impl Game<'_> {
             save_folder: folder.to_owned(),
             rule_registry,
         };
-        // The window goes on drawing "Opening world" and taking input while the server loads the
-        // world (seconds on a phone, whose system ends an app that keeps a touch unanswered for
-        // five): `poll_integrated_start` joins it once it can be.
         self.integrated_starting = Some(Starting {
             handle,
             ready,
@@ -1103,7 +1063,6 @@ impl Game<'_> {
         self.native_players_leaving();
         // IntegratedServer.stopServer: teardownPublishedState.
         self.stop_serving();
-        self.flush_old_mod_net();
         // PlayerList.removeAll: the owner and every guest leave the game.
         if !crashed {
             self.award_leave_game_to_all();
@@ -1632,24 +1591,6 @@ pub(super) mod tests {
         assert!(text.contains("in native mod example:posted, hook server_tick"));
     }
 
-<<<<<<< sync-sunrise-1
-    /// The server thread keeps its platform stack floor and accepts a larger `RUST_MIN_STACK`.
-    #[test]
-    fn the_server_thread_stack_keeps_its_floor_and_larger_overrides() {
-        let short = cfg!(all(target_os = "android", target_pointer_width = "32"));
-        let minimum = if short { 8 } else { 136 } * 1024 * 1024;
-        assert_eq!(super::stack_for(None), minimum);
-        assert_eq!(
-            super::stack_for(Some("1048576")),
-            minimum,
-            "smaller requests keep the platform minimum"
-        );
-        assert_eq!(super::stack_for(Some("268435456")), 256 * 1024 * 1024);
-        assert_eq!(
-            super::stack_for(Some("16777216")),
-            minimum.max(16 * 1024 * 1024)
-        );
-=======
     /// The integrated server keeps its stack floor and honors a larger
     /// `RUST_MIN_STACK` override (#2430).
     #[test]
@@ -1662,7 +1603,6 @@ pub(super) mod tests {
             "smaller values keep the integrated server floor"
         );
         assert_eq!(super::stack_for(Some("16777216")), 16 * 1024 * 1024);
->>>>>>> sunrise/main
         assert_eq!(
             super::stack_for(Some("lots")),
             host_stack,

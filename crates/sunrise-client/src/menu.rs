@@ -28,27 +28,6 @@ pub use models::{
     StackedSlotTarget,
 };
 mod slot_context;
-<<<<<<< sync-sunrise-1
-pub use slot_context::{SlotSnapshot, apply_menu_slot_rules, lan_container};
-
-/// Starling: a mod menu type's slot `slot`, whether it takes `stack` and how many it holds, as the
-/// mods made for the fork's Nightly of 08/11 say (its `native_menu_slot_rules`, API 130): after the
-/// typed `menu_slot_rules` (`apply_menu_slot_rules`). They inject here; it does nothing itself.
-#[inline(always)]
-pub fn native_menu_slot_rules(
-    menu: &str,
-    slot: usize,
-    stack: &ItemStack,
-    may_place: &mut bool,
-    max_stack: &mut u32,
-) {
-    let _ = (menu, slot, stack, may_place, max_stack);
-}
-use std::sync::Arc;
-
-mod bundle;
-pub use bundle::{fits_inside_container_items, shulker_box_slot_takes};
-=======
 pub use slot_context::{apply_menu_slot_rules, lan_container};
 use std::sync::Arc;
 
@@ -56,7 +35,6 @@ mod bundle;
 pub use bundle::{vanilla_carried_override, vanilla_clicked_override};
 pub mod container_items;
 pub use container_items::fits_inside_container_items;
->>>>>>> sunrise/main
 mod click;
 pub use click::{ClickContinuation, SlotTake, apply_stacked_outcome};
 mod storage;
@@ -250,38 +228,6 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// The menu type's registry name as a server names it (`minecraft:generic_9x3`); the
-    /// player's own menus as `minecraft:inventory` and `minecraft:crafting`.
-    pub fn registry_name(self) -> String {
-        let name = match self {
-            Kind::Inventory => "inventory",
-            Kind::Crafting => "crafting",
-            Kind::Chest(rows) => return format!("minecraft:generic_9x{rows}"),
-            Kind::Hopper => "hopper",
-            Kind::Dispenser => "generic_3x3",
-            Kind::Shulker => "shulker_box",
-            Kind::Furnace("blasting") => "blast_furnace",
-            Kind::Furnace("smoking") => "smoker",
-            Kind::Furnace(_) => "furnace",
-            Kind::Brewing => "brewing_stand",
-            Kind::Crafter | Kind::CrafterBlock => "crafter_3x3",
-            Kind::Loom => "loom",
-            Kind::Stonecutter => "stonecutter",
-            Kind::Grindstone => "grindstone",
-            Kind::Anvil => "anvil",
-            Kind::Smithing => "smithing",
-            Kind::Enchanting => "enchantment",
-            Kind::Beacon => "beacon",
-            Kind::Cartography => "cartography_table",
-            Kind::Lectern => "lectern",
-            Kind::Merchant => "merchant",
-            // A mount's inventory has no menu type: the server opens it with MountScreenOpen.
-            Kind::Mount(_) => "mount",
-            Kind::ItemPicker => "creative",
-            Kind::Mod(t) => return t.id.to_owned(),
-        };
-        format!("minecraft:{name}")
-    }
     pub fn parse(name: &str) -> Option<Self> {
         if let Some(rows) = name.strip_prefix("chest") {
             return rows.parse().ok().map(Self::Chest);
@@ -1209,20 +1155,7 @@ impl Menu {
         match self.state.kind {
             Kind::Loom => self.loom_changed(env),
             Kind::Stonecutter => self.stone_changed(env),
-<<<<<<< sync-sunrise-1
-            // GrindstoneMenu.createResult.
-            Kind::Grindstone => {
-                self.state.containers[RESULT][0] = crate::stations::grindstone_result(
-                    env.loop_context,
-                    env.enchantments,
-                    env.items,
-                    self.state.containers[MAIN][0].as_ref(),
-                    self.state.containers[MAIN][1].as_ref(),
-                );
-            }
-=======
             Kind::Grindstone => self.grindstone_inputs_changed(env),
->>>>>>> sunrise/main
             Kind::CrafterBlock => self.crafter_result(env),
             Kind::Anvil => {
                 self.anvil_screen_heard(env);
@@ -1780,11 +1713,7 @@ impl Menu {
             Role::Plain | Role::CreativeDisplay => true,
             Role::Armor(eq) => Self::armor_may_place_with(env, can_equip, eq, stack),
             Role::MountEquip(slot) => self.mount_may_place(env, slot, stack),
-<<<<<<< sync-sunrise-1
-            Role::Shulker => shulker_box_slot_takes(env.loop_context, stack),
-=======
             Role::Shulker => fits_inside_container_items(env.loop_context, stack),
->>>>>>> sunrise/main
             Role::Mod | Role::ModResult => self.state.slots[s].role == Role::Mod,
             Role::Hidden => false,
             Role::Fuel => Self::is_fuel(env, stack) || Self::is_bucket(stack),
@@ -4502,142 +4431,10 @@ pub(crate) mod tests {
 
     #[test]
     fn installed_slot_rules_change_mod_menu_placement() {
-<<<<<<< sync-sunrise-1
-        static JUMPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        static STILL_VALID_ASKED: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
-        let installed =
-            crate::native_client_hooks::install(crate::native_client_hooks::NativeClientHooks {
-                menu_still_valid: |context, player, menu, _, eye, valid| {
-                    STILL_VALID_ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if menu == "test:rules" && player == 2 && eye[2] == 0.0 {
-                        *valid = context.setting("rules_mod", "stack").is_some();
-                    }
-                },
-                // A part answers on the vanilla chest menu too: the game must
-                // still never ask it, because it is not a mod menu type.
-                menu_still_valid_listens: |menu| {
-                    matches!(menu, "test:rules" | "minecraft:generic_9x3")
-                },
-                item_stacked_on_other: |context, _, canceled| {
-                    *canceled = context.setting("rules_mod", "stack").is_some();
-                },
-                living_heal: |context, _, amount, cancel| {
-                    if context.setting("rules_mod", "stack").is_some() {
-                        *cancel = true;
-                        *amount += 1.0;
-                    }
-                },
-                living_breathe: |context, _, kind, can_breathe, consume, _| {
-                    if context.setting("rules_mod", "stack").is_some() {
-                        // A cod breathes on land; a salmon loses all its air at once.
-                        *can_breathe = kind == "minecraft:cod";
-                        *consume = match kind {
-                            "minecraft:salmon" => i32::MAX,
-                            _ => *consume + 4,
-                        };
-                    }
-                },
-                farmland_trample: |context, _, _, _, _, cancel| {
-                    *cancel = context.setting("rules_mod", "stack").is_some();
-                },
-                has_mods: || false,
-                player_name_format: |context, _, displayname| {
-                    if let Some(value) = context.setting("rules_mod", "stack") {
-                        *displayname = crate::text::Text::literal(&value);
-                    }
-                },
-                player_tab_list_name_format: |context, _, _, display_name| {
-                    *display_name = context
-                        .setting("rules_mod", "stack")
-                        .map(|value| crate::text::Text::literal(&value));
-                },
-                living_drown: |context, _, _, drowning, damage, bubbles, _| {
-                    if context.setting("rules_mod", "stack").is_some() {
-                        *drowning = true;
-                        *damage += 1.0;
-                        *bubbles = 0;
-                    }
-                },
-                living_fall: |context, _, _, distance, multiplier, _| {
-                    if context.setting("rules_mod", "stack").is_some() {
-                        *distance += 1.0;
-                        *multiplier *= 2.0;
-                    }
-                },
-                living_jump: |context, _, _| {
-                    JUMPS.fetch_add(
-                        usize::from(context.side() == LoopSide::Server),
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
-                },
-                living_jump_power: |context, _, _, power| {
-                    *power += context.setting("rules_mod", "stack").map_or(0.0, |_| 1.0);
-                },
-                living_speed: |context, _, _, speed| {
-                    *speed += context.setting("rules_mod", "stack").map_or(0.0, |_| 2.0);
-                },
-                living_flying_speed: |context, _, _, speed| {
-                    *speed += context.setting("rules_mod", "stack").map_or(0.0, |_| 3.0);
-                },
-                block_jump_factor: |context, _, factor| {
-                    *factor += context.setting("rules_mod", "stack").map_or(0.0, |_| 4.0);
-                },
-                block_speed_factor: |context, _, factor| {
-                    *factor += context.setting("rules_mod", "stack").map_or(0.0, |_| 5.0);
-                },
-                is_ladder: |context, _, _, _, ladder| {
-                    *ladder |= context.setting("rules_mod", "stack").is_some();
-                },
-                makes_open_trapdoor_above_climbable: |context, _, _, _, climbable| {
-                    *climbable |= context.setting("rules_mod", "stack").is_some();
-                },
-                friction: |context, _, kind, _, _, friction| {
-                    if context.setting("rules_mod", "stack").is_some() {
-                        *friction = match kind {
-                            "minecraft:player" => 0.98,
-                            "minecraft:cow" => f32::NAN,
-                            _ => 3.0,
-                        };
-                    }
-                },
-                player_stays_on_ground_surface: |context, _, staying| {
-                    *staying |= context.setting("rules_mod", "stack").is_some();
-                },
-                ender_entity_teleport: |context, _, _, _, target, cancel| {
-                    if context.setting("rules_mod", "stack").is_some() {
-                        target[1] += 1.0;
-                        *cancel = true;
-                    }
-                },
-                fluid_flow: |context, _, _, flow| {
-                    flow[0] += context.setting("rules_mod", "stack").map_or(0.0, |_| 1.0);
-                },
-                sound_type: |context, _, _, entity, cause, sound| {
-                    if context.setting("rules_mod", "stack").is_some()
-                        && entity.is_some_and(|(_, kind)| kind == "minecraft:player")
-                        && cause == mod_api::BlockSoundCause::Step
-                    {
-                        sound.step = "rules_mod:block.rules.step".into();
-                        sound.volume = 2.0;
-                    }
-                },
-                can_grindstone_repair: |context, stack, can_repair| {
-                    *can_repair |= context.setting("rules_mod", "stack").is_some()
-                        && &*stack.item == "minecraft:stone";
-                },
-                can_fit_inside_container_items: |context, stack, fits| {
-                    *fits |= context.setting("rules_mod", "stack").is_some()
-                        && &*stack.item == "minecraft:shulker_box";
-                },
-            });
-        assert!(installed);
-=======
         use crate::native_client_hooks::test_hooks::{JUMPS, STILL_VALID_ASKED};
         crate::native_client_hooks::test_hooks::install();
         JUMPS.set(0);
         STILL_VALID_ASKED.set(0);
->>>>>>> sunrise/main
         let kind = Kind::Mod(Box::leak(Box::new(crate::containers::ModMenuType {
             id: "test:rules",
             owner: "test",
@@ -4732,21 +4529,6 @@ pub(crate) mod tests {
         };
         assert_eq!(values(&before), (0.5, 0.1, 0.02));
         assert_eq!(values(&after), (1.5, 2.1, 3.02));
-        // The grindstone's repair rule and a shulker box's slot ask the item's parts too, and
-        // keep vanilla's answer without them: stone is no repairable item, and a shulker box
-        // stays out of a shulker box.
-        let item_rules = |context: &LoopContext| {
-            let mut repairs = None;
-            bare_env_in(context, |env| {
-                repairs = Some(crate::stations::grindstone_accepts(
-                    context, env.items, &stack,
-                ));
-            });
-            let shulker = ItemStack::new("minecraft:shulker_box", 1);
-            (repairs.unwrap(), shulker_box_slot_takes(context, &shulker))
-        };
-        assert_eq!(item_rules(&before), (false, false));
-        assert_eq!(item_rules(&after), (true, true));
         // The block factors a part edits read it too, and are as the block's own without it.
         let factors = |context: &LoopContext| {
             use sunrise_world::movement_properties::BlockFactorEdits;

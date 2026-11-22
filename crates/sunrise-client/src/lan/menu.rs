@@ -740,11 +740,7 @@ impl View<'_> {
         }
         !(self.shulker
             && self.container.as_ref().is_some_and(|c| i < c.len())
-<<<<<<< sync-sunrise-1
-            && !crate::menu::shulker_box_slot_takes(self.loop_context, stack))
-=======
             && !crate::menu::fits_inside_container_items(self.loop_context, stack))
->>>>>>> sunrise/main
     }
     fn slot_rules(&self, i: usize, stack: &ItemStack, rules: &dyn Rules) -> (bool, bool, u32) {
         self.slot_rules_with_held(i, stack, self.get(i).as_ref(), rules)

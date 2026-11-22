@@ -201,20 +201,8 @@ impl SessionLock {
             .create(true)
             .truncate(false)
             .open(world.join("session.lock"))?;
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(fs::TryLockError::WouldBlock) => {
-                return Err(
-                    format!("{} is already open in another instance", world.display()).into(),
-                );
-            }
-            // A filesystem without file locks (Android's shared storage): the world opens
-            // unlocked, as vanilla's DirectoryLock does where locking is unsupported.
-            Err(fs::TryLockError::Error(e)) => log::warn!(
-                "Sunrise: {} cannot be locked ({e}); opening it unlocked",
-                world.display()
-            ),
-        }
+        file.try_lock()
+            .map_err(|_| format!("{} is already open in another instance", world.display()))?;
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
         file.flush()?;
@@ -260,7 +248,7 @@ pub fn upgrade_older_world_with(
     world: &Path,
     progress: &sunrise_world::datafix::progress::UpgradeProgress,
 ) -> Result<()> {
-    let Some(root) = read_level_dat(world) else {
+    let Some(root) = read_dat(&world.join("level.dat")) else {
         return Ok(());
     };
     let version = root.get("Data").map_or(i64::from(DATA_VERSION), |d| {
@@ -3193,25 +3181,15 @@ impl SaveDir {
     }
 }
 
-/// `LevelStorageSource.readLevelDataTagFixed`: `world`'s level.dat, else the `level.dat_old`
-/// its last write kept: a write stopped between its two renames leaves only that one.
-pub fn read_level_dat(world: &Path) -> Option<Tag> {
-    read_dat(&world.join("level.dat")).or_else(|| read_dat(&world.join("level.dat_old")))
-}
-
 pub fn read_dat(path: &Path) -> Option<Tag> {
     try_read_dat(path).ok()
 }
 /// `read_dat`, with why the file did not read.
 fn try_read_dat(path: &Path) -> std::result::Result<Tag, DatIssue> {
-    // A copy the background writer still holds is the file's newest.
-    let bytes = match later::queued(path) {
-        Some(bytes) => bytes,
-        None => fs::read(path).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => DatIssue::Missing,
-            _ => DatIssue::Unreadable(e.to_string()),
-        })?,
-    };
+    let bytes = fs::read(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => DatIssue::Missing,
+        _ => DatIssue::Unreadable(e.to_string()),
+    })?;
     let raw = match Compression::Gzip.decode(&bytes, Limits::saved().max_bytes) {
         Ok(raw) => raw,
         Err(_) => bytes,
@@ -3280,6 +3258,10 @@ pub fn fall_back_to_level_dat_old(world: &Path) -> bool {
         && level_dat_issue(world, true).is_none()
         && restore_level_data_from_old(world)
 }
+/// `LevelStorageSource.readLevelDataTagFixed`: level.dat, else level.dat_old.
+fn read_level_dat(dir: &Path) -> Option<Tag> {
+    read_dat(&dir.join("level.dat")).or_else(|| read_dat(&dir.join("level.dat_old")))
+}
 /// `restoreLevelDataFromOld`: an unreadable level.dat is kept as
 /// `level.dat_corrupted_<time>` and level.dat_old takes its place, so the next
 /// write does not bury either file.
@@ -3312,44 +3294,8 @@ fn back_up_unreadable_player(path: &Path) {
         );
     }
 }
-/// Write a gzip NBT file the way vanilla does (`<name>_new`, keep `_old`). Inside
-/// [`later::deferred`] it goes to the background writer.
+/// Write a gzip NBT file the way vanilla does (`<name>_new`, keep `_old`).
 pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
-    if later::is_deferred() {
-        later::queue(path, later::Job::Dat(tag));
-        return Ok(());
-    }
-    // A queued older copy must not land after this one.
-    later::flush();
-    write_dat_now(path, tag)
-}
-/// A file's new bytes (`fs::write` through `_new` and a rename); queued like `write_dat`.
-pub fn write_file(path: &Path, bytes: Vec<u8>) -> Result<()> {
-    if later::is_deferred() {
-        later::queue(path, later::Job::Bytes(bytes));
-        return Ok(());
-    }
-    later::flush();
-    write_file_now(path, &bytes)
-}
-fn write_file_now(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let temporary = path.with_file_name(format!("{file}_new"));
-    fs::write(&temporary, bytes)?;
-    fs::rename(temporary, path)?;
-    Ok(())
-}
-/// A file's bytes, the newest queued ones first.
-pub fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
-    match later::queued(path) {
-        Some(bytes) => Ok(bytes),
-        None => fs::read(path),
-    }
-}
-fn write_dat_now(path: &Path, tag: Tag) -> Result<()> {
     write_dat_as(path, tag, false)
 }
 
@@ -3357,14 +3303,12 @@ fn write_dat_now(path: &Path, tag: Tag) -> Result<()> {
 /// folder after, so a power loss leaves the old file or the new one. A hand-over's commit
 /// point (`player-confirm`) replies only once its files are.
 pub fn write_dat_durable(path: &Path, tag: Tag) -> Result<()> {
-    later::flush();
     write_dat_as(path, tag, true)
 }
 
 /// `bytes` written to `path` through `<name>_new` and a rename, synced to the disk as
 /// [`write_dat_durable`] syncs: never a half-written file in place.
 pub fn write_durable(path: &Path, bytes: &[u8]) -> Result<()> {
-    later::flush();
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -3445,140 +3389,6 @@ fn write_dat_as(path: &Path, tag: Tag, durable: bool) -> Result<()> {
     }
     Ok(())
 }
-/// World files written off the render thread while the game saves in the background (the
-/// autosave): Android's shared storage takes milliseconds per file call, and a save writes a
-/// dozen small files. One thread writes them in order; reads see what is still queued; a
-/// synchronous write, and [`flush`], wait for the queue first.
-pub mod later {
-    use super::{Path, PathBuf, Tag};
-    use std::{
-        cell::Cell,
-        collections::HashMap,
-        sync::{Condvar, Mutex, OnceLock, mpsc::Sender},
-    };
-
-    pub enum Job {
-        Dat(Tag),
-        Bytes(Vec<u8>),
-    }
-    impl Job {
-        /// The bytes the file will hold (what a read must see before the write is done).
-        fn bytes(&self) -> Option<Vec<u8>> {
-            match self {
-                Job::Bytes(b) => Some(b.clone()),
-                Job::Dat(tag) => {
-                    let named = sunrise_core::nbt::NamedTag {
-                        name: "".into(),
-                        tag: tag.clone(),
-                    };
-                    sunrise_core::nbt::write_named(&named, sunrise_core::nbt::Limits::default())
-                        .ok()
-                }
-            }
-        }
-    }
-    struct Queue {
-        tx: Mutex<Option<Sender<(u64, PathBuf, Job)>>>,
-        /// The newest queued bytes of each file, by the job that will write them.
-        pending: Mutex<HashMap<PathBuf, (u64, Vec<u8>)>>,
-        /// (jobs queued, jobs written).
-        counts: Mutex<(u64, u64)>,
-        done: Condvar,
-    }
-    thread_local! {
-        static DEFERRED: Cell<bool> = const { Cell::new(false) };
-    }
-    fn queue_state() -> &'static Queue {
-        static QUEUE: OnceLock<Queue> = OnceLock::new();
-        QUEUE.get_or_init(|| Queue {
-            tx: Mutex::new(None),
-            pending: Mutex::default(),
-            counts: Mutex::new((0, 0)),
-            done: Condvar::new(),
-        })
-    }
-    /// Runs `f` with its world file writes queued.
-    pub fn deferred<R>(f: impl FnOnce() -> R) -> R {
-        DEFERRED.with(|d| d.set(true));
-        let out = f();
-        DEFERRED.with(|d| d.set(false));
-        out
-    }
-    pub(super) fn is_deferred() -> bool {
-        DEFERRED.with(Cell::get)
-    }
-    pub(super) fn queue(path: &Path, job: Job) {
-        let q = queue_state();
-        let mut counts = q.counts.lock().unwrap_or_else(|e| e.into_inner());
-        let seq = counts.0 + 1;
-        if let Some(bytes) = job.bytes()
-            && let Ok(mut pending) = q.pending.lock()
-        {
-            pending.insert(path.to_owned(), (seq, bytes));
-        }
-        let mut tx = q.tx.lock().unwrap_or_else(|e| e.into_inner());
-        if tx.is_none() {
-            let (send, receive) = std::sync::mpsc::channel::<(u64, PathBuf, Job)>();
-            let started = std::thread::Builder::new()
-                .name("sunrise-world-files".into())
-                .spawn(move || {
-                    for (seq, path, job) in receive {
-                        let written = match job {
-                            Job::Dat(tag) => super::write_dat_now(&path, tag),
-                            Job::Bytes(bytes) => super::write_file_now(&path, &bytes),
-                        };
-                        if let Err(e) = written {
-                            log::warn!("Sunrise: could not save {}: {e}", path.display());
-                        }
-                        let q = queue_state();
-                        if let Ok(mut pending) = q.pending.lock()
-                            && pending.get(&path).is_some_and(|(s, _)| *s == seq)
-                        {
-                            pending.remove(&path);
-                        }
-                        let mut counts = q.counts.lock().unwrap_or_else(|e| e.into_inner());
-                        counts.1 += 1;
-                        q.done.notify_all();
-                    }
-                });
-            if started.is_err() {
-                drop(tx);
-                drop(counts);
-                // No writer thread: write it now.
-                let _ = match job {
-                    Job::Dat(tag) => super::write_dat_now(path, tag),
-                    Job::Bytes(bytes) => super::write_file_now(path, &bytes),
-                };
-                if let Ok(mut pending) = q.pending.lock() {
-                    pending.remove(path);
-                }
-                return;
-            }
-            *tx = Some(send);
-        }
-        counts.0 = seq;
-        if let Some(send) = tx.as_ref() {
-            let _ = send.send((seq, path.to_owned(), job));
-        }
-    }
-    /// The newest queued bytes of `path`, when its write is not done yet.
-    pub(super) fn queued(path: &Path) -> Option<Vec<u8>> {
-        let q = queue_state();
-        q.pending
-            .lock()
-            .ok()?
-            .get(path)
-            .map(|(_, bytes)| bytes.clone())
-    }
-    /// Waits until every queued file is written.
-    pub fn flush() {
-        let q = queue_state();
-        let mut counts = q.counts.lock().unwrap_or_else(|e| e.into_inner());
-        while counts.1 < counts.0 {
-            counts = q.done.wait(counts).unwrap_or_else(|e| e.into_inner());
-        }
-    }
-}
 mod saved_data;
 use saved_data::{read_saved_data, saved_data_path, write_saved_data};
 /// The generator settings used for this world session. A replacement from
@@ -3593,14 +3403,6 @@ impl WorldGenerator {
     pub fn settings(&self) -> &Tag {
         &self.data
     }
-<<<<<<< sync-sunrise-1
-    read_saved_data(world, "world_gen_settings").or_else(|| {
-        read_level_dat(world)?
-            .get("Data")?
-            .get("WorldGenSettings")
-            .cloned()
-    })
-=======
 
     fn read(world: &Path, level_data: Option<&Tag>) -> (Option<Self>, i64) {
         use sunrise_world::datafix::{files, schema::Ty, update_saved_data};
@@ -3660,7 +3462,6 @@ pub fn world_gen_settings(world: &Path) -> Option<Tag> {
     WorldGenerator::read(world, root.as_ref().and_then(|r| r.get("Data")))
         .0
         .map(|generator| generator.data)
->>>>>>> sunrise/main
 }
 include!("save/preset_saved.rs");
 pub use sunrise_client_core::uuid::uuid_from_text;
@@ -3753,7 +3554,7 @@ pub(crate) fn read_doubles<const N: usize>(tag: Option<&Tag>) -> Option<[f64; N]
 
 /// The world presets of 26.3's `worldgen/world_preset` that the create
 /// screen offers, in the order of `WorldPresetTags.NORMAL`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorldPreset {
     Normal,
     Flat,
@@ -4775,7 +4576,7 @@ impl Level {
     ) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
-        let mut root = compound_or_empty(read_level_dat(dir));
+        let mut root = compound_or_empty(read_dat(&dir.join("level.dat")));
         let legacy = root
             .get("Data")
             .is_some_and(|d| d.get("Player").is_some() || d.get("WorldGenSettings").is_some());
@@ -5716,31 +5517,6 @@ fn effect_details(e: &crate::effects::SavedEffect) -> Vec<(&'static str, Tag)> {
 #[cfg(test)]
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
-
-    #[test]
-    fn deferred_world_files_read_back_and_keep_their_order() {
-        let dir = std::env::temp_dir().join(format!("sunrise-later-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("data").join("x.dat");
-        let json = dir.join("stats.json");
-        super::later::deferred(|| {
-            super::write_dat(&path, Tag::compound([("v", Tag::Int(1))])).unwrap();
-            super::write_file(&json, b"{\"a\":1}".to_vec()).unwrap();
-        });
-        // Queued or written, a read sees the new contents.
-        let v = |t: Option<Tag>| t.and_then(|t| t.get("v").cloned());
-        assert_eq!(v(super::read_dat(&path)), Some(Tag::Int(1)));
-        assert_eq!(super::read_file(&json).unwrap(), b"{\"a\":1}");
-        // A synchronous write after a deferred one is the one that stays.
-        super::later::deferred(|| {
-            super::write_dat(&path, Tag::compound([("v", Tag::Int(2))])).unwrap()
-        });
-        super::write_dat(&path, Tag::compound([("v", Tag::Int(3))])).unwrap();
-        super::later::flush();
-        assert_eq!(v(super::read_dat(&path)), Some(Tag::Int(3)));
-        assert_eq!(std::fs::read(&json).unwrap(), b"{\"a\":1}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     #[test]
     fn saved_preset_editor_stems_supply_shapes_and_facts_below_pack_stems() {
@@ -7314,22 +7090,6 @@ mod tests {
         super::upgrade_older_world(&dir).unwrap();
         assert_eq!(version(&dir), Some(i64::from(super::DATA_VERSION)));
         super::upgrade_older_world(&dir).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    /// A write stopped between `level.dat`'s two renames (the app killed while it saves) leaves
-    /// only `level.dat_old`: the world still opens from it, as vanilla's does.
-    #[test]
-    fn a_world_without_level_dat_opens_from_level_dat_old() {
-        let dir = std::env::temp_dir().join(format!("sunrise-dat-old-open-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let level = Tag::compound([("Data", Tag::compound([("DataVersion", Tag::Int(7))]))]);
-        super::write_dat(&dir.join("level.dat_old"), level).unwrap();
-        let data = super::read_level_dat(&dir).unwrap();
-        assert_eq!(
-            super::number(data.get("Data").unwrap().get("DataVersion")),
-            Some(7)
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]

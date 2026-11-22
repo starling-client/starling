@@ -986,117 +986,6 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
     }
     v
 }
-<<<<<<< sync-sunrise-1
-/// The texture `humanoid_armor` gives a piece with its own equipment asset, then the layer kind.
-const OWN_EQUIPMENT: &str = "sunrise:own_equipment/";
-
-/// A worn piece's own equipment asset (its stack's `equippable`: a server's custom armour).
-fn own_asset(stack: Option<&crate::items::ItemStack>) -> Option<String> {
-    stack?.equippable_asset()
-}
-
-/// A piece's own equipment asset ([`own_asset`]) as the pack's equipment layers draw it:
-/// the layer of `kind` of the asset of the piece `model` wears (`...#chestplate`), in its dye
-/// colour (or the undyed one) when dyeable. An asset the packs lack draws nothing.
-fn own_equipment(m: &Mob, layer: &mut Layer, kind: &str, equipment: &crate::equipment::Layers) {
-    use sunrise_items::equipment::{CHEST, FEET, HEAD, LEGS};
-    let slot = match layer.model.rsplit('#').next() {
-        Some("helmet") => HEAD,
-        Some("chestplate") => CHEST,
-        Some("leggings") => LEGS,
-        _ => FEET,
-    };
-    let stack = m.extra.slot_stack(slot);
-    let found = own_asset(stack)
-        .and_then(|a| equipment.get(&a))
-        .and_then(|k| k.get(kind));
-    let Some((texture, undyed)) = found else {
-        layer.texture = "".into();
-        return;
-    };
-    layer.texture = texture.clone().into();
-    if let Some(undyed) = undyed {
-        layer.color = armor_tint(Some(*undyed), stack);
-    }
-}
-
-/// `HumanoidArmorLayer.renderArmorPiece`: a baby wears the `humanoid_baby`
-/// layer type for every slot (leggings included), an adult the leggings layer
-/// for its legs and the `humanoid` one otherwise.
-fn humanoid_layer_folder(baby: bool, layer: &str) -> &'static str {
-    if baby {
-        "humanoid_baby"
-    } else if layer == "leggings" {
-        "humanoid_leggings"
-    } else {
-        "humanoid"
-    }
-}
-/// `HumanoidArmorLayer`: the armour models of the mob's main model with the
-/// equipment textures (leather tinted, with its overlay).
-fn humanoid_armor(m: &Mob, v: &mut Vec<Layer>) {
-    // A player's or mannequin's armour is drawn by the game's armour layers.
-    if super::equine::is_equine(m.species()) || avatar(m) {
-        return;
-    }
-    let e = &m.extra;
-    use sunrise_items::equipment::{ARMOR, CHEST, FEET, HEAD, LEGS};
-    if ARMOR.iter().all(|&slot| e.slot_stack(slot).is_none()) {
-        return;
-    }
-    let (model, _) = body(m);
-    let Some(base) = model.strip_suffix("#main") else {
-        return;
-    };
-    let slots = [
-        (HEAD, "helmet"),
-        (CHEST, "chestplate"),
-        (LEGS, "leggings"),
-        (FEET, "boots"),
-    ];
-    for (slot, layer) in slots {
-        let stack = e.slot_stack(slot);
-        // A piece with its own equipment asset: its layer, found when drawn (`own_equipment`).
-        if own_asset(stack).is_some() {
-            let folder = if layer == "leggings" {
-                "humanoid_leggings"
-            } else {
-                "humanoid"
-            };
-            v.push(Layer {
-                model: format!("{base}#{layer}").into(),
-                texture: format!("{OWN_EQUIPMENT}{folder}").into(),
-                color: 0xFFFF_FFFF,
-                full_bright: false,
-                scroll: 0.0,
-            });
-            continue;
-        }
-        let Some(name) = stack.and_then(|s| s.item.strip_prefix("minecraft:")) else {
-            continue;
-        };
-        let Some(material) = name.strip_suffix(layer).and_then(|n| n.strip_suffix('_')) else {
-            continue;
-        };
-        let asset = match material {
-            "golden" => "gold",
-            "turtle" => "turtle_scute",
-            other => other,
-        };
-        let folder = humanoid_layer_folder(m.is_baby(), layer);
-        let model = interned(format_args!("{base}#{layer}"));
-        // EquipmentLayerRenderer.getColorForLayer: the leather layer takes
-        // the stack's dye colour, the colour it has when undyed otherwise.
-        let tint = if asset == "leather" {
-            armor_tint(Some(0xA06540), stack)
-        } else {
-            0xFFFF_FFFF
-        };
-        v.push(Layer {
-            model: model.clone(),
-            texture: interned(format_args!("entity/equipment/{folder}/{asset}")),
-            color: tint,
-=======
 /// The existing humanoid equipment model, without rebuilding its key each frame.
 pub fn equipment_model_key(mob: &Mob, layer: &str) -> Option<Cow<'static, str>> {
     let (model, _) = body(mob);
@@ -1115,7 +1004,6 @@ impl Layer {
             equipment_overlay: Some(overlay),
             equipment_model: None,
             equipment_texture_final: false,
->>>>>>> sunrise/main
             full_bright: false,
             scroll: 0.0,
         }
@@ -2286,20 +2174,6 @@ fn render_selected(
             }
         }
     }
-    let armor_atlases = data
-        .armor_atlases
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let equipment = data
-        .equipment
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for layer in &mut all_layers {
-        if let Some(kind) = layer.texture.strip_prefix(OWN_EQUIPMENT) {
-            let kind = kind.to_owned();
-            own_equipment(m, layer, &kind, &equipment);
-        }
-    }
     // The GPU path takes the whole mob or none of it, so its draws keep their
     // order: only plain draws of models it can pose (no custom models,
     // translucent body or energy swirl, which the CPU path changes after
@@ -2415,29 +2289,13 @@ fn render_selected(
                 },
             }
         };
-<<<<<<< sync-sunrise-1
-        let Some((drawn, mut uv)) = sprite(texture).or_else(|| Some((texture, atlas(texture)?)))
-        else {
-=======
         let Some((drawn, uv)) = (if layer.equipment_texture_final {
             atlas(texture).map(|uv| (texture, uv))
         } else {
             sprite(texture).or_else(|| Some((texture, atlas(texture)?)))
         }) else {
->>>>>>> sunrise/main
             continue;
         };
-        // A pack's custom armour in the leather texture (`custom_armor`), picked by the dye
-        // colour the layer carries; its animation runs on the mob's age.
-        let mut color = layer.color;
-        if armor_slot(&layer.model).is_some()
-            && let Some(armor) = armor_atlases.get(layer.texture.as_ref())
-        {
-            let c = layer.color;
-            let rgb = (c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16) & 0xFF;
-            let day = (m.age as f32 + alpha).rem_euclid(24000.0) / 24000.0;
-            (uv, color) = crate::custom_armor::layer_look(Some(armor), Some(rgb), uv, day);
-        }
         // VillagerProfessionLayer: the type layer under a profession's full hat draws on
         // `noHatModel`, a model of its own, the others on the parent model.
         let type_hat_shown = if matches!(m.species(), Species::Villager | Species::ZombieVillager)
@@ -2493,7 +2351,7 @@ fn render_selected(
             draw_poses,
             uv,
             layer.scroll,
-            color,
+            layer.color,
             light,
             overlay,
             out,
@@ -2506,7 +2364,7 @@ fn render_selected(
                 draw_poses,
                 glow,
                 layer.scroll,
-                color,
+                layer.color,
                 FULL_BRIGHT,
                 0,
                 out,
@@ -3063,12 +2921,7 @@ mod tests {
             species_placements: Default::default(),
             resolved: Default::default(),
             mod_spawns: Default::default(),
-<<<<<<< sync-sunrise-1
-            armor_atlases: Default::default(),
-            equipment: Default::default(),
-=======
             vanilla_spawn_placements: None,
->>>>>>> sunrise/main
         };
         (mob, data)
     }
@@ -3391,12 +3244,7 @@ mod tests {
             animations: Default::default(),
             biome_tags: Default::default(),
             villager_hats: Default::default(),
-<<<<<<< sync-sunrise-1
-            armor_atlases: Default::default(),
-            equipment: Default::default(),
-=======
             frame_models: Default::default(),
->>>>>>> sunrise/main
             cem: Default::default(),
             random_textures: Default::default(),
             emissive: Default::default(),
@@ -3499,8 +3347,6 @@ mod tests {
             blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
-            armor_atlases: Default::default(),
-            equipment: Default::default(),
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
@@ -3560,8 +3406,6 @@ mod tests {
             emissive: Default::default(),
             blinks: Default::default(),
             pois: Default::default(),
-            armor_atlases: Default::default(),
-            equipment: Default::default(),
             species_placements: Default::default(),
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
@@ -3682,8 +3526,6 @@ mod tests {
             blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
-            armor_atlases: Default::default(),
-            equipment: Default::default(),
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
@@ -3993,8 +3835,6 @@ mod scroll_tests {
             blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
-            armor_atlases: Default::default(),
-            equipment: Default::default(),
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
@@ -4164,8 +4004,6 @@ mod emissive_tests {
             blinks: RwLock::new(blinks),
             pois: Default::default(),
             species_placements: Default::default(),
-            armor_atlases: Default::default(),
-            equipment: Default::default(),
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
@@ -4450,8 +4288,6 @@ mod random_texture_tests {
             biome_tags: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
-            armor_atlases: Default::default(),
-            equipment: Default::default(),
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),

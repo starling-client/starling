@@ -727,77 +727,6 @@ fn resolve_shapes<'a>(
         .collect()
 }
 
-/// A declared `properties.shape` (Starling): its boxes, made for a state facing up (or along y),
-/// turned to each state's `facing`, else its `axis`, as Create's shapers turn theirs.
-fn turned_shapes<'a>(
-    boxes: &[[f32; 6]],
-    states: &Range<u32>,
-    order: &[(u32, u32)],
-    combos: &[Vec<(String, String)>],
-    properties: impl Fn(u32) -> Option<&'a J>,
-) -> Result<Vec<VoxelShape>> {
-    let mut shapes = Vec::with_capacity(order.len());
-    for &(state, combo) in order {
-        let value = |name: &str| -> Option<String> {
-            combos[combo as usize]
-                .iter()
-                .find(|(key, _)| key == name)
-                .map(|(_, value)| value.clone())
-                .or_else(|| {
-                    match properties(states.start + state).and_then(|props| props.get(name)) {
-                        Some(J::Str(value)) => Some(value.clone()),
-                        _ => None,
-                    }
-                })
-        };
-        let toward = match (value("facing"), value("axis")) {
-            (Some(facing), _) => sunrise_mod_package::content::direction(&facing),
-            (None, Some(axis)) if axis == "x" => Some([1, 0, 0]),
-            (None, Some(axis)) if axis == "z" => Some([0, 0, 1]),
-            _ => None,
-        };
-        let turns = toward.map_or([0; 3], |f| {
-            sunrise_mod_package::content::turns_from([0, 1, 0], f)
-        });
-        let mut shape = VoxelShape::empty();
-        for b in boxes {
-            let b = turn_box(b, [turns[0], turns[1]]);
-            let part = VoxelShape::from_box(Aabb::new(
-                Vec3::new(b[0], b[1], b[2]),
-                Vec3::new(b[3], b[4], b[5]),
-            ))?;
-            shape = shape.join_unoptimized(&part, ShapeOp::OR)?;
-        }
-        shapes.push(shape);
-    }
-    Ok(shapes)
-}
-
-/// A box in sixteenths turned about the block's middle as a blockstate variant turns a model
-/// (`turns` quarters about x, then about y; a quarter about x takes south up, about y south
-/// west), in block units.
-fn turn_box(b: &[f32; 6], turns: [u8; 2]) -> [f64; 6] {
-    let corner = |c: [f32; 3]| {
-        let mut v = c.map(|v| f64::from(v) / 16.0 - 0.5);
-        for _ in 0..turns[0] {
-            v = [v[0], v[2], -v[1]];
-        }
-        for _ in 0..turns[1] {
-            v = [-v[2], v[1], v[0]];
-        }
-        v.map(|v| v + 0.5)
-    };
-    let (a, c) = (corner([b[0], b[1], b[2]]), corner([b[3], b[4], b[5]]));
-    [
-        a[0].min(c[0]),
-        a[1].min(c[1]),
-        a[2].min(c[2]),
-        a[0].max(c[0]),
-        a[1].max(c[1]),
-        a[2].max(c[2]),
-    ]
-}
-
 /// A content farmland declaration names a block absent from the loaded registry.
 #[derive(Debug)]
 pub struct UnknownBaseBlock {
@@ -1687,8 +1616,6 @@ impl<'a> Plan<'a> {
                 };
                 let shapes = if let Some(spec) = &decl.shapes {
                     Some(resolve(spec)?)
-                } else if let Some(boxes) = &decl.properties.shape {
-                    Some(turned_shapes(boxes, &states, &order, &combos, properties)?)
                 } else {
                     pipe_shapes.map(|shapes: Vec<VoxelShape>| {
                         order
@@ -2119,14 +2046,6 @@ impl<'a> Plan<'a> {
                         }
                         row.set("outline", J::Arr(boxes));
                         row.set("outline_edges", J::Arr(shape_edges(shape)));
-                    }
-                    if b.decl.properties.shape.is_some() {
-                        // A shape of Starling's own does not occlude, and light goes through.
-                        for key in ["solid_render", "can_occlude", "shape_occlusion"] {
-                            row.set(key, J::Bool(false));
-                        }
-                        row.set("dampening", J::Num(0.into()));
-                        row.set("skylight_down", J::Bool(true));
                     }
                     if let Some(shapes) = b.collision_shapes.as_ref().or(b.shapes.as_ref()) {
                         let shape = &shapes[state_index];
@@ -3594,9 +3513,7 @@ use root_lifetime::prune_roots;
 pub use root_lifetime::retain_root;
 mod load_conditions;
 use load_conditions::{TagLayers, TagMerge, merge_tag, tag_list};
-pub use load_conditions::{
-    build_with_conditions, resource_root_noting_build, resource_root_with_conditions,
-};
+pub use load_conditions::{build_with_conditions, resource_root_with_conditions};
 
 /// The block and item ids and tags a content root has, for tag entries.
 struct Known {
@@ -4112,13 +4029,6 @@ pub fn live_switch(content: &Content) -> std::result::Result<(), &'static str> {
 
 /// In a root built by [`build`]: its warnings, one per line.
 const WARNINGS: &str = "sunrise-mod-content-warnings.txt";
-/// In a root built by [`build`] with kinetic blocks: their parts, by block id (kinetics.rs).
-pub const KINETIC: &str = "kinetic.json";
-/// In a root built by [`build`] with machines: what each is, by block id (kinetics.rs).
-pub const MACHINES: &str = "machines.json";
-/// In a root built by [`build`] with blocks declaring `models`: those, by block id (kinetics.rs,
-/// and the model catalog bakes them).
-pub const BLOCK_MODELS: &str = "block-models.json";
 
 /// In a root built by [`resource_root`]: what it was built from.
 const STAMP: &str = "sunrise-mod-content.stamp";
@@ -4204,22 +4114,9 @@ fn stamp(
         "sunrise mod content 10".to_owned(),
         serde_json::to_string(inventory)?,
     ];
-<<<<<<< sync-sunrise-1
-    parts.push(meta(&std::env::current_exe()?)?);
-    // On Android the program is the system's app_process: the game is the APK's library, or the
-    // build with native mods loaded in its place.
-    let library = std::env::var_os("STARLING_GAME_LIBRARY")
-        .map(PathBuf::from)
-        .or_else(|| crate::platform::library_dir().map(|d| d.join("libsunrise_android.so")));
-    if let Some(library) = library.filter(|p| p.is_file()) {
-        parts.push(meta(&library)?);
-    }
-    let base = std::path::absolute(base)?;
-=======
     parts.push(exe);
     // The root links into the base: where it really is, not how this folder reaches it.
     let base = real_base(base)?;
->>>>>>> sunrise/main
     parts.push(
         String::from_utf8_lossy(&fs::read(base.join("sunrise-resources.json"))?).into_owned(),
     );
@@ -4262,10 +4159,6 @@ fn stamp(
             }
         } else {
             parts.push(hash(source)?);
-        }
-        // Its assets fetched from Modrinth: there or not, and unpacked again.
-        if let Some(fetched) = m.content.fetched() {
-            parts.push(meta(fetched)?);
         }
     }
     let mut hasher = Sha256::new();

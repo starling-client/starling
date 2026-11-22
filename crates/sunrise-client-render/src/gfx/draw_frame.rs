@@ -103,6 +103,21 @@ impl Renderer {
                     label: Some("Sunrise frame"),
                 })
         });
+        if frame.menu_blur_cache
+            && fg_frames.is_none()
+            && checks.is_none()
+            && frame.menu_blur.is_some_and(|r| self.has_menu_blur_cache(r))
+        {
+            return self.draw_kept_menu(
+                frame,
+                encoder,
+                has_section_copies,
+                &target_texture,
+                surface_frame,
+                reconfigure,
+                started,
+            );
+        }
         // Sunrise's own passes are timed like a shader pack's, from the frame's first pass.
         if self.own_timing.is_some() != self.pass_timing {
             self.own_timing = self
@@ -221,6 +236,9 @@ impl Renderer {
                 },
             )
         };
+        if let Some(lookup) = &mut self.emissive_lookup {
+            lookup.update(&self.queue, frame.emissive_layers);
+        }
         let globals = Globals {
             view_proj: jittered.to_cols_array_2d(),
             fog_color,
@@ -784,11 +802,11 @@ impl Renderer {
         self.phase2_pages.clear();
         self.solid_runs.clear();
         self.phase2_runs.clear();
-        // On Metal, phase 1 goes the opaque quads of every list, then the cutout
-        // ones (`Part`), each solid pass drawing its own: `[..opaque_draws]`,
+        // On Metal and phones, phase 1 goes the opaque quads of every list, then the
+        // cutout ones (`Part`), each solid pass drawing its own: `[..opaque_draws]`,
         // then the rest; phase 2 likewise. A fading list's quads all draw in the
         // cutout pass.
-        let split_solid = self.info.backend == wgpu::Backend::Metal;
+        let split_solid = splits_solid(&self.info);
         let parts = |fading: bool| -> &'static [(u8, Quads)] {
             match (split_solid, fading) {
                 (false, _) => &[(0, Quads::All)],
@@ -1948,6 +1966,9 @@ impl Renderer {
                 &self.globals,
             );
         }
+        // On Adreno, shader packs keep the draws they had: its bar is for frames without one.
+        let flat_by_count = !adreno::adreno_vulkan(&self.info)
+            || (self.native.is_none() && self.pack_post.is_none());
         let flat_frame = match &mut self.flat {
             Some(flat)
                 if self.flat_on
@@ -1955,7 +1976,8 @@ impl Renderer {
                     // where vanilla frames draw flat).
                     && !gpu_frame
                     && !self.draws.is_empty()
-                    && (listed >= flat.min_sections
+                    && (((flat_by_count || flat.min_sections == 0)
+                        && listed >= flat.min_sections)
                         || pack_terrain
                         || shadow_view.is_some()) =>
             {
@@ -1968,6 +1990,12 @@ impl Renderer {
                 let lods = &self.lods;
                 let (sorted, lists) = (&self.sorted_indices, &self.world_views.sections);
                 let phase2 = self.cull.as_ref().filter(|_| culling).map(|c| &c.phase2);
+                let cache_quads = self.flat_quad_cache_on
+                    && adreno::adreno_vulkan(&self.info)
+                    && self.native.is_none()
+                    && self.pack_post.is_none()
+                    && self.hdr.is_none()
+                    && phase2.is_none();
                 crate::spans::time("flatten", || {
                     flat.prepare(
                         &self.device,
@@ -1998,6 +2026,7 @@ impl Renderer {
                                 Some((id, lod::instance(v.origin, v.fade)))
                             })),
                         |page| sorted.buffer(page).clone(),
+                        cache_quads,
                         self.own_timing.as_mut(),
                     )
                 })
@@ -2354,11 +2383,38 @@ impl Renderer {
             .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
         // Without HDR output, the solid shaders without its lighting (`SolidPipeline`).
         let hdr = self.hdr.is_some();
-        let solid_pipeline = material.map_or(self.solid.get(hdr), |(m, _)| &m.solid);
+        let settled_single = self.solid_settled_single.as_ref().filter(|_| {
+            self.settled_single_on
+                && !hdr
+                && !frame.title
+                && !flat_frame
+                && !gpu_frame
+                && self.native.is_none()
+                && self.pack_post.is_none()
+                && cull.is_none()
+                && phase1_draws > 0
+                && solid_paths::can_use_settled(&self.origins, self.texture_filtering)
+        });
+        self.settled_single_active = settled_single.is_some();
+        let solid_pipeline = material.map_or(
+            settled_single.unwrap_or_else(|| self.solid.get(hdr)),
+            |(m, _)| &m.solid,
+        );
         // Two solid passes only where a discard costs the GPU its hidden surface
-        // removal: Apple's tiled GPUs, behind Metal. Elsewhere the second pass
-        // would double the solid draw calls and vertex work for nothing.
-        let split_solid = self.info.backend == wgpu::Backend::Metal;
+        // removal: Apple's tiled GPUs, behind Metal, and Adreno's Vulkan (`splits_solid`).
+        // Elsewhere the second pass would double the solid draw calls and vertex work.
+        let split_solid = splits_solid(&self.info);
+        // What this frame's instances allow its two solid passes (`solid_paths`).
+        let sdr_paths = (self.cutout_sdr_on && !hdr)
+            .then_some(self.solid_paths_sdr.as_ref())
+            .flatten();
+        let solid_passes = sdr_paths
+            .or(self.solid_paths.as_ref())
+            .filter(|_| split_solid && self.native.is_none() && self.pack_post.is_none())
+            .filter(|_| cull.is_none())
+            .map_or_else(Default::default, |paths| {
+                paths.for_frame(&self.origins, self.texture_filtering)
+            });
         let translucent_pipeline = material.map_or(&self.translucent, |(m, _)| &m.translucent);
         let pack_flat = material.and_then(|(m, _)| m.flat.as_ref());
         // A material stage's translucent pass reads a copy of the depth the solid terrain
@@ -2555,9 +2611,17 @@ impl Renderer {
                     let passes: &[(&wgpu::RenderPipeline, Calls, Calls)] = match pack_flat {
                         Some(p) => &[(&p.0, 0..flat.phase1_calls, 0..phase2_calls)],
                         None if split_solid => &[
-                            (flat.solid_opaque.get(hdr), 0..opaque, 0..phase2_split),
                             (
-                                flat.solid_cutout.get(hdr),
+                                solid_passes
+                                    .opaque(true)
+                                    .unwrap_or(flat.solid_opaque.get(hdr)),
+                                0..opaque,
+                                0..phase2_split,
+                            ),
+                            (
+                                solid_passes
+                                    .cutout(true)
+                                    .unwrap_or(flat.solid_cutout.get(hdr)),
                                 cutout..flat.phase1_calls,
                                 phase2_split..phase2_calls,
                             ),
@@ -2798,6 +2862,32 @@ impl Renderer {
                 pass.set_bind_group(0, &self.group, &[]);
                 pack_frame(&mut pass);
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+            }
+            // At the far plane, it reads the depth solids left, in the usual order of its parts.
+            if let Some(sky) = late_sky.filter(|_| sky_visible) {
+                pass.set_pipeline(&sky.sky);
+                pass.draw(0..3, 0..1);
+                if frame.sky.sunrise_color[3] > 0.001 {
+                    pass.set_pipeline(&sky.sunrise);
+                    pass.set_vertex_buffer(0, self.sunrise_buffer.slice(..));
+                    pass.draw(0..sunrise_fan::VERTICES as u32, 0..1);
+                }
+                if celestial_vertices > 0 {
+                    pass.set_pipeline(&sky.celestial);
+                    pass.set_bind_group(0, &self.entity_group, &[]);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
+                    pass.draw_indexed(0..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if frame.stars.is_some() {
+                    self.stars.draw_through(&mut pass, &sky.stars);
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if frame.dark_disc {
+                    pass.set_pipeline(&sky.dark_disc);
+                    pass.draw(0..3, 0..1);
+                }
             }
             if static_entity_quads > 0 {
                 pass.stage(self.own_timing.as_mut(), "static block entities");
@@ -3380,7 +3470,7 @@ impl Renderer {
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             }
             // LevelRenderer.executeTranslucentAfterTerrain: vanilla's
-            // translucent particle layer draws after translucent terrain —
+            // translucent particle layer draws after translucent terrain â€”
             // the quads write depth, so before it they would hide the glass
             // or water behind them.
             if translucent_particle_quads > 0 && !oit_on {

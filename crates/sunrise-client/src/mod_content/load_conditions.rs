@@ -451,35 +451,6 @@ pub fn build_with_conditions(
     // under it (`data/minecraft/tags/...`): every loader reads it already, and
     // listed again it read each vanilla recipe twice, once as `minecraft:<name>`.
     namespaces.remove("minecraft");
-    // The blocks' kinetic parts, by block id: the game's networks (kinetics.rs) and the models
-    // it turns (the model catalog bakes those no blockstate names).
-    let kinetic: BTreeMap<&str, &sunrise_mod_package::content::Kinetic> = mods
-        .iter()
-        .flat_map(|m| &m.content.blocks)
-        .filter_map(|b| Some((b.id.as_str(), b.kinetic.as_ref()?)))
-        .collect();
-    if !kinetic.is_empty() {
-        overlay.write(KINETIC, &serde_json::to_vec(&kinetic)?)?;
-    }
-    // The machines keeping items of their own, by block id (game/kinetic_machines.rs).
-    let machines: BTreeMap<&str, sunrise_mod_package::content::Machine> = mods
-        .iter()
-        .flat_map(|m| &m.content.blocks)
-        .filter_map(|b| Some((b.id.as_str(), b.machine?)))
-        .collect();
-    if !machines.is_empty() {
-        overlay.write(MACHINES, &serde_json::to_vec(&machines)?)?;
-    }
-    // The models the game draws for blocks besides their own (a blaze burner's blaze).
-    let models: BTreeMap<&str, &Vec<String>> = mods
-        .iter()
-        .flat_map(|m| &m.content.blocks)
-        .filter(|b| !b.models.is_empty())
-        .map(|b| (b.id.as_str(), &b.models))
-        .collect();
-    if !models.is_empty() {
-        overlay.write(BLOCK_MODELS, &serde_json::to_vec(&models)?)?;
-    }
     overlay.write(MARKER, &serde_json::to_vec(&namespaces)?)?;
     let requirements =
         collect_jar_requirements(mods.iter().map(|m| (m.id.as_str(), m.jars.as_slice())))?;
@@ -589,28 +560,6 @@ pub fn resource_root_with_conditions(
     inventory: &sunrise_mod_package::enabled::EnabledMods,
     conditions: &sunrise_world::conditions::LoadConditions,
 ) -> Result<PathBuf> {
-    resource_root_noting_build(
-        base,
-        jar_store,
-        mods,
-        cache,
-        inventory,
-        conditions,
-        &mut || {},
-    )
-}
-
-/// [`resource_root_with_conditions`], calling `on_build` before a build (none when the root is
-/// reused), so a loading screen can say why it waits.
-pub fn resource_root_noting_build(
-    base: &Path,
-    jar_store: &Path,
-    mods: &[ContentMod],
-    cache: &Path,
-    inventory: &sunrise_mod_package::enabled::EnabledMods,
-    conditions: &sunrise_world::conditions::LoadConditions,
-    on_build: &mut dyn FnMut(),
-) -> Result<PathBuf> {
     let has_content = mods.iter().any(|m| {
         !m.jars.is_empty()
             || !m.content.is_empty()
@@ -624,17 +573,20 @@ pub fn resource_root_noting_build(
     // Resolved once: the stamp and the build must name the same directory.
     let base = &real_base(base)?;
     let mut stamp = stamp(base, jar_store, mods, inventory)?;
+    if conditions.has_registered() {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        stamp.hash(&mut hash);
+        conditions.hash(&mut hash);
+        // Handlers can read config that has no persistent fingerprint. Give each
+        // build a fresh root, leaving every previously usable root untouched.
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+            .hash(&mut hash);
+        stamp = format!("{:016x}{stamp}", hash.finish());
+    }
     let roots = cache.join("mod-content");
-<<<<<<< sync-sunrise-1
-    let built_for = |out: &Path, matches: &dyn Fn(&[u8]) -> bool| {
-        fs::read(out.join(STAMP)).is_ok_and(|s| matches(&s))
-            && fs::read(out.join(sunrise_mod_package::enabled::MARKER)).is_ok_and(|bytes| {
-                serde_json::from_slice::<sunrise_mod_package::enabled::EnabledMods>(&bytes)
-                    .is_ok_and(|loaded| &loaded == inventory)
-            })
-    };
-    let reuse = |out: PathBuf| {
-=======
     let out = roots.join(&stamp[..ROOT_NAME]);
     // Game folders that reach one stamp share its root: one process at a time checks, builds
     // or prunes in this cache, so none deletes or replaces a root another is reading.
@@ -645,53 +597,14 @@ pub fn resource_root_noting_build(
                 .is_ok_and(|loaded| &loaded == inventory)
         })
     {
->>>>>>> sunrise/main
         // A reused root warns as the build did.
         let warnings = fs::read_to_string(out.join(WARNINGS)).unwrap_or_default();
         warnings.lines().for_each(|w| log::warn!("Sunrise: {w}"));
         // Used again: kept another day. Marked beside the root, not in it: the pack overlay
         // laid over the root reads its files, and a rewritten one would rebuild it (#12403).
         let _ = fs::write(used_path(&out), b"");
-        out
-    };
-    // Handlers can read config that has no persistent fingerprint. Each build with them gets a
-    // fresh root, leaving every previously usable root untouched, and keeps the answers they
-    // gave (ANSWERS); the latest root for these inputs, named beside the roots (`<key>.latest`),
-    // is reused while the handlers give every one of them again.
-    let mut latest = None;
-    if conditions.has_registered() {
-        use std::hash::{Hash, Hasher};
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        stamp.hash(&mut hash);
-        conditions.hash_handlers(&mut hash);
-        let pointer = roots.join(format!("{:016x}.latest", hash.finish()));
-        if let Some(out) = fs::read_to_string(&pointer)
-            .ok()
-            .map(|name| roots.join(name.trim()))
-            .filter(|out| {
-                built_for(out, &|built| built.ends_with(stamp.as_bytes()))
-                    && fs::read(out.join(ANSWERS))
-                        .ok()
-                        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                        .is_some_and(|answers: Vec<sunrise_world::conditions::RecordedAnswer>| {
-                            conditions.answers_hold(&answers)
-                        })
-            })
-        {
-            return Ok(reuse(out));
-        }
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
-            .hash(&mut hash);
-        stamp = format!("{:016x}{stamp}", hash.finish());
-        latest = Some(pointer);
+        return Ok(out);
     }
-    let out = roots.join(&stamp[..ROOT_NAME]);
-    if built_for(&out, &|built| built == stamp.as_bytes()) {
-        return Ok(reuse(out));
-    }
-    on_build();
     if has_content {
         for warning in build_with_conditions(base, jar_store, mods, &out, inventory, conditions)? {
             log::warn!("Sunrise: {warning}");
@@ -706,22 +619,7 @@ pub fn resource_root_noting_build(
         )?;
         overlay.write(GENERATED_FILES, b"[]")?;
     }
-    if latest.is_some() {
-        fs::write(
-            out.join(ANSWERS),
-            serde_json::to_vec(&conditions.registered_answers())?,
-        )?;
-    }
-    fs::write(out.join(STAMP), &stamp)?;
-    // Named only once the root is whole (its stamp written).
-    if let Some(pointer) = latest {
-        fs::write(pointer, &stamp[..ROOT_NAME])?;
-    }
+    fs::write(out.join(STAMP), stamp)?;
     prune_roots(&roots, &out, KEEP_ROOTS);
     Ok(out)
 }
-
-/// In a root built with registered condition handlers: every answer they gave
-/// ([`sunrise_world::conditions::LoadConditions::registered_answers`]), asked again before the
-/// root is reused.
-const ANSWERS: &str = "sunrise-mod-content-condition-answers.json";

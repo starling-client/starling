@@ -231,13 +231,8 @@ impl Game<'_> {
         self.player_container_menu(self.player(uuid)?)
             .filter(|menu| menu.fields().window == window)
     }
-<<<<<<< sync-sunrise-1
     /// Replaces what the player's native menu `window` shows with `items` and sends it whole at
     /// once, the title, cursor and screen kept.
-=======
-    /// Replaces what the player's open native menu `window` shows, without reopening it
-    /// (`AbstractContainerMenu.sendAllDataToRemote`): the whole contents in one packet.
->>>>>>> sunrise/main
     pub(super) fn menu_set_items(
         &mut self,
         uuid: u128,
@@ -245,7 +240,6 @@ impl Game<'_> {
         items: Vec<Option<ItemStack>>,
     ) -> Result<(), mod_api::MenuItemsRefusal> {
         use mod_api::MenuItemsRefusal;
-<<<<<<< sync-sunrise-1
         if !self.is_logical_server() {
             return Err(MenuItemsRefusal::Client);
         }
@@ -257,8 +251,15 @@ impl Game<'_> {
             Err(MenuItemsRefusal::NotOpen)
         }
     }
-    /// Closes the player's native menu (a `native_menu_closed` follows).
-=======
+    /// Replaces what the player's open native menu `window` shows, without reopening it
+    /// (`AbstractContainerMenu.sendAllDataToRemote`): the whole contents in one packet.
+    pub(super) fn menu_set_items(
+        &mut self,
+        uuid: u128,
+        window: i32,
+        items: Vec<Option<ItemStack>>,
+    ) -> Result<(), mod_api::MenuItemsRefusal> {
+        use mod_api::MenuItemsRefusal;
         if self.remote.is_some() {
             return Err(MenuItemsRefusal::Client);
         }
@@ -283,7 +284,6 @@ impl Game<'_> {
     }
     /// Closes the player's native menu (a `native_menu_closed` follows). An active click
     /// stages the close for its current window and sends it only once the transaction commits.
->>>>>>> sunrise/main
     pub(super) fn close_menu(&mut self, uuid: u128) {
         if let Some(conn) = self.native_conn(uuid)
             && let Some(guest) = self.lan.as_ref().and_then(|host| host.hub.guest(conn))

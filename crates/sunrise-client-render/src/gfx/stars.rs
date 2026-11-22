@@ -22,7 +22,6 @@ struct Uniform {
     hdr_light: [f32; 4],
 }
 
-<<<<<<< sync-sunrise-1
 /// The stars' pipeline descriptor, handed to `make`.
 fn with_descriptor<R>(
     (layout, shader, format, linear): (
@@ -87,10 +86,7 @@ fn with_descriptor<R>(
     })
 }
 
-pub(super) struct Stars {
-=======
 pub(crate) struct Stars {
->>>>>>> sunrise/main
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::PipelineLayout,
     shader: wgpu::ShaderModule,

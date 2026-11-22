@@ -2,68 +2,6 @@
 //! break the blocks around the one its player broke as that player breaks them, taking their
 //! drops and experience in `block_drops`.
 use super::Game;
-<<<<<<< sync-sunrise-1
-use std::cell::Cell;
-
-/// The most mod breaks running inside one another (a break heard in `break_block` that breaks
-/// again): the next one is refused, so two mods answering each other's breaks end.
-const NESTED_BREAKS: u8 = 8;
-
-thread_local! {
-    /// The mod breaks running on this thread.
-    static BREAKING: Cell<u8> = const { Cell::new(0) };
-}
-
-impl Game<'_> {
-    /// `player.destroy_block`: [`Self::native_player_break_block`] for the player a handle names,
-    /// refused for a stale handle and past [`NESTED_BREAKS`] breaks inside one another.
-    pub(super) fn player_destroy_block(
-        &mut self,
-        player: mod_api::PlayerRef,
-        pos: [i32; 3],
-        into_inventory: bool,
-    ) -> bool {
-        if self.player_handle_read(player).is_none() {
-            return false;
-        }
-        let depth = BREAKING.get();
-        if depth >= NESTED_BREAKS {
-            return false;
-        }
-        BREAKING.set(depth + 1);
-        let broke = self.native_player_break_block(player.uuid(), pos, into_inventory);
-        BREAKING.set(depth);
-        broke
-    }
-    /// Breaks the block at `pos` as the player `uuid` breaks it, through the
-    /// game's own `ServerPlayerGameMode.destroyBlock`, as FTB Ultimine does:
-    /// a spectator, an adventure player whose tool can't break it, a held item
-    /// that can't break blocks (a sword in creative) and a game master block
-    /// without the permission leave it, and so does spawn protection on a
-    /// dedicated server. Then the mods' `native_destroy_block` hears it (and
-    /// can cancel it), and the break runs as a player's: the block's own
-    /// effects, its events, particles and sound, the drops rolled for the
-    /// held item and its enchantments, the item's wear, the mined statistic,
-    /// the exhaustion and the experience. True when the block was removed.
-    ///
-    /// With `into_inventory`, the block's own drops go to the player's
-    /// inventory instead of popping, and what doesn't fit is dropped from
-    /// them as `Inventory.placeItemBackInInventory` drops it; what else the
-    /// break sets loose (a torch that loses its support, a container's
-    /// contents) still drops in the world. A creative player gets no drops.
-    ///
-    /// The player is the acting one inside their own hook (the usual place:
-    /// their `native_destroy_block`, as NeoForge's `BlockEvent.BreakEvent`),
-    /// or any online player from a hook with no player swapped in, such as
-    /// `native_server_tick`. False, with nothing broken, for anyone else
-    /// while a player acts, for a player who isn't here or is dead, for air,
-    /// an unloaded block, a block no survival player can break (bedrock),
-    /// and off a server. The player needn't reach or look at the block.
-    /// Breaking from `native_destroy_block` makes it hear these breaks too:
-    /// a mod keeps its own guard against breaking again from them.
-    /// API @API:player_break@.
-    pub(in crate::game) fn native_player_break_block(
-=======
 use mod_api::PlayerRef;
 use std::cell::Cell;
 
@@ -109,7 +47,6 @@ impl Game<'_> {
     /// doesn't fit drops from them as `Inventory.placeItemBackInInventory` drops it. Refused
     /// (false) once [`MAX_NESTED_BREAKS`] breaks are inside one another.
     pub(super) fn player_destroy_block(
->>>>>>> sunrise/main
         &mut self,
         player: PlayerRef,
         pos: [i32; 3],
