@@ -15,10 +15,10 @@ pub use launcher::browser;
 pub mod list;
 
 use browser::{
-    GAME, Kind, Project, Query, Source, SourceId, Support, Version,
     horizon::Registry,
     installed::{self, Entry, Installed},
     modrinth::Modrinth,
+    Kind, Project, Query, Source, SourceId, Support, Version, GAME,
 };
 use serde_json::Value;
 use std::collections::HashSet;
