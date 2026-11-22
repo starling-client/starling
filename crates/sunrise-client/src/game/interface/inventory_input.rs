@@ -300,17 +300,7 @@ impl Game<'_> {
         let Some(r) = self.renderer.as_ref() else {
             return (None, false);
         };
-<<<<<<< sync-sunrise-1
         let batch = self.interface_batch([r.config.width, r.config.height]);
-        (
-            self.slot_at(&batch, self.cursor.0, self.cursor.1),
-            self.clicked_outside(&batch),
-        )
-=======
-        let batch = HudBatch::new(
-            [r.config.width, r.config.height],
-            self.settings.gui_scale_inputs(),
-        );
         self.target_at(&batch)
     }
     /// `inventory_target` for the frame `batch` describes.
@@ -321,7 +311,6 @@ impl Game<'_> {
         let outside =
             self.clicked_outside(batch) && !(slot.is_some() && self.native_screen_shown());
         (slot, outside)
->>>>>>> sunrise/main
     }
     pub(super) fn screen_button(right: bool) -> sunrise_client::container_screen::Button {
         use sunrise_client::container_screen::Button;
@@ -468,14 +457,10 @@ impl Game<'_> {
     /// cancels the drag, drops a stack released outside, or clicks.
     pub(super) fn inventory_mouse_release(&mut self, right: bool) -> bool {
         use sunrise_client::container_screen::{Release, Target};
-<<<<<<< sync-sunrise-1
-        self.tweak_release();
-        if self.creative_catalog_release(right) {
-            return;
-        }
-=======
         let tweaked = self.tweak_release();
->>>>>>> sunrise/main
+        if self.creative_catalog_release(right) {
+            return true;
+        }
         let (slot, outside) = self.inventory_target();
         let dragged = self.inv_drag.as_ref().is_some_and(|(_, s)| !s.is_empty());
         let release = self.inv_clicks.release(

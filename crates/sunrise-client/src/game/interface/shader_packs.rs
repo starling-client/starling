@@ -294,7 +294,6 @@ pub(super) struct PackIds {
     pub(super) separate_ao: bool,
 }
 
-<<<<<<< sync-sunrise-1
 /// A pack the renderer is making on its own thread (`Renderer::load_shader_pack`): its ids,
 /// which entity spans use once it draws.
 pub(super) struct Making {
@@ -334,22 +333,10 @@ impl AutoProfile {
                 shadow_resolution: 512.0,
                 shadow_distance: 64.0,
             },
-=======
-#[cfg(test)]
-impl PackIds {
-    pub(super) fn with_entity_ids<'a>(ids: impl IntoIterator<Item = (&'a str, i32)>) -> Self {
-        Self {
-            entities: ids
-                .into_iter()
-                .map(|(name, id)| (name.into(), id))
-                .collect(),
-            ..Default::default()
->>>>>>> sunrise/main
         }
     }
 }
 
-<<<<<<< sync-sunrise-1
 /// The pack's option values: the chosen `profile` (`LOW`), then what the player chose on the
 /// Shader Options page, which Auto's limits leave alone, then `SUNRISE_SHADER_OPTIONS` lists
 /// values over it (`shadowDistance=64.0 SHADOW_QUALITY=0 !BLOOM`).
@@ -404,8 +391,19 @@ fn picked_values(
     }
     values
 }
-=======
->>>>>>> sunrise/main
+#[cfg(test)]
+impl PackIds {
+    pub(super) fn with_entity_ids<'a>(ids: impl IntoIterator<Item = (&'a str, i32)>) -> Self {
+        Self {
+            entities: ids
+                .into_iter()
+                .map(|(name, id)| (name.into(), id))
+                .collect(),
+            ..Default::default()
+        }
+    }
+}
+
 impl Game<'_> {
     /// Loads the pack for the current dimension when it changed, and returns this frame's
     /// inputs to the pack's uniforms.
@@ -834,7 +832,6 @@ impl Game<'_> {
         }
     }
 
-<<<<<<< sync-sunrise-1
     /// The world's resolution, of the screen's: the player's, and no more than Auto's while it
     /// runs a pack that isn't a light one.
     pub(super) fn world_scale(&self) -> f32 {
@@ -855,7 +852,8 @@ impl Game<'_> {
             }
             _ => chosen,
         }
-=======
+    }
+
     /// `Entity.isCurrentlyGlowing`, `Entity.isVehicle` and `Entity.isInWaterOrRain` of the
     /// window's player, as a client answers them, read without changing anything.
     fn pack_player_booleans(&self) -> (bool, bool, bool) {
@@ -876,7 +874,6 @@ impl Game<'_> {
                 || self.rain_falls_on(p.position, p.bounds().max_position().y)
         });
         (glowing, ridden, wet)
->>>>>>> sunrise/main
     }
 
     /// The Shader Options page opened: the picked pack's options, screens and names.

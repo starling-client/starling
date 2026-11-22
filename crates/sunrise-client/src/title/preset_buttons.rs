@@ -176,11 +176,7 @@ impl Title {
                 {
                     let mut button = b(
                         cx - 34.0 + i as f32 * 24.0,
-<<<<<<< sync-sunrise-1
-                        y + 72.0,
-=======
                         y + 72.0 + below,
->>>>>>> sunrise/main
                         20.0,
                         &lang::get_or(key, plain),
                         id != 5 || crate::net::joins_friends(),

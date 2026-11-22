@@ -383,30 +383,8 @@ impl Game<'_> {
         let effect_tip = self.creative_effect_tip.take();
         let browser_tip = self.draw_mod_browser(batch);
         self.draw_screen_phase(batch, sunrise_client::screen_draw::RenderPhase::Foreground);
-<<<<<<< sync-sunrise-1
-        for t in tabs
-            .iter()
-            .filter(|t| self.bedrock_items.is_none() && self.creative_screen.on_page(t))
-        {
-            let (tx, ty) = Creative::tab_position(t);
-            if self.cursor.0 >= ox + tx
-                && self.cursor.0 < ox + tx + 26.0
-                && self.cursor.1 >= oy + ty
-                && self.cursor.1 < oy + ty + 32.0
-            {
-                self.tooltip(
-                    batch,
-                    &self.creative_tab_title(t),
-                    self.cursor.0,
-                    self.cursor.1,
-                );
-            }
-        }
-        if inventory {
-=======
         self.draw_carried(batch);
         if tab.inventory {
->>>>>>> sunrise/main
             if Self::creative_trash_hovered(batch, self.cursor) {
                 // `CreativeModeInventoryScreen`: the destroy slot's tooltip is
                 // `inventory.binSlot`, not an English literal.
@@ -617,18 +595,10 @@ impl Game<'_> {
             }
             return true;
         }
-<<<<<<< sync-sunrise-1
-        let tabs = self.creative_screen.tabs.clone();
-        for (i, t) in tabs.iter().enumerate() {
-            if panel || !self.creative_screen.on_page(t) {
-                continue;
-            }
-=======
         // Only the clicked tab's index is needed: cloning the tabs here copied
         // every tab's items on each click, saved hotbars' stacks included.
         let creative = &self.creative_screen;
         let clicked = creative.tabs.iter().position(|t| {
->>>>>>> sunrise/main
             let (tx, ty) = Creative::tab_position(t);
             creative.on_page(t)
                 && cx >= ox + tx
@@ -678,13 +648,10 @@ impl Game<'_> {
             return true;
         }
         if self.slot_at(&batch, cx, cy).is_some() || self.clicked_outside(&batch) {
-<<<<<<< sync-sunrise-1
-            self.inventory_press(right);
+            return self.inventory_press(right);
         } else if self.carried.is_some() && self.creative_catalog_at(&batch, (cx, cy)) {
             self.creative_empty_cell_click(right);
-=======
-            return self.inventory_press(right);
->>>>>>> sunrise/main
+            return true;
         }
         false
     }

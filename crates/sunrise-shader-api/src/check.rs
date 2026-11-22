@@ -285,28 +285,7 @@ fn build_stage(
     }
     let composed = compose(pack, kind, file, entry);
     let module = parse(&composed)?;
-<<<<<<< sync-sunrise-1
-    // Ray queries validate only with the capability; packs without `[ray_tracing]`
-    // have no ray-query IR, so the default stays strict for them.
-    let mut capabilities = Capabilities::default();
-    if pack.manifest.ray_tracing.is_some() {
-        capabilities |= Capabilities::RAY_QUERY;
-    }
-    let info = Validator::new(ValidationFlags::all(), capabilities)
-        .validate(&module)
-        .map_err(|e| {
-            let at = e.spans().next().and_then(|(span, _)| span.to_range());
-            let mut message = e.as_inner().to_string();
-            let mut source = std::error::Error::source(e.as_inner());
-            while let Some(s) = source {
-                message += &format!(": {s}");
-                source = s.source();
-            }
-            vec![located(&composed, at.map(|r| r.start), message)]
-        })?;
-=======
     let info = validate(&composed, &module)?;
->>>>>>> sunrise/main
     let (expressions, texture_reads) = cost(&module);
     let mut problems = Vec::new();
     let engine = kind == StageKind::Material && pack.manifest.coverage == crate::Coverage::Engine;
@@ -320,27 +299,12 @@ fn build_stage(
                     .into(),
             ));
     }
-<<<<<<< sync-sunrise-1
-    if texture_reads > MAX_TEXTURE_READS {
-        problems.push(problem(
-            file,
-            format!("{texture_reads} texture reads; a stage may write {MAX_TEXTURE_READS}"),
-        ));
-    }
-    problems.extend(translate(
-        &module,
-        &info,
-        &pack.manifest.options,
-        file,
-        pack.manifest.ray_tracing.is_some(),
-=======
     problems.extend(cost_problems((expressions, texture_reads), file, "stage"));
     problems.extend(translate(
         &module,
         &info,
         Some(&pack.manifest.options),
         file,
->>>>>>> sunrise/main
     ));
     if !problems.is_empty() {
         return Err(problems);
@@ -809,40 +773,6 @@ pub(crate) fn translate(
                     return problems;
                 }
             };
-<<<<<<< sync-sunrise-1
-            let spv = naga::back::spv::write_vec(
-                &m,
-                &i,
-                &naga::back::spv::Options::default(),
-                Some(&naga::back::spv::PipelineOptions {
-                    shader_stage: e.stage,
-                    entry_point: e.name.clone(),
-                }),
-            );
-            let msl = naga::back::msl::write_string(
-                &m,
-                &i,
-                &naga::back::msl::Options {
-                    // Ray queries need MSL 2.4; everything else stays at the
-                    // oldest Metal the renderer supports.
-                    lang_version: if ray_tracing { (2, 4) } else { (2, 2) },
-                    ..Default::default()
-                },
-                &naga::back::msl::PipelineOptions {
-                    entry_point: Some((e.stage, e.name.clone())),
-                    ..Default::default()
-                },
-            );
-            let mut hlsl = String::new();
-            let hlsl_result = naga::back::hlsl::Writer::new(
-                &mut hlsl,
-                &naga::back::hlsl::Options::default(),
-                &naga::back::hlsl::PipelineOptions {
-                    entry_point: Some((e.stage, e.name.clone())),
-                },
-            )
-            .write(&m, &i, None);
-=======
             let spv = refusal(|| {
                 naga::back::spv::write_vec(
                     &m,
@@ -878,7 +808,6 @@ pub(crate) fn translate(
                 )
                 .write(&m, &i, None)
             });
->>>>>>> sunrise/main
             let errors = [
                 ("Vulkan (SPIR-V)", spv),
                 ("Metal", msl),

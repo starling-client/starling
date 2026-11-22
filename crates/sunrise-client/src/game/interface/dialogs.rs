@@ -195,7 +195,6 @@ impl Game<'_> {
             })
     }
 
-<<<<<<< sync-sunrise-1
     /// The text input that has the focus, for the keyboard's editor.
     pub(super) fn dialog_input(&self) -> Option<TypedInput> {
         if !self.dialog_typing() {
@@ -261,7 +260,8 @@ impl Game<'_> {
         }
         let rest: String = text.chars().skip(same).collect();
         edit.insert_text(font, &rest);
-=======
+    }
+
     pub(super) fn decode_dialog(&self, tag: &Tag, dynamic: Option<&Dynamic>) -> Option<Dialog> {
         let items = self
             .remote
@@ -282,7 +282,6 @@ impl Game<'_> {
 
     pub(super) fn show_dialog(&mut self, tag: &Tag) {
         self.show_dialog_in_phase(tag, None);
->>>>>>> sunrise/main
     }
 
     /// `showDialog`: the dialog replaces an open one (and a waiting screen);

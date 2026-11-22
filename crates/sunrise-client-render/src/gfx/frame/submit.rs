@@ -104,6 +104,10 @@ impl Renderer {
                 Some(copy_frame(&self.device, &mut encoder, &texture, size))
             });
         let first_frame = self.first_frame == FirstFrame::Submit;
+        if flat_frame && let Some(flat) = &mut self.flat {
+            // From here the encoder is submitted either locally or in queue order.
+            flat.submitted();
+        }
         // Finished, submitted and presented on the submit thread when nothing after the
         // submission needs this one: screenshots' readbacks, the error scopes (one per
         // thread), the first frame's startup log, VSync's frame callback, a reconfigure.
@@ -118,6 +122,8 @@ impl Renderer {
             && !first_frame
             && !reconfigure
             && self.hdr_marker.is_none()
+            // The frame that removes the start's marker presents here (below).
+            && self.start_marker.is_none()
             && (surface_frame.is_none() || self.config.present_mode != wgpu::PresentMode::Fifo)
         {
             let offscreen = surface_frame.is_none();

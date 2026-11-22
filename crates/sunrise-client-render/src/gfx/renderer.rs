@@ -51,9 +51,15 @@ pub struct Renderer {
     pub(crate) device_lost: Arc<std::sync::atomic::AtomicBool>,
     pub config: wgpu::SurfaceConfiguration,
     pub(crate) solid: SolidPipeline,
+    pub(crate) solid_split: Option<(SolidPipeline, SolidPipeline)>,
+    /// Cheaper pipelines for those two passes, on Adreno's Vulkan (`solid_paths`).
+    pub(crate) solid_paths: Option<solid_paths::SolidPaths>,
+    pub(crate) solid_settled_single: Option<wgpu::RenderPipeline>,
+    pub(crate) settled_single_on: bool,
+    pub settled_single_active: bool,
+    pub(crate) solid_paths_sdr: Option<solid_paths::SolidPaths>,
+    pub cutout_sdr_on: bool,
     /// `solid` split in two passes for the world pass (terrain.wgsl's `opaque_quad`).
-    pub(crate) solid_opaque: SolidPipeline,
-    pub(crate) solid_cutout: SolidPipeline,
     pub(crate) translucent: wgpu::RenderPipeline,
     pub(crate) translucent_mark: wgpu::RenderPipeline,
     /// Flat section draws (`flat`), where multi-draw is emulated.
@@ -70,6 +76,7 @@ pub struct Renderer {
     pub(crate) visbuf: Option<visbuffer::Visbuffer>,
     /// `flat` draws this frame's sections (off: the per-section draws).
     pub(crate) flat_on: bool,
+    pub flat_quad_cache_on: bool,
     /// Occlusion culling of solid section draws, where the GPU's instance
     /// counts reach a multi-draw's entries (Vulkan, Metal).
     pub(crate) cull: Option<cull::Cull>,
@@ -95,6 +102,9 @@ pub struct Renderer {
     pub(crate) sunrise_pipeline: wgpu::RenderPipeline,
     pub(crate) sunrise_buffer: wgpu::Buffer,
     pub(crate) dark_disc: wgpu::RenderPipeline,
+    /// The vanilla sky after solid terrain (`late_sky`), and whether frames take it.
+    pub(crate) late_sky: Option<late_sky::LateSky>,
+    pub(crate) late_sky_on: bool,
     /// Clears the world pass's depth to the far plane so the first-person hand draws in the
     /// same pass (`hand_in_world`), as the hand's own pass would clear it.
     pub(crate) depth_reset: wgpu::RenderPipeline,
@@ -285,6 +295,9 @@ pub struct Renderer {
     pub(crate) outline: wgpu::Buffer,
     pub(crate) depth: wgpu::TextureView,
     pub(crate) sections: resident::Resident<SectionGpu>,
+    /// One BLAS per live section and one TLAS over them (Advanced graphics' Ray
+    /// Tracing): built as sections mesh, only on a ray-query device.
+    pub(crate) rt: rt::RtWorld,
     pub(crate) lods: FxHashMap<crate::lod::TileKey, lod::Tile>,
     /// Vertex bytes of the current tile meshes (not their fading stand-ins).
     pub(crate) lod_vertex_bytes: u64,
@@ -333,6 +346,10 @@ pub struct Renderer {
     pub(crate) indirect_capacity: u64,
     /// Indirect draws may set `first_instance` (the section origin).
     pub multi_draw: bool,
+    /// The device takes indirect multi-draws, which `multi_draw` may still leave off
+    /// (`indirect_draws_wanted`, `set_indirect_draws`).
+    pub(crate) indirect_capable: bool,
+    pub(crate) base_vertex: bool,
     /// Per-frame scratch, kept to avoid allocating every frame.
     pub(crate) visible: Vec<resident::Visible>,
     pub(crate) visible_lods: Vec<lod::Visible>,
@@ -405,6 +422,7 @@ pub struct Renderer {
     /// Which pixels of each block sprite may shine in HDR output (terrain.wgsl's
     /// `emission_thresholds`), measured when HDR output turns on.
     pub(crate) emission_stats: hdr_stats::EmissionStats,
+    pub(crate) emissive_lookup: Option<emissive_lookup::Lookup>,
     /// What this renderer's destination offers and its device draws.
     pub(crate) output_caps: output::OutputCapabilities,
     /// An output that failed to apply, not tried again until something it needs changes.
@@ -427,6 +445,9 @@ pub struct Renderer {
     pub(crate) hdr_driver: Option<String>,
     /// The HDR Lighting setting, kept for the HDR output made when HDR turns on.
     pub(crate) hdr_lighting_setting: bool,
+    /// The marker file of a renderer start that has not presented a frame yet
+    /// (`graphics::RENDERER_MARKER`), removed with the first frame.
+    pub(crate) start_marker: Option<std::path::PathBuf>,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pub(crate) pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// A `shaders/` pack whose pipelines build on a thread of their own (`load_shader_pack`).
@@ -488,6 +509,8 @@ pub struct Renderer {
     pub(crate) readback: readback::Readback,
     pub info: wgpu::AdapterInfo,
     pub suspended: bool,
+    /// Suspended without a window at all (`suspend`), not just minimized.
+    pub detached: bool,
     /// Consecutive frames whose surface acquisition failed validation. The
     /// first gets the swapchain a fresh configuration; later ones reattach
     /// the window, as a lost surface does.

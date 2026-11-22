@@ -824,23 +824,10 @@ impl Title {
             } else {
                 "widget/button"
             };
-<<<<<<< sync-sunrise-1
             // `blitSprite`: nine-sliced as the sprite's `gui.scaling` says, as the options'
             // buttons are. Halves of a sprite taken as 200 wide read past a pack's smaller one
             // (Unique Dark's is 20 x 20) into its neighbours in the atlas.
             crate::ui::nine_slice(batch, atlas, sprite, b.x, b.y, b.w, 20.0, u32::MAX);
-=======
-            // Nine-slice approximation: left and right halves of the 200-wide sprite.
-            if let Some(r) = atlas.gui_rect(sprite).copied() {
-                let half = b.w / 2.0;
-                let mut left = r;
-                left.u1 = r.u0 + (r.u1 - r.u0) * (half / r.w as f32);
-                batch.rect_uv(b.x, b.y, half, 20.0, left, u32::MAX);
-                let mut right = r;
-                right.u0 = r.u1 - (r.u1 - r.u0) * (half / r.w as f32);
-                batch.rect_uv(b.x + half, b.y, half, 20.0, right, u32::MAX);
-            }
->>>>>>> sunrise/main
             let color = if b.enabled {
                 u32::MAX
             } else {

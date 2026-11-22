@@ -145,9 +145,12 @@ pub fn start(
     // Mods' startup bars and lines (`RegistrationContext::progress`), before they register.
     game::startup_progress::install(side == "server");
     // Mod loading emits refusals; both client and dedicated logs must exist first.
-<<<<<<< sync-sunrise-1
-    let (_ids, _loaded_code) = load(&native, &launch);
-    crash::install(home.clone(), side);
+    load(&native, &launch);
+    let save_failure_diagnostics = options.save_failure_diagnostics.clone();
+    let panic_diagnostics = save_failure_diagnostics.clone();
+    crash::install(home.clone(), side, move || {
+        panic_diagnostics.suppressed_summary()
+    });
     if let Some(after_log) = AFTER_LOG
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -155,15 +158,7 @@ pub fn start(
     {
         after_log();
     }
-=======
-    load(&native, &launch);
-    let save_failure_diagnostics = options.save_failure_diagnostics.clone();
-    let panic_diagnostics = save_failure_diagnostics.clone();
-    crash::install(home.clone(), side, move || {
-        panic_diagnostics.suppressed_summary()
-    });
     let _ = sunrise_world::loot::types::install(crate::game::loot_types::capture);
->>>>>>> sunrise/main
     if sunrise_world::native_load_hooks::install(
         sunrise_world::native_load_hooks::NativeLoadHooks {
             item_ability_default: sunrise_items::item_abilities::vanilla_can_perform,
@@ -218,19 +213,15 @@ pub fn start(
         // A bad command line is the caller's mistake, not a crash: no report.
         let missing_mods = game::dedicated::is_missing_mods_refusal(error.as_ref());
         let usage = error.is::<game::UsageError>() || missing_mods;
-<<<<<<< sync-sunrise-1
         #[cfg(target_os = "android")]
         if !usage {
             crate::diagnostics::fatal_error(&error.to_string());
         }
-        if !missing_mods {
-=======
         if let Some(refusals) = error.downcast_ref::<game::mods::DeclarationFailures>() {
             for line in refusals.lines() {
                 log::error!("Sunrise: {line}");
             }
         } else if !missing_mods {
->>>>>>> sunrise/main
             log::error!("Sunrise: {error}");
         }
         logging::flush();
@@ -414,17 +405,11 @@ pub(crate) fn install_client_hooks() {
         sound_type: |context, pos, state, entity, cause, sound| {
             crate::game::native_block_sounds::sound_type(context, pos, state, entity, cause, sound);
         },
-<<<<<<< sync-sunrise-1
-        can_grindstone_repair: crate::game::native_item_rules::can_grindstone_repair,
-        can_fit_inside_container_items:
-            crate::game::native_item_rules::can_fit_inside_container_items,
-=======
         can_grindstone_repair: crate::game::native_item_menu_parts::can_grindstone_repair,
         is_combine_repairable: crate::game::native_item_menu_parts::is_combine_repairable,
         can_fit_inside_container_items:
             crate::game::native_item_menu_parts::can_fit_inside_container_items,
         item_name: crate::game::native_item_menu_parts::item_name,
->>>>>>> sunrise/main
     }) {
         log::warn!("Native client hooks already installed; keeping the first callbacks");
     }

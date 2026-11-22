@@ -1,6 +1,44 @@
 use super::*;
 
 impl Renderer {
+    /// Whether frames that may take it draw cutouts without their fade (`solid_paths`).
+    pub fn static_cutout_on(&self) -> bool {
+        self.solid_paths
+            .as_ref()
+            .is_some_and(|p| p.static_cutout_on)
+    }
+    /// Switches drawing cutouts without their fade, for A/B checks.
+    pub fn set_static_cutout(&mut self, on: bool) -> Result<()> {
+        match &mut self.solid_paths {
+            Some(paths) => paths.static_cutout_on = on,
+            None if on => return Err("the cheaper terrain shaders are off on this device".into()),
+            None => {}
+        }
+        if let Some(paths) = &mut self.solid_paths_sdr {
+            paths.static_cutout_on = on;
+        }
+        Ok(())
+    }
+    /// Whether frames that may take it draw whole sections through less work (`solid_paths`).
+    pub fn settled_terrain_on(&self) -> bool {
+        self.settled_single_on || self.solid_paths.as_ref().is_some_and(|p| p.settled_on)
+    }
+    /// Switches drawing whole sections through less work, for A/B checks.
+    pub fn set_settled_terrain(&mut self, on: bool) -> Result<()> {
+        if self.solid_settled_single.is_some() {
+            self.settled_single_on = on;
+            return Ok(());
+        }
+        match &mut self.solid_paths {
+            Some(paths) => paths.settled_on = on,
+            None if on => return Err("the cheaper terrain shaders are off on this device".into()),
+            None => {}
+        }
+        if let Some(paths) = &mut self.solid_paths_sdr {
+            paths.settled_on = on;
+        }
+        Ok(())
+    }
     /// Whether sections are drawn as one index list per frame (`flat`).
     pub fn flat_draws(&self) -> bool {
         self.flat_on

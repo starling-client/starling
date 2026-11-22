@@ -732,19 +732,12 @@ impl Game<'_> {
         out: &mut Vec<Vertex>,
         mut layouts: Option<&mut NameTagLayouts>,
     ) -> Vec<sunrise_client::font::Patch> {
-<<<<<<< sync-sunrise-1
-        // Options.getBackgroundOpacity(0.25) black, as ARGB.color.
-        const BACKGROUND: u32 = 0x3F00_0000;
-        let axes = self.camera_text_axes();
-        let away = axes.away;
-=======
         // SubmitNodeCollection.submitNameTag turns the tag by the camera's orientation
         // (Camera.rotation()), turned round in third-person front view, so the text reads the
         // right way from where it is seen.
         let orientation = self.camera_orientation();
         let [right, up] = billboard_axes(orientation);
         let away = orientation * glam::Vec3::NEG_Z * 0.002;
->>>>>>> sunrise/main
         let mut batch = HudBatch::new(
             [1, 1],
             sunrise_client::hud::GuiScale {

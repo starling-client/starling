@@ -508,9 +508,15 @@ impl Game<'_> {
             },
             |renderer| [renderer.config.width, renderer.config.height],
         );
-<<<<<<< sync-sunrise-1
+        self.build_screen_at(framebuffer);
+    }
+
+    fn build_screen_at(&mut self, framebuffer: [u32; 2]) {
+        let shown =
+            self.screen != Screen::Playing || self.title.is_some() || self.screen_over_playing();
         let inputs = self.settings.gui_scale_inputs();
         let gui = GuiSize::new(framebuffer, inputs.requested, inputs.unicode);
+        // Starling: on a phone the interface is laid out at its own scale (the safe zones).
         #[cfg(target_os = "android")]
         let gui = {
             let batch = self.interface_batch(framebuffer);
@@ -519,17 +525,6 @@ impl Game<'_> {
                 ..gui
             }
         };
-        (framebuffer, gui)
-=======
-        self.build_screen_at(framebuffer);
->>>>>>> sunrise/main
-    }
-
-    fn build_screen_at(&mut self, framebuffer: [u32; 2]) {
-        let shown =
-            self.screen != Screen::Playing || self.title.is_some() || self.screen_over_playing();
-        let inputs = self.settings.gui_scale_inputs();
-        let gui = GuiSize::new(framebuffer, inputs.requested, inputs.unicode);
         let identity = self
             .title
             .as_ref()

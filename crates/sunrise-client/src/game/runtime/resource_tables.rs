@@ -151,13 +151,11 @@ pub struct UiResources {
     pub panorama: Arc<sunrise_client::gfx::panorama::Faces>,
     /// The title screen's splashes (`sunrise_client::splashes::pool`).
     pub splashes: Arc<str>,
-<<<<<<< sync-sunrise-1
     /// Starling: what it was read from, the packs over the game's own, whose sprites' nine-slice
     /// metadata and translations the title takes with it (`StartupMenu::set_root`). The loader
     /// names only the game's own folder, and a 20 x 20 pack button nine-sliced as vanilla's
     /// 200 x 20 one stretched its ends tenfold. None where it was read from no source.
     pub source: Option<sunrise_assets::resource_source::ResourceSource>,
-=======
     /// The `Text` of each plain string mods draw (`DrawContext::text`).
     pub plain_texts: PlainTexts,
 }
@@ -187,7 +185,6 @@ impl PlainTexts {
         }
         draw(&texts[text])
     }
->>>>>>> sunrise/main
 }
 
 impl Game<'_> {

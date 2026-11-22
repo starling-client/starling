@@ -179,7 +179,6 @@ impl Game<'_> {
             self.focus_after_run = Some(focused);
             return;
         }
-<<<<<<< sync-sunrise-1
         self.save_when_focus_leaves(&event);
         #[cfg(target_os = "android")]
         self.sync_interface_cursor(self.touch_size());
@@ -190,12 +189,11 @@ impl Game<'_> {
             && self.touch_back_key(event)
         {
             return;
-=======
+        }
         match at_unclaimed(origin, self.unclaimed_window, &event) {
             Unclaimed::Claims => self.claim_window(event_loop),
             Unclaimed::Dropped => return,
             Unclaimed::Passes => {}
->>>>>>> sunrise/main
         }
         follow_keymap(&mut event);
         // MacosUtil.setCtrlClickEmulatesRightClick: Control + left click is a right click.

@@ -25,9 +25,6 @@ pub mod game;
 
 pub mod diagnostics;
 pub mod orb_limits;
-<<<<<<< sync-sunrise-1
 pub mod performance;
-=======
 #[cfg(test)]
 mod test_game_dir;
->>>>>>> sunrise/main

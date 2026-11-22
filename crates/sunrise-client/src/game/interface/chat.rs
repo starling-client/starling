@@ -1445,13 +1445,8 @@ impl Game<'_> {
         let amount = amount.clamp(-1.0, 1.0) * if shift { 1.0 } else { 7.0 };
         self.ui.chat.scroll_by(amount as i32, true);
     }
-<<<<<<< sync-sunrise-1
-    pub(super) fn chat_click(&mut self) {
-        let cursor = self.chat_pointer();
-=======
     pub(super) fn chat_click(&mut self) -> bool {
-        let cursor = self.cursor;
->>>>>>> sunrise/main
+        let cursor = self.chat_pointer();
         let height = self.renderer.as_ref().map_or(720.0, |r| {
             self.interface_batch([r.config.width, r.config.height])
                 .height

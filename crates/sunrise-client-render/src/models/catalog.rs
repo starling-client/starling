@@ -514,29 +514,8 @@ impl StateModels {
                 choices.push(CompiledChoices::new(&definition)?);
             }
         }
-<<<<<<< sync-sunrise-1
-        // Kinetic parts' turning models no blockstate names (a gearbox's shaft ends, a crank's
-        // handle), baked at every quarter turn about x and y.
-        let partials = partial_models(root);
-        for name in &partials {
-            for x in 0..4u8 {
-                for y in 0..4u8 {
-                    variants.insert((name.clone(), [x, y, 0], false));
-                }
-            }
-        }
-        let names: Vec<String> = variants.iter().map(|(name, _, _)| name.clone()).collect();
-        let library = match models.block_library(root, names.clone()) {
-            Ok(library) => library,
-            Err(e) => {
-                log::warn!("Sunrise: block models incomplete ({e}); using the missing model");
-                models.block_library_or_missing(root, names)?
-            }
-        };
-=======
         let names = variants.iter().map(|(name, _, _)| name.clone()).collect();
         let library = models.block_library(root, names)?;
->>>>>>> sunrise/main
         let resolved: Vec<_> = variants
             .iter()
             .map(|(name, ..)| library.resolve(name))
@@ -564,20 +543,6 @@ impl StateModels {
         }
         // Every variant of every definition was baked above.
         let choices: Vec<_> = choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
-<<<<<<< sync-sunrise-1
-        let partials = index
-            .into_iter()
-            .filter(|((name, ..), _)| partials.contains(name))
-            .collect();
-        let single_models = states
-            .iter()
-            .map(|state| {
-                let (choice, selected) = state.as_ref()?;
-                choices[*choice].single_variant(selected).copied()
-            })
-            .collect();
-        Ok(Self {
-=======
         Ok(Self::with_baked(choices, states, baked))
     }
 
@@ -610,7 +575,6 @@ impl StateModels {
             alternative_models.push(listed.ok().map(|()| slots.into_boxed_slice()));
         }
         Self {
->>>>>>> sunrise/main
             choices,
             bounds: OnceLock::new(),
             states,

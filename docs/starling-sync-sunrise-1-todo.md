@@ -78,3 +78,25 @@
   ours-diffs/crates_sunrise-client-render_src_gfx.rs.N.rej (rejs.py lists them with where their neighbours are now):
   the renderer's Android fields (solid_split, late sky, flat cache, start marker), Adreno 506's depth format, the
   loading screen's lent device, the black first frame, the paused-menu blur frame, ray tracing's world.
+- CREATE PORT GOES (owner, 2026-11-22: "não deveria" be in the game). Do not carry or re-port it; remove it while
+  making the build pass: game/starling/{arms,basins,bearings,belts,chutes,fans,funnels,kinetic_machines,kinetics,
+  machine_entities,processing,saws,falling_trees}.rs, src/kinetics.rs, item_sync/kinetic.rs (about 9,300 lines), their
+  fields and calls in game.rs and game/blocks/machines, the `kinetic`/`machine` declarations in sunrise-mod-package's
+  content.rs with their tests, models/catalog.rs's kinetic shapes, the Create section of THIRD_PARTY_NOTICES.md and
+  licenses/create-MIT.txt. The items above that say "Create" are void; `[assets.fetch]` stays only if another mod
+  needs it. (Vanilla's "kinetic weapon", the spear, is not part of this.)
+- Ray tracing for native shader packs (#470, experimental): sunrise-shader-api's check.rs took Sunrise's (it split
+  validation into `validate`). Ours validated with Capabilities::RAY_QUERY for a `[ray_tracing]` pack, passed that to
+  `translate`, and checked the SPIR-V (ours-diffs/shader-api-check.raytracing.diff). The celestial pipeline's kept
+  descriptor (for the late sky's far-plane sun and moon) and the `renderer.other_pipelines` startup step are also out:
+  Sunrise builds that pipeline in a helper now.
+- Touch and the interface's own scale: pad_menu.rs took Sunrise's `projection.window_pointer(at)` where Starling had `interface_window_point`; books, chat and signs keep Starling's interface batch and pointer inside Sunrise's click handlers (which now return bool). Check clicks land where drawn with a separate interface scale.
+- Client input, where Sunrise reworked the keys (held keys by device, vanilla mappings): these took Sunrise's side in
+  the conflict and need Starling's part put back in the new shape (our hunks are in ours-diffs/client/*.hunks.diff):
+  - play_input.rs: `sync_toggle` held sneak down while the touch sneak button is on (`touch_sneaking`).
+  - play_keys.rs: on a server, F called `remote_swap_pressed()`.
+  - creative_screen.rs: the Bedrock-style catalog (`bedrock_items`) hid the tabs' tooltips and clicks while its panel
+    is open; only its empty-cell click is kept.
+  - names.rs: name tags turned by `camera_text_axes()`; Sunrise turns them by the camera's orientation.
+- Files on Android's shared storage: Starling read and wrote stats, advancements and the like through `sunrise_client::save::read_file`/`write_file`; save.rs is Sunrise's now (`write_durable`). Check those paths still work in shared storage (no hard links, no rename across folders).
+  - game/world/autosave.rs also took Sunrise's whole (ours-diffs/server/game_world_autosave.rs.diff).

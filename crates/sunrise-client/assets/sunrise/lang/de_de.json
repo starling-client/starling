@@ -57,7 +57,7 @@
   "Chunk loading": "Chunk-Laden",
   "Chunk loading, culling and power use.": "Chunk-Laden, Culling und Stromverbrauch.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Wolkenschicht: aus, flach (schnell) oder 3D (schön).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Grobes fernes Gelände in lokalen Welten. Integrierte GPUs: max. 128.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Grobes fernes Gelände in lokalen Welten. Integrierte GPUs: max. 128.",
   "Controller": "Controller",
   "Copper Golem Statues": "Kupfergolem-Statuen",
   "Culling": "Culling",
@@ -891,23 +891,12 @@
   "sunrise.studio.topbar.view": "Ansicht",
   "sunrise.studio.topbar.view_short": "Ans.",
   "sunrise.studio.unknown_server": "Unbekannt",
-<<<<<<< sync-sunrise-1
-  "sunrise.tempban.dedicated_required": "Temporäre Sperren benötigen einen dedizierten Server",
-  "sunrise.tempban.invalid_duration": "%s ist keine Zeitdauer: 30m, 12h, 7d",
-  "sunrise.tempban.list.count": "Es gibt %s befristete Sperre(n):",
-  "sunrise.tempban.list.empty": "Es gibt keine befristeten Sperren",
-  "sunrise.tempban.list.entry": "%1$s wurde von %2$s gesperrt, %3$s (bis %4$s)",
-  "sunrise.tempban.success": "%1$s für %2$s, bis %3$s",
-  "sunrise.tempban.usage": "/tempban <Spieler> <Dauer> [Grund]",
   "sunrise.title.not_affiliated": "Nicht mit Mojang oder Microsoft verbunden",
-  "key.emote": "Emote-Rad",
+  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Grobes fernes Gelände in lokalen Welten. Integrierte GPUs: max. 128.",
   "Ray Tracing": "Raytracing",
   "Hardware ray tracing (ray queries) where the GPU offers it. Next start.": "Hardware-Raytracing (Ray-Queries), wo die GPU es anbietet. Nach Neustart.",
   "Ray Tracing (Experimental)": "Raytracing (experimentell)",
   "Experimental: hardware ray tracing for shader packs that use it. Next start.": "Experimentell: Hardware-Raytracing für Shader-Pakete, die es nutzen. Nach Neustart.",
   "GPU Drivers...": "GPU-Treiber …",
   "A custom Vulkan driver, like Turnip, instead of the system's. Next start.": "Ein eigener Vulkan-Treiber, etwa Turnip, statt dem des Systems. Nach Neustart."
-=======
-  "sunrise.title.not_affiliated": "Nicht mit Mojang oder Microsoft verbunden"
->>>>>>> sunrise/main
 }

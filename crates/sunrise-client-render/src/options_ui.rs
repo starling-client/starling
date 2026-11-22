@@ -1149,7 +1149,6 @@ impl Opt {
         let v = v.clamp(0.0, 1.0);
         let step = |lo: f64, hi: f64| (lo + v * (hi - lo)).round();
         match self {
-<<<<<<< sync-sunrise-1
             Opt::TouchCircleSize => s.touch.circle_size = step(16.0, 64.0),
             Opt::TouchDynamicAreaX => s.touch.dynamic_area_x = (v * 100.0).round() / 100.0,
             Opt::TouchDynamicAreaY => s.touch.dynamic_area_y = (v * 100.0).round() / 100.0,
@@ -1162,10 +1161,7 @@ impl Opt {
             Opt::TouchMouseSensitivity => s.touch.virtual_mouse_sensitivity = 0.25 + v * 2.75,
             Opt::TouchButtonScale => s.touch.button_scale = 0.5 + v * 1.5,
 
-            Opt::ChatDelay => values::set(s, v),
-=======
             Opt::ChatDelay => s.chat_delay = values::from_slider(v),
->>>>>>> sunrise/main
             Opt::FovEffects | Opt::DarknessPulsing => s.file.set(
                 self.file_key().unwrap(),
                 crate::options_file::V::Double(v.powi(2)),
@@ -3340,6 +3336,15 @@ impl OptionsUi {
             _ => self.settings_search_active() && on(&self.settings_search),
         }
     }
+    /// Rebuild the resource-pack editor from the committed selection. The shared
+    /// fields belong to Create World's editor while it is showing data packs.
+    pub fn set_resource_pack_selection(&mut self, selected: &[String]) {
+        if self.data_pack_dir.is_none() {
+            self.pack_selection.clear();
+            self.pack_selection.extend_from_slice(selected);
+            self.pack_screen = None;
+        }
+    }
     /// The text field that has the focus (`text_focused`), for the on-screen keyboard's editor
     /// on Android.
     pub fn focused_text(&self) -> Option<FocusedText> {
@@ -3855,15 +3860,6 @@ impl OptionsUi {
     pub fn open(&mut self, in_world: bool) {
         self.open_at(in_world, Page::Main);
     }
-    /// Rebuild the resource-pack editor from the committed selection. The shared
-    /// fields belong to Create World's editor while it is showing data packs.
-    pub fn set_resource_pack_selection(&mut self, selected: &[String]) {
-        if self.data_pack_dir.is_none() {
-            self.pack_selection.clear();
-            self.pack_selection.extend_from_slice(selected);
-            self.pack_screen = None;
-        }
-    }
     /// Create World's Data Packs (`openDataPackSelectionScreen`): the Packs
     /// page on the new world's pack folder `dir`, `selected` chosen;
     /// `resources` holds the built-in pack's icon.
@@ -3993,19 +3989,10 @@ impl OptionsUi {
         if let Some(at) = Self::controller_page(page) {
             self.controller.show(at);
         }
-<<<<<<< sync-sunrise-1
-        if page == Page::SplitSetup {
-            self.split_setup.reset();
-        }
-        if page == Page::SplitProfiles {
-            self.split_profiles.reset();
-        }
         if page == Page::Skin {
             self.skin.name.focused = false;
             self.refresh_skin_page();
         }
-=======
->>>>>>> sunrise/main
         if page == Page::Studio {
             self.studio.refresh();
         }
@@ -4295,7 +4282,6 @@ impl OptionsUi {
 
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
-<<<<<<< sync-sunrise-1
             Page::Diagnostics => {
                 let mut rows = vec![
                     Row::Paragraph(lang::get("starling.diagnostics.notice")),
@@ -4383,9 +4369,6 @@ impl OptionsUi {
                 }
                 rows
             }
-            Page::SplitSetup => Vec::new(),
-=======
->>>>>>> sunrise/main
             Page::Pvp => {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen; one whose label would run
@@ -4730,15 +4713,6 @@ impl OptionsUi {
                 }
                 rows
             }
-<<<<<<< sync-sunrise-1
-=======
-            Page::Skin => {
-                // SkinCustomizationScreen: the seven layers, then Main Hand.
-                let mut opts: Vec<Opt> = (0..MODEL_PART_KEYS.len()).map(Opt::ModelPart).collect();
-                opts.push(Opt::MainHand);
-                pairs(&opts)
-            }
->>>>>>> sunrise/main
             Page::Online => {
                 // OnlineOptionsScreen without the Xbox and friends-list parts.
                 let mut rows = vec![Row::Header("options.online.friends.header")];
@@ -5234,12 +5208,9 @@ impl OptionsUi {
         drag: bool,
         right: bool,
     ) -> Vec<Event> {
-<<<<<<< sync-sunrise-1
         if self.wardrobe_saving() {
             return Vec::new();
         }
-        let events = self.click_unrevised(s, atlas, x, y, size, framebuffer, drag, right);
-=======
         self.click_with_outcome(s, atlas, x, y, size, framebuffer, drag, right)
             .0
     }
@@ -5258,7 +5229,6 @@ impl OptionsUi {
     ) -> (Vec<Event>, bool) {
         let (events, handled) =
             self.click_unrevised(s, atlas, x, y, size, framebuffer, drag, right);
->>>>>>> sunrise/main
         // A click that changed nothing the layout reads (an empty spot, a
         // focus move) keeps the built layout.
         if !events.is_empty() {
@@ -5287,62 +5257,7 @@ impl OptionsUi {
                 self.resource_error = None;
                 return (vec![Event::ButtonClick], true);
             }
-<<<<<<< sync-sunrise-1
-            return Vec::new();
-        }
-        if self.page() == Page::Skin && self.wardrobe_enabled && !right {
-            if drag {
-                if let Some(last_x) = self.skin.drag_x {
-                    self.skin.angle = (self.skin.angle - (x - last_x) * 2.5).rem_euclid(360.0);
-                    self.skin.drag_x = Some(x);
-                    return Vec::new();
-                }
-            } else {
-                self.finish_wardrobe_drag();
-                if self.wardrobe_preview_at(size, (x, y)) {
-                    self.skin.angle = self.wardrobe_angle();
-                    self.skin.drag_x = Some(x);
-                    return Vec::new();
-                }
-            }
-        }
-        if self.page() == Page::SplitSetup {
-            use crate::split_ui::Click;
-            if right {
-                return Vec::new();
-            }
-            self.split_setup.on = s.extras.splitscreen;
-            return match self.split_setup.click((x, y), size, drag) {
-                Click::Nothing => Vec::new(),
-                Click::Pressed => vec![Event::ButtonClick],
-                Click::Switch => {
-                    crate::extras::Item::Splitscreen.cycle(&mut s.extras, false);
-                    vec![Event::ButtonClick, Event::Changed]
-                }
-                Click::Done => {
-                    let mut events = vec![Event::ButtonClick];
-                    events.extend(self.back(s));
-                    events
-                }
-            };
-        }
-        if self.page() == Page::SplitProfiles {
-            use crate::split_profiles::Click;
-            if right || drag {
-                return Vec::new();
-            }
-            return match self.split_profiles.click(atlas, (x, y), size) {
-                Click::Nothing => Vec::new(),
-                Click::Pressed => vec![Event::ButtonClick],
-                Click::Done => {
-                    let mut events = vec![Event::ButtonClick];
-                    events.extend(self.back(s));
-                    events
-                }
-            };
-=======
             return (Vec::new(), false);
->>>>>>> sunrise/main
         }
         if self.page() == Page::Studio {
             if right || drag {
@@ -5912,17 +5827,13 @@ impl OptionsUi {
         }
     }
     pub fn release(&mut self) -> Vec<Event> {
-<<<<<<< sync-sunrise-1
         self.finish_wardrobe_drag();
-        self.scrollbar_drag_y = None;
-=======
         self.release_with_outcome().0
     }
 
     /// The release's events and whether an active slider/scrollbar accepted it.
     pub fn release_with_outcome(&mut self) -> (Vec<Event>, bool) {
         let mut handled = self.scrollbar_drag_y.take().is_some();
->>>>>>> sunrise/main
         if let Some(p) = &mut self.pack_screen {
             handled |= p.release();
         }
@@ -10648,6 +10559,7 @@ mod tests {
             [
                 Page::Extras,
                 Page::Pvp,
+                Page::SplitSetup,
                 Page::Studio,
                 Page::Agent,
                 Page::ModBrowser,

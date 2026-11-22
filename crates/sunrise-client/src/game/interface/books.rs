@@ -1272,13 +1272,8 @@ impl Game<'_> {
             *page = (l.page.max(0) as usize).min(pages.len().saturating_sub(1));
         }
     }
-<<<<<<< sync-sunrise-1
-    pub(super) fn book_click(&mut self, size: [u32; 2]) {
-        let b = self.interface_batch(size);
-=======
     pub(super) fn book_click(&mut self, size: [u32; 2]) -> bool {
-        let b = HudBatch::new(size, self.settings.gui_scale_inputs());
->>>>>>> sunrise/main
+        let b = self.interface_batch(size);
         let (w, left) = (b.width, ((b.width - 192.0) / 2.0).floor());
         let (mx, my) = self.cursor;
         // MouseHandler: a click within 250 ms of the last one on this screen is a double click.

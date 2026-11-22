@@ -298,17 +298,23 @@ pub(super) fn run_loading(
     #[cfg(not(target_os = "android"))]
     let setup = setup::Setup::default();
     let progress = Progress::new();
-<<<<<<< sync-sunrise-1
+    let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
     let waiting_for_choice = setup.onboarding_visible();
     let (receiver, loader) = if waiting_for_choice {
         // Setup finished on a previous run. Game starts its loader when chosen.
         (std::sync::mpsc::channel().1, None)
     } else {
-        let (receiver, loader) =
-            startup_menu::spawn_loader(&options, &settings, &vanilla_root, started, &progress)?;
+        let (receiver, loader) = startup_menu::spawn_loader(
+            &options,
+            &settings,
+            menu.pack_selection_revision,
+            mods::LoadRole::startup(options.execution_role),
+            &vanilla_root,
+            started,
+            &progress,
+        )?;
         (receiver, Some(loader))
     };
-    let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
     let sound_registry = (!waiting_for_choice && options.dedicated.is_none()).then(|| {
         let root = vanilla_root.clone();
         std::thread::spawn(move || {
@@ -319,18 +325,6 @@ pub(super) fn run_loading(
             )
         })
     });
-=======
-    let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
-    let (receiver, loader) = startup_menu::spawn_loader(
-        &options,
-        &settings,
-        menu.pack_selection_revision,
-        mods::LoadRole::startup(options.execution_role),
-        &vanilla_root,
-        started,
-        &progress,
-    )?;
->>>>>>> sunrise/main
     let loading = Loading {
         window: None,
         renderer: None,

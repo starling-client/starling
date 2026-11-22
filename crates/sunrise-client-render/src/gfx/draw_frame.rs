@@ -611,7 +611,17 @@ impl Renderer {
         shadow_visible.clear();
         if let Some(v) = &shadow_view {
             let radius = (frame.detail_distance / 16.0) as i32;
-            let light = ShadowCull::new(shadow_box(v))
+            // With depth clamping the shadow camera's near plane cuts nothing: what lies toward
+            // the light stays in the lists.
+            let clamped = self
+                .device
+                .features()
+                .contains(wgpu::Features::DEPTH_CLIP_CONTROL);
+            let mut light_box = shadow_box(v);
+            if clamped {
+                light_box.planes[4] = Vec4::W;
+            }
+            let light = ShadowCull::new(light_box)
                 .with_casters(v.view_casters.then(|| shadow_casters(cull_proj, v.light)))
                 .with_reach(v.distance);
             let mut boxed = std::mem::take(&mut self.shadow_boxed_scratch);
@@ -2499,20 +2509,33 @@ impl Renderer {
             );
             pass.set_bind_group(0, &self.group, &[]);
             pack_frame(&mut pass);
-            if frame.title || (sky_visible && (frame.skybox || frame.end_sky)) {
-                pass.stage(self.own_timing.as_mut(), "sky");
+            // The vanilla Overworld sky waits for solid terrain (`late_sky`).
+            let late_sky = self.late_sky.as_ref().filter(|_| {
+                self.late_sky_on
+                    && !frame.title
+                    && frame.skybox
+                    && !frame.end_sky
+                    && self.native.is_none()
+                    && self.pack_post.is_none()
+                    && mirror.is_none()
+                    && cull.is_none()
+            });
+            if late_sky.is_none() {
+                if frame.title || (sky_visible && (frame.skybox || frame.end_sky)) {
+                    pass.stage(self.own_timing.as_mut(), "sky");
+                }
+                self.draw_sky_pass_content(
+                    &mut pass,
+                    frame,
+                    sky_visible,
+                    pack_draws_sky,
+                    native_sky_pass,
+                    celestial_vertices,
+                    pack_draws_celestial,
+                    sky_switches,
+                    hdr_gain,
+                );
             }
-            self.draw_sky_pass_content(
-                &mut pass,
-                frame,
-                sky_visible,
-                pack_draws_sky,
-                native_sky_pass,
-                celestial_vertices,
-                pack_draws_celestial,
-                sky_switches,
-                hdr_gain,
-            );
             // The next stage of the mods' primitives to draw (`RenderLevelStage`): a stage this
             // route does not draw its part of the world at goes with the next one it reaches.
             let mut primitive_stage = 0;
@@ -2682,21 +2705,26 @@ impl Renderer {
                     // and phase 2's lists with quads for it.
                     let (opaque, cutout) = (opaque_end as u32, cutout_start as u32);
                     type Draws = std::ops::Range<u32>;
-                    let passes: &[(&wgpu::RenderPipeline, Draws, Draws)] = match material {
-                        None if split_solid => &[
-                            (
-                                self.solid_opaque.get(hdr),
-                                0..opaque,
-                                phase1_draws..phase2_cutout,
-                            ),
-                            (
-                                self.solid_cutout.get(hdr),
-                                cutout..phase1_draws,
-                                phase2_cutout..solid_draws,
-                            ),
-                        ],
-                        _ => &[(solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws)],
-                    };
+                    let passes: &[(&wgpu::RenderPipeline, Draws, Draws)] =
+                        match (material, &self.solid_split) {
+                            (None, Some((opaque_pipeline, cutout_pipeline))) => &[
+                                (
+                                    solid_passes
+                                        .opaque(false)
+                                        .unwrap_or(opaque_pipeline.get(hdr)),
+                                    0..opaque,
+                                    phase1_draws..phase2_cutout,
+                                ),
+                                (
+                                    solid_passes
+                                        .cutout(false)
+                                        .unwrap_or(cutout_pipeline.get(hdr)),
+                                    cutout..phase1_draws,
+                                    phase2_cutout..solid_draws,
+                                ),
+                            ],
+                            _ => &[(solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws)],
+                        };
                     // The solid pipelines, a native material's too, read the page themselves.
                     let pulled = self.flat.is_some();
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);

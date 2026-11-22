@@ -45,19 +45,6 @@ impl Game<'_> {
     }
 
     pub(super) fn smooth_camera_action(&mut self) {
-<<<<<<< sync-sunrise-1
-        if self.screen == Screen::Playing {
-            self.smooth_camera = !self.smooth_camera;
-        }
-    }
-    pub(super) fn sync_toggle(&mut self, slot: usize) {
-        let key = [KeyCode::ShiftLeft, KeyCode::ControlLeft][slot];
-        let touch = slot == 0 && self.touch_sneaking();
-        if self.toggles.is_down(slot) || touch {
-            self.keys.insert(key);
-        } else {
-            self.keys.remove(&key);
-=======
         self.smooth_camera = !self.smooth_camera;
     }
 
@@ -97,7 +84,6 @@ impl Game<'_> {
     fn sync_device_key(&mut self, key: KeyCode, down: bool) {
         if let Some(slot) = sunrise_client::keybinds::VanillaMappingSlot::by_default_key(key) {
             self.vanilla_mappings.state_mut(slot).is_down = down;
->>>>>>> sunrise/main
         }
     }
 

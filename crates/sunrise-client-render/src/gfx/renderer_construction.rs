@@ -17,6 +17,9 @@ impl Renderer {
         panorama_faces: Arc<panorama::Faces>,
         prepared: Option<PreparedTextures>,
         previous: Option<&Self>,
+        // The loading screen's device (`BootRenderer::lend`), this renderer made on it while the
+        // loading screen goes on drawing: its surface comes at the handover (`adopt_surface`).
+        boot: Option<boot::Lent>,
         api: GraphicsApi,
         translucent_batching: bool,
         (shader_pack, pack_starts_wide): (bool, bool),
@@ -2549,6 +2552,7 @@ impl Renderer {
             outline,
             depth,
             sections: resident::Resident::default(),
+            rt: rt::RtWorld::default(),
             lods: FxHashMap::default(),
             lod_vertex_bytes: 0,
             lod_cells: lod::TileGrid::default(),

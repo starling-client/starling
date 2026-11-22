@@ -596,39 +596,6 @@ impl Game<'_> {
                 return Err(error);
             }
         };
-<<<<<<< sync-sunrise-1
-        // Everything loaded: switch over.
-        [
-            self.frame_model,
-            self.glow_frame_model,
-            self.map_frame_model,
-            self.glow_map_frame_model,
-        ] = frame_models;
-        self.waypoint_styles = waypoint_styles;
-        self.armor_stand_assets.apply_resources(armor_stand_assets);
-        // Starling: mobs and other players wear the reloaded packs' armour too (ItemsAdder's
-        // custom pieces, and every namespace's equipment assets).
-        *self
-            .res
-            .mob_data()
-            .armor_atlases
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            self.armor_stand_assets.atlases.clone();
-        *self
-            .res
-            .mob_data()
-            .equipment
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            self.armor_stand_assets.equipment.clone();
-        self.random_tick_sections.clear();
-        self.portals.sections.clear();
-        self.options.resources = root.clone();
-        self.falling_vertices.get_mut().clear();
-        self.pack = pack;
-=======
->>>>>>> sunrise/main
         let skip = self
             .settings
             .extras
@@ -866,91 +833,12 @@ pub(super) fn stage_pack(
             })
         },
     )
-<<<<<<< sync-sunrise-1
-    .map_err(|e| e.to_string())?;
-    // The world's models and sprites and the GUI atlas read the same root and nothing of
-    // each other: about a second each, side by side.
-    let mod_image = sunrise_client_render::render_slots::world_drawn_hooked();
-    // The sound events, the GUI sprites' metadata and the language are read here too, not in
-    // the frame that applies the reload (about 20 ms of it).
-    let (render, atlas, panorama, (sounds, ui_metadata, language)) = std::thread::scope(|s| {
-        let atlas = super::resource_load::named_scope(s, "pack-assets", || {
-            HudAtlas::build_over_with_image(&source, &source, mod_image).map_err(|e| e.to_string())
-        });
-        let panorama = super::resource_load::named_scope(s, "pack-assets", || {
-            sunrise_client::gfx::panorama::Faces::load(&source, &source)
-        });
-        let small = super::resource_load::named_scope(s, "pack-assets", || {
-            (
-                sunrise_client::sound_events::SoundRegistry::load(&source),
-                sunrise_client::ui::read_metadata(&source),
-                lang::Language::load(&[&source], &lang::code()),
-            )
-        });
-        (
-            assets.reload(&resource_root),
-            atlas.join(),
-            panorama.join(),
-            small
-                .join()
-                .unwrap_or_else(|p| std::panic::resume_unwind(p)),
-        )
-    });
-    let render = Arc::new(render?);
-    let mut atlas = atlas.unwrap_or_else(|p| std::panic::resume_unwind(p))?;
-    atlas.font.uniform = force_unicode;
-    atlas.font.japanese = japanese;
-    let gui = UiResources {
-        atlas,
-        panorama: Arc::new(panorama.unwrap_or_else(|p| std::panic::resume_unwind(p))),
-        source: Some(source.clone()),
-        // `Game::apply_staged_pack` fills it with the client's setting.
-        splashes: Arc::from(""),
-    };
-    progress.set(2);
-    let mut pack = PackResources::load(
-        &resource_root,
-        assets.clone(),
-        render,
-        res.facts(),
-        context.biomes.clone(),
-        context.light.clone(),
-        &res.core.item_data,
-    )?;
-    pack.additional_data = super::pack_finders::data_packs(mod_sources).into();
-    let textures = prepare_renderer_textures(&pack);
-    let cem = Arc::new(sunrise_client::mobs::cem::CemModels::load(
-        &source,
-        res.mob_types(),
-    ));
-    let block_entity_shapes = res.block_entity_render().shapes_for(&source);
-    let waypoint_styles = sunrise_client::locator_bar::WaypointStyles::load(&source);
-    let armor_stand_assets = super::armor_stands::ArmorStandAssets::load(&source, None);
-    let frame_models = super::frames::bake_frames(&source);
-    progress.set(3);
-    Ok(StagedPack {
-        root,
-        client_applies,
-        gui,
-        pack,
-        textures,
-        cem,
-        block_entity_shapes,
-        waypoint_styles,
-        armor_stand_assets,
-        frame_models,
-        sounds,
-        ui_metadata,
-        language,
-    })
-=======
     .map_err(|error| {
         error
             .downcast::<mod_api::__private::reload::ReloadStageError>()
             .map_or_else(|error| error.to_string(), |error| error.diagnostic())
     })?;
     Ok(staged(client_applies))
->>>>>>> sunrise/main
 }
 
 /// Everything a pack reload builds on the CPU (`apply_staged_pack` finishes

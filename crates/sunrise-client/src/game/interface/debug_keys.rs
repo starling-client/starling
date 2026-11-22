@@ -353,17 +353,11 @@ impl Game<'_> {
             return;
         }
         let now = Instant::now();
-<<<<<<< sync-sunrise-1
         let margins = self.hud_safe_insets(batch);
         let area = super::hud_room::HudArea::begin(batch, margins);
         let safe_size = std::array::from_fn(|i| {
             size[i].saturating_sub(((margins[i] + margins[i + 2]) * batch.scale) as u32)
         });
-        let layout = (
-            safe_size,
-            batch.scale.to_bits(),
-            self.gui.atlas.font.epoch(),
-=======
         // The lightmap chart's pixels: none until the texture drawn now has been read
         // (`Renderer::lightmap_sample`). Whether there are any is part of the cache's key, so
         // a sample that stops being current is not painted again from it.
@@ -373,11 +367,10 @@ impl Game<'_> {
             .filter(|_| self.debug_shows_lightmap())
             .and_then(|r| r.lightmap_sample());
         let layout = (
-            size,
+            safe_size,
             batch.scale.to_bits(),
             self.gui.atlas.font.epoch(),
             lightmap.is_some(),
->>>>>>> sunrise/main
         );
         if let Some(vertices) = self.debug_paint.borrow().fresh(now, layout) {
             batch.vertices.extend_from_slice(vertices);

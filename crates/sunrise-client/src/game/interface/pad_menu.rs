@@ -591,11 +591,7 @@ impl Game<'_> {
             at.0.clamp(0.0, projection.gui.size[0] as f32 - 1.0),
             at.1.clamp(0.0, projection.gui.size[1] as f32 - 1.0),
         );
-<<<<<<< sync-sunrise-1
-        let position = self.interface_window_point(at, batch.scale);
-=======
         let position = projection.window_pointer(at);
->>>>>>> sunrise/main
         self.pad_synthetic_event(
             event_loop,
             id,

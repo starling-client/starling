@@ -471,11 +471,7 @@ impl Game<'_> {
             .progress
             .to_json(&self.adv.tree, sunrise_world::DATA_VERSION);
         if let Ok(text) = serde_json::to_string_pretty(&json) {
-<<<<<<< sync-sunrise-1
-            let _ = sunrise_client::save::write_file(&path, text.into_bytes());
-=======
             let _ = sunrise_client::save::write_durable(&path, text.as_bytes());
->>>>>>> sunrise/main
         }
     }
     /// The player as predicates see it.

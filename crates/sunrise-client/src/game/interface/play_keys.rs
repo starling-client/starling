@@ -221,62 +221,6 @@ impl Game<'_> {
                 }
                 _ => {}
             },
-<<<<<<< sync-sunrise-1
-            // key.swapOffhand: on a server, ServerboundPlayerActionPacket SWAP_ITEM_WITH_OFFHAND
-            // (the server swaps the hands and sends both slots back; spectators can't).
-            KeyCode::KeyF if self.screen == Screen::Playing && self.remote.is_some() => {
-                self.remote_swap_pressed();
-            }
-            KeyCode::KeyF if self.screen == Screen::Playing => {
-                // handleKeybinds: the number keys select before key.swapOffhand.
-                self.select_queued_hotbar();
-                self.own_swap_hands();
-            }
-            KeyCode::KeyQ if self.screen == Screen::Playing => {
-                // handleKeybinds: the number keys select before key.drop.
-                self.select_queued_hotbar();
-                let all = drop_whole_stack(self.modifiers) || self.input_takes_stack_drop();
-                self.drop_held(all);
-            }
-            KeyCode::Digit1
-            | KeyCode::Digit2
-            | KeyCode::Digit3
-            | KeyCode::Digit4
-            | KeyCode::Digit5
-            | KeyCode::Digit6
-            | KeyCode::Digit7
-            | KeyCode::Digit8
-            | KeyCode::Digit9
-                if self.screen == Screen::Playing =>
-            {
-                let slot = match key {
-                    KeyCode::Digit1 => 0,
-                    KeyCode::Digit2 => 1,
-                    KeyCode::Digit3 => 2,
-                    KeyCode::Digit4 => 3,
-                    KeyCode::Digit5 => 4,
-                    KeyCode::Digit6 => 5,
-                    KeyCode::Digit7 => 6,
-                    KeyCode::Digit8 => 7,
-                    _ => 8,
-                };
-                // Minecraft.handleKeybinds: a spectator's number keys drive
-                // the spectator menu, not the hotbar; a creative player
-                // holding the load or save toolbar key loads or saves a
-                // toolbar instead (load first when both are held).
-                let load = self.mapped_key_down("key.loadToolbarActivator");
-                if self.spectator() {
-                    self.spectator_hotbar_key(slot as i32);
-                } else if self.creative
-                    && (load || self.mapped_key_down("key.saveToolbarActivator"))
-                {
-                    self.hotbar_load_or_save(slot, load);
-                } else {
-                    self.hotbar_presses.push(slot);
-                }
-            }
-=======
->>>>>>> sunrise/main
             _ if self.screen == Screen::Paused && self.pause_menu => {
                 self.pause_key(key)?;
             }

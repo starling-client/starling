@@ -1054,18 +1054,12 @@ impl Game<'_> {
         // A spectator preview still draws its own model: the poses'
         // visibility hides body parts, leaving the head and its layers.
         let body = self.own_body_visible() || self.spectator();
-<<<<<<< sync-sunrise-1
+        let data = self as &dyn sunrise_client::mobs::render::RenderDataSource;
         let armour = if in_world {
             self.player_armor_layers()
         } else {
             Vec::new()
         };
-=======
-        let (data, armour) = (
-            self as &dyn sunrise_client::mobs::render::RenderDataSource,
-            self.player_armor_layers(),
-        );
->>>>>>> sunrise/main
         // A screen preview: custom entity model animations see is_in_gui = 1.
         sunrise_client::mobs::cem_anim::in_gui(|| {
             let light = 240 | 240 << 8;
@@ -1220,13 +1214,8 @@ impl Game<'_> {
             return;
         };
         let assets = &self.armor_stand_assets;
-<<<<<<< sync-sunrise-1
-        let Some((texture, _)) = assets
-            .equipment_layers
-=======
         let Some(layer) = assets
             .equipment
->>>>>>> sunrise/main
             .get(&asset)
             .and_then(|k| k.get("wings"))
             .and_then(|layers| layers.first())
@@ -1344,11 +1333,7 @@ impl Game<'_> {
             base,
             [rect.u0, rect.v0, rect.u1, rect.v1],
             light,
-<<<<<<< sync-sunrise-1
             data,
-=======
-            self,
->>>>>>> sunrise/main
             out,
         );
     }

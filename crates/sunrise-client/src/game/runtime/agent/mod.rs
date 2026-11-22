@@ -585,13 +585,9 @@ impl Game<'_> {
         let mut state = json!({
             "dialog": self.dialog_status(),
             "screen": self.screen_label(),
-<<<<<<< sync-sunrise-1
             // The sign editor's block and side.
             "sign": self.sign_edit.as_ref().map(|s| json!({ "pos": [s.pos.0, s.pos.1, s.pos.2], "front": s.front })),
-            "menu": (self.title.is_some() || self.split_profiles_open() || self.split_setup_open()).then(|| self.title_value()),
-=======
             "menu": self.title.is_some().then(|| self.title_value()),
->>>>>>> sunrise/main
             "world": (self.title.is_none()).then(|| match &self.integrated {
                 Some(server) => server.world_name.clone(),
                 None => self.level.name.clone(),
@@ -1078,13 +1074,8 @@ impl Game<'_> {
             .renderer_pointer_projection()
             .ok_or("no renderer yet")?;
         let device_id = DeviceId::dummy();
-<<<<<<< sync-sunrise-1
-        for (i, &(x, y)) in points.iter().enumerate() {
-            let position = self.interface_window_point((x, y), scale);
-=======
         for (i, &point) in points.iter().enumerate() {
             let position = projection.window_pointer(point);
->>>>>>> sunrise/main
             self.handle_window_event(
                 event_loop,
                 id,
@@ -1691,11 +1682,7 @@ impl Game<'_> {
                     .renderer_pointer_projection()
                     .ok_or("no renderer yet")?;
                 let device_id = DeviceId::dummy();
-<<<<<<< sync-sunrise-1
-                let position = self.interface_window_point((x, y), scale);
-=======
                 let position = projection.window_pointer((x, y));
->>>>>>> sunrise/main
                 self.handle_window_event(
                     event_loop,
                     id,

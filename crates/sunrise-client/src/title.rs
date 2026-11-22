@@ -456,13 +456,10 @@ pub struct Title {
     credits_button: Cell<[f32; 4]>,
     /// `Minecraft.allowsMultiplayer()` once the account's attributes are known.
     pub allows_multiplayer: bool,
-<<<<<<< sync-sunrise-1
     account_identity: Option<String>,
-=======
     /// The packages in the mods folder (the Mods screen's rows): the main menu's added buttons
     /// (`sunrise_hooks::title`) show by it.
     pub mods: usize,
->>>>>>> sunrise/main
     /// The ban screens `Gui.addInitialScreens` queued, shown once the title is up.
     ban_queue: std::collections::VecDeque<crate::ban_notice::Notice>,
     /// A ban notice's three buttons as last drawn (`ConfirmLinkScreen`'s row).
@@ -948,11 +945,8 @@ impl Title {
             warning_check: Cell::new([0.0; 4]),
             credits_button: Cell::new([0.0; 4]),
             allows_multiplayer: true,
-<<<<<<< sync-sunrise-1
             account_identity: None,
-=======
             mods: 0,
->>>>>>> sunrise/main
             ban_queue: Default::default(),
             ban_buttons: Cell::new([(0.0, 0.0); 3]),
             backup: None,
@@ -3157,7 +3151,6 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         let secret = matches!(&self.mode, Mode::Account(screen) if screen.password_masked());
         if let Some(field) = caret_field(&mut self.mode, self.search_focused, &mut self.search) {
-<<<<<<< sync-sunrise-1
             if secret {
                 self.caret
                     .get_mut()
@@ -3165,10 +3158,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             } else {
                 self.caret.get_mut().press(atlas, field, rect, x, shift);
             }
-=======
-            self.caret.get_mut().press(atlas, field, rect, x, shift);
             return true;
->>>>>>> sunrise/main
         }
         false
     }
@@ -4579,10 +4569,7 @@ mod classic_tests {
             "gui/title/edition".into(),
             crate::hud::Rect { w: 128, h: 16, ..r },
         );
-<<<<<<< sync-sunrise-1
         // Starling: three icons, its Mods in Options (as in 0.8.0).
-=======
->>>>>>> sunrise/main
         for (i, icon) in ["friends/friends", "icon/language", "icon/accessibility"]
             .into_iter()
             .enumerate()

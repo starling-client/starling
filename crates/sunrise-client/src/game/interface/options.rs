@@ -9,12 +9,8 @@ use sunrise_client::{
     hdr_calibration::WindowState,
     hud::HudBatch,
     lang,
-<<<<<<< sync-sunrise-1
     options_ui::{Event, Page, SkinAction},
-=======
-    options_ui::{Event, Page},
     text::Text,
->>>>>>> sunrise/main
     window::{FrameContext, InactivityFpsLimit, framerate_limit},
 };
 use winit::{event::MouseButton, keyboard::KeyCode, window::Fullscreen};
@@ -562,29 +558,9 @@ impl Game<'_> {
                     #[cfg(target_os = "android")]
                     self.mobile_options_apply(true);
                     self.settings.save(&Self::options_path());
-<<<<<<< sync-sunrise-1
                     // The mods switched on the Mods page, in one reload (`switch_mods`).
                     self.switch_mods(true);
-                    let to_game = self.options_from_title;
-                    let back = if let Some(screen) = self.panel.recipes_settings_return.take() {
-                        screen
-                    } else if std::mem::take(&mut self.options_to_world_options) {
-                        Screen::WorldOptions
-                    } else if self.options_from_title {
-                        Screen::Playing
-                    } else {
-                        Screen::Paused
-                    };
-                    self.set_screen(back);
-                    if to_game {
-                        self.capture(true);
-                    }
-                    self.dragging = false;
-                    // Closed from calibration (sunrise-ctl, a lost window): out of it.
-                    self.show_calibration((0.0, 0.0));
-=======
                     self.leave_options();
->>>>>>> sunrise/main
                 }
                 Event::Language(code) => {
                     self.load_language(&code);

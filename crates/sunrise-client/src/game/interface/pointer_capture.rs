@@ -219,8 +219,6 @@ impl Game<'_> {
             || window.inner_size().into(),
             |r| [r.config.width, r.config.height],
         );
-<<<<<<< sync-sunrise-1
-        let scale = HudBatch::new(size, self.settings.gui_scale_inputs()).scale;
         let was_grabbed = self.captured;
         // Android grabs the mouse as the activity's pointer capture, which comes a moment later
         // (a loss the system makes comes back: game/input_mode.rs). Only a mouse player asks:
@@ -238,25 +236,14 @@ impl Game<'_> {
             }
         }
         #[cfg(not(target_os = "android"))]
-        let [vx, vy] = self.view_at.map(f64::from);
-        #[cfg(not(target_os = "android"))]
-        let centre = winit::dpi::PhysicalPosition::new(
-            vx + f64::from(size[0]) / 2.0,
-            vy + f64::from(size[1]) / 2.0,
-        );
-        #[cfg(not(target_os = "android"))]
-        let warp = |window: &Window| {
-            let _ = window.set_cursor_position(centre);
-        };
-        #[cfg(not(target_os = "android"))]
-=======
         let projection = self.pointer_projection(size);
+        #[cfg(not(target_os = "android"))]
         let centre = projection.window.center();
+        #[cfg(not(target_os = "android"))]
         let warp = |window: &Window| {
             let _ = window.set_cursor_position(centre);
         };
-        let was_grabbed = self.captured;
->>>>>>> sunrise/main
+        #[cfg(not(target_os = "android"))]
         if self.internal_grab() {
             // Its grab is internal (an agent turns the view with `mouse-move`). A grab the
             // window already held when a scripted run began stays the system's until the

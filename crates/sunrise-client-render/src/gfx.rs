@@ -560,6 +560,10 @@ fn startup_step(step: std::fmt::Arguments) {
     log::info!("Sunrise renderer: {step}");
     log::logger().flush();
 }
+/// "; memory: process 412 MiB, ..." for a log line (`system_stats::memory_note`), or nothing.
+fn memory_note() -> String {
+    crate::system_stats::memory_note().map_or_else(String::new, |m| format!("; memory: {m}"))
+}
 /// How far the first frame on a new device got, for `startup_step`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FirstFrame {
