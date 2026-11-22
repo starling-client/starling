@@ -248,11 +248,10 @@ pub fn load(folder: &Path) -> Result<Vec<&'static mod_api::__private::native::Na
         .collect()
 }
 
-/// What a start registers from one folder's native mod libraries: their hook entries, their typed
-/// listeners and the build records of the mods they hold.
+/// What a start registers from one folder's native mod libraries: their hook entries and the build
+/// records of the mods they hold.
 pub struct Opened {
     pub entries: Vec<mod_api::ModEntry>,
-    pub slots: Vec<crate::SlotListener>,
     pub built: &'static [mod_api::__private::native::BuiltMod],
 }
 
@@ -270,16 +269,13 @@ pub fn open(folder: &Path) -> Result<Opened, String> {
     }
     sunrise_client::entry::installed(&installs);
     let mut entries = Vec::new();
-    let mut slots = Vec::new();
     let mut built = Vec::new();
     for library in libraries {
         entries.extend((library.entries)());
-        slots.extend((library.slots)());
         built.extend_from_slice(library.built);
     }
     Ok(Opened {
         entries,
-        slots,
         built: Box::leak(built.into_boxed_slice()),
     })
 }
@@ -306,25 +302,7 @@ pub fn main() {
         eprintln!("Sunrise: refusing native startup: {error}");
         std::process::exit(1);
     });
-<<<<<<< sync-sunrise-1
-    crate::main_with(opened.entries, &opened.slots, opened.built, startup);
-=======
-    let mut entries = Vec::new();
-    let mut built = Vec::new();
-    let mut installs = Vec::new();
-    // Every patch copy is installed and checked before any mod's hook factory runs, as the
-    // generated `main` did: a factory may call a patched function, and a refused install stops
-    // the start before any mod code beyond the installs has run.
-    for library in &libraries {
-        installs.extend((library.installs)());
-    }
-    sunrise_client::entry::installed(&installs);
-    for library in libraries {
-        entries.extend((library.entries)());
-        built.extend_from_slice(library.built);
-    }
-    crate::main_with(entries, Box::leak(built.into_boxed_slice()), startup);
->>>>>>> sunrise/main
+    crate::main_with(opened.entries, opened.built, startup);
 }
 
 #[cfg(test)]

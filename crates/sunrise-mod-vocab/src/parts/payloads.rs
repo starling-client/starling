@@ -123,24 +123,11 @@ impl PayloadReceiver {
         &self,
         bytes: crate::PayloadBytes,
         context: &mut dyn crate::IPayloadContext,
-<<<<<<< sync-sunrise-1
-    ) -> Result<(), String> {
-        self.call("payload", || match self.handler.handle(bytes, context) {
-            Ok(()) => Ok(()),
-            Err(crate::PayloadHandleError::Failed(reason)) => Err(reason),
-            // No receiving group is held across calls here, so nothing waits to deliver the
-            // bytes again: the session fails as for a refusal, naming the holder.
-            Err(crate::PayloadHandleError::Busy { holder, .. }) => {
-                Err(format!("the handler was busy: {holder}"))
-            }
-        })
-=======
     ) -> Result<(), crate::callback_owner::CallbackFailure> {
         self.call("payload", || self.handler.handle(bytes, context))?
             .map_err(|crate::PayloadHandleError::Failed(error)| {
                 crate::callback_owner::CallbackFailure::Refused(error)
             })
->>>>>>> sunrise/main
     }
     /// Scheduled work retains its original receiving owner and enable guard.
     pub fn run_work(

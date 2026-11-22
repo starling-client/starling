@@ -59,35 +59,6 @@ pub enum MenuReplace {
     InPlace,
 }
 
-/// Why `menu_set_items` replaced nothing. Nothing was sent when one comes back.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-#[derive(sunrise_mod_api_macros::Wire)]
-pub enum MenuItemsRefusal {
-    /// The call was made on a client.
-    Client,
-    /// No player of that UUID is placed here.
-    NoPlayer,
-    /// `window` is not the `open_menu` menu the player has open.
-    NotOpen,
-    /// The game's item conversion refused one of the stacks: an item the world lacks, a count
-    /// or damage the item does not allow.
-    Stack(crate::StackWriteError),
-}
-
-impl From<crate::StackWriteError> for MenuItemsRefusal {
-    fn from(error: crate::StackWriteError) -> Self {
-        Self::Stack(error)
-    }
-}
-
-impl crate::NoBackend for MenuItemsRefusal {
-    /// No game behind the host: no player is placed there.
-    fn no_backend() -> Self {
-        Self::NoPlayer
-    }
-}
-
 /// How a complete drag distributes the carried stack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 // exhaustive: vanilla has split, one-per-slot and creative-fill drags

@@ -28,10 +28,7 @@ pub(crate) mod fluid_draw;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]
 pub mod fog;
-<<<<<<< sync-sunrise-1
-=======
 pub(crate) mod gui_clip;
->>>>>>> sunrise/main
 pub(crate) mod gui_entity;
 pub(crate) mod gui_layers;
 pub(crate) mod gui_model;

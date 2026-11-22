@@ -393,23 +393,6 @@ fn refuses_broken_indexes() {
     assert!(e.contains("is not"), "{e}");
 }
 
-<<<<<<< sync-sunrise-1
-/// Starling: the registry publishes native mods as `.hnmod` files (0.8.0's extension), which pass
-/// as Sunrise's `.smod` ones do; another extension still doesn't.
-#[test]
-fn a_native_mod_may_be_an_hnmod() {
-    let named = |name: &str| {
-        let mut index = sample();
-        index.projects[0].kind = Kind::NativeMod;
-        index.projects[0].versions[0].file.name = name.into();
-        index.check().err().unwrap_or_default()
-    };
-    for name in ["coords_hud-0.1.0.hnmod", "coords_hud-0.1.0.smod"] {
-        let e = named(name);
-        assert!(!e.contains("plain file name"), "{name}: {e}");
-    }
-    assert!(named("coords_hud.zip").contains("plain file name"));
-=======
 /// `index` as the registry would publish it, read back.
 fn reread(index: &Index) -> Index {
     Index::parse(&serde_json::to_string(index).unwrap()).unwrap()
@@ -588,7 +571,6 @@ fn only_text_that_is_not_an_index_fails_to_load() {
     index.projects[2].versions[0].file.name = String::new();
     let index = reread(&index);
     assert!(index.left_out.len() >= 3);
->>>>>>> sunrise/main
 }
 
 #[test]

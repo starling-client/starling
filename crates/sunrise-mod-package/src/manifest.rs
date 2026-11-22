@@ -177,19 +177,13 @@ pub struct Manifest {
     /// Game internals used by this mod, fingerprinted against its pinned build.
     #[serde(default)]
     pub internals: Vec<Internal>,
-<<<<<<< sync-sunrise-1
-    #[serde(default, deserialize_with = "inject::rows")]
-    pub inject: Vec<inject::Inject>,
     /// Files the `.smod` leaves out and the game fetches on the player's device (Starling): a
     /// ported Java mod's assets, which its authors keep (All Rights Reserved), from the very
     /// file on Modrinth the player could download themselves ([`crate::fetch`]).
     #[serde(default)]
     pub assets: Option<Assets>,
-    /// Free-form values other mods read through `PackageInfo::property`.
-=======
     /// Free-form scalar values other mods read through `PackageInfo::property`, with no limit
     /// separate from the complete manifest's byte limit.
->>>>>>> sunrise/main
     #[serde(default)]
     pub properties: std::collections::BTreeMap<String, Property>,
 }
@@ -207,7 +201,6 @@ pub enum Property {
     String(String),
 }
 
-<<<<<<< sync-sunrise-1
 /// A manifest's `[assets]`.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -237,12 +230,8 @@ pub struct Fetch {
 /// The biggest file `[assets.fetch]` may name.
 const MAX_FETCH: u64 = 256 << 20;
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(untagged)]
-=======
 /// A `[dependencies]` entry: a semver requirement or a detailed table.
 #[derive(Clone, Debug, PartialEq)]
->>>>>>> sunrise/main
 pub enum Dependency {
     Version(semver::VersionReq),
     Detailed(DependencyDetails),
@@ -1829,39 +1818,11 @@ mod tests {
     use super::*;
 
     #[test]
-<<<<<<< sync-sunrise-1
-    fn an_index_reads_wasm_mods_capabilities_and_ones_it_does_not_know() {
-        // The registry's index lists wasm mods (`coords_hud`: game-read, hud, chat); a capability
-        // a newer game adds must not make the whole index unreadable.
-        let caps: Vec<Capability> =
-            serde_json::from_str(r#"["game-read", "hud", "chat", "registries", "telepathy"]"#)
-                .unwrap();
-        assert_eq!(
-            caps,
-            [
-                Capability::GameRead,
-                Capability::Hud,
-                Capability::Chat,
-                Capability::Registries,
-                Capability::Unknown
-            ]
-        );
-        assert_eq!(Capability::GameRead.to_string(), "game-read");
-    }
-
-    #[test]
-    fn injections_at_dependency_functions_are_refused_by_name() {
-        let text = format!(
-            "{EXAMPLE}[native]\ngame='26.3'\nmixins='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'\nsunrise='0123456789012345678901234567890123456789'\n[dependencies]\nchemlib='1'\n[[inject]]\nid='listen'\nat='chemlib::transfer'\nkind='head'\nwith='listen'\n"
-        );
-        let error = Manifest::parse(&text).unwrap_err();
-=======
     fn a_version_that_is_not_semver_refuses_the_manifest_when_read() {
         let with = |v: &str| {
             Manifest::parse(&EXAMPLE.replace("version = \"0.1.0\"", &format!("version = '{v}'")))
         };
         let error = with("v1 beta!").unwrap_err();
->>>>>>> sunrise/main
         assert!(
             error.contains(
                 "version \"v1 beta!\" is not a semver version (MAJOR.MINOR.PATCH, e.g. 3.6.30+refabricated)"

@@ -776,16 +776,13 @@ struct BlockFile {
     pick_item: Option<String>,
     #[serde(default)]
     components: BTreeMap<String, serde_json::Value>,
-<<<<<<< sync-sunrise-1
     #[serde(default)]
     kinetic: Option<Kinetic>,
     #[serde(default)]
     machine: Option<Machine>,
     #[serde(default)]
     models: Vec<String>,
-=======
     suspicious_stew_effects: Option<Vec<StewEffect>>,
->>>>>>> sunrise/main
 }
 
 /// One entry of a block's suspicious stew effect list, in the item component's JSON form.
@@ -1328,13 +1325,7 @@ impl fmt::Debug for Source {
 /// A mod's content: its files and declarations.
 pub struct Content {
     source: Source,
-<<<<<<< sync-sunrise-1
-    /// Its fetched assets (Starling, [`crate::fetch`]): their folder, and the files there the
-    /// mod has none of its own for.
-    fetched: Option<(PathBuf, BTreeSet<String>)>,
-=======
     from_admission: bool,
->>>>>>> sunrise/main
     /// Every content file (`assets/...`, `data/...`), sorted.
     pub files: Arc<[String]>,
     pub blocks: Vec<Block>,
@@ -1354,17 +1345,6 @@ pub struct Content {
     pub namespaces: Vec<String>,
 }
 
-<<<<<<< sync-sunrise-1
-/// Reads a mod's content files ([`Content::reader`]).
-pub struct FileReader<'a> {
-    own: OwnFiles<'a>,
-    fetched: Option<(&'a Path, &'a BTreeSet<String>)>,
-}
-enum OwnFiles<'a> {
-    Dir(&'a Path),
-    #[cfg(not(target_arch = "wasm32"))]
-    Zip(Box<zip::ZipArchive<std::fs::File>>),
-=======
 impl fmt::Debug for Content {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The release-line corpus records the declarations, not loader bookkeeping.
@@ -1383,7 +1363,6 @@ impl fmt::Debug for Content {
             .field("namespaces", &self.namespaces)
             .finish()
     }
->>>>>>> sunrise/main
 }
 
 macro_rules! declaration_kinds {
@@ -1565,24 +1544,6 @@ enum FileLocation<'a> {
 
 impl FileReader<'_> {
     /// One content file's bytes.
-<<<<<<< sync-sunrise-1
-    pub fn read(&mut self, name: &str) -> Result<Vec<u8>, String> {
-        check_path(name)?;
-        let fetched = self
-            .fetched
-            .filter(|(_, names)| names.contains(name))
-            .map(|(dir, _)| dir);
-        let open = |root: &Path| std::fs::File::open(root.join(name));
-        let reader: Box<dyn Read + '_> = match (&mut self.own, fetched) {
-            (_, Some(root)) => Box::new(open(root).map_err(|e| format!("{name}: {e}"))?),
-            (OwnFiles::Dir(root), None) => {
-                Box::new(open(root).map_err(|e| format!("{name}: {e}"))?)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            (OwnFiles::Zip(zip), None) => {
-                Box::new(zip.by_name(name).map_err(|e| format!("{name}: {e}"))?)
-            }
-=======
     pub fn read(&self, name: &str) -> Result<Vec<u8>, ReadError> {
         self.read_head(name, MAX_FILE + 1)
     }
@@ -1603,7 +1564,6 @@ impl FileReader<'_> {
                 )));
             }
             Ok(out)
->>>>>>> sunrise/main
         };
         match self.0 {
             FileLocation::Dir(root) => read(
@@ -1630,21 +1590,9 @@ impl FileReader<'_> {
     /// the size), for a caller that copies it without reading it; `None` in an archive.
     pub fn path(&self, name: &str) -> Result<Option<std::path::PathBuf>, String> {
         check_path(name)?;
-<<<<<<< sync-sunrise-1
-        let fetched = self
-            .fetched
-            .filter(|(_, names)| names.contains(name))
-            .map(|(dir, _)| dir);
-        let root = match (&self.own, fetched) {
-            (_, Some(root)) => root,
-            (OwnFiles::Dir(root), None) => root,
-            #[cfg(not(target_arch = "wasm32"))]
-            (OwnFiles::Zip(_), None) => return Ok(None),
-=======
         let root = match self.0 {
             FileLocation::Dir(root) => root,
             FileLocation::Zip(_) => return Ok(None),
->>>>>>> sunrise/main
         };
         let path = root.join(name);
         let len = std::fs::metadata(&path)
@@ -1748,86 +1696,6 @@ impl Content {
         manifest: &Manifest,
         declared: &[String],
     ) -> Result<Content, String> {
-<<<<<<< sync-sunrise-1
-        Self::read_all(path, manifest, declared, None)
-    }
-
-    /// [`Content::read_declaring`], with the assets its manifest fetches when they are unpacked
-    /// in `fetched` ([`crate::fetch::dir`]): a file the mod has of its own is its own.
-    pub fn read_with(
-        path: &Path,
-        manifest: &Manifest,
-        declared: &[String],
-        fetched: Option<&Path>,
-    ) -> Result<Content, String> {
-        Self::read_all(path, manifest, declared, fetched)
-    }
-
-    fn read_all(
-        path: &Path,
-        manifest: &Manifest,
-        declared: &[String],
-        fetched: Option<&Path>,
-    ) -> Result<Content, String> {
-        let (source, mut sized) = if path.is_dir() {
-            (Source::Dir(path.to_owned()), folder_files(path)?)
-        } else {
-            #[cfg(target_arch = "wasm32")]
-            return Err("archive I/O is unavailable on wasm32".into());
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let mut zip = open_zip(path)?;
-                let mut out = Vec::new();
-                for i in 0..zip.len() {
-                    let entry = zip.by_index_raw(i).map_err(|e| e.to_string())?;
-                    let name = entry.name().map_err(|e| e.to_string())?.into_owned();
-                    if (name.starts_with("assets/") || name.starts_with("data/")) && !entry.is_dir()
-                    {
-                        out.push((name.to_owned(), entry.size()));
-                    }
-                }
-                (Source::Zip(path.to_owned()), out)
-            }
-        };
-        let fetch = manifest.assets.as_ref().map(|a| &a.fetch);
-        let fetched = match (fetched, fetch) {
-            (Some(dir), Some(fetch)) if crate::fetch::ready(dir, fetch) => {
-                let own: BTreeSet<&str> = sized.iter().map(|(n, _)| n.as_str()).collect();
-                let mut found = Vec::new();
-                walk(dir, &dir.join("assets"), &mut found)?;
-                // Only the folders it takes, whatever else is there.
-                found.retain(|(n, _)| {
-                    !own.contains(n.as_str()) && fetch.take.iter().any(|t| n.starts_with(t))
-                });
-                let names = found.iter().map(|(n, _)| n.clone()).collect();
-                sized.extend(found);
-                Some((dir.to_owned(), names))
-            }
-            _ => None,
-        };
-        let mut files = Vec::with_capacity(sized.len());
-        let mut total = 0u64;
-        for (name, size) in sized {
-            check_path(&name)?;
-            if size > MAX_FILE {
-                return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
-            }
-            total += size;
-            files.push(name);
-        }
-        if files.len() > MAX_FILES {
-            return Err(format!("more than {MAX_FILES} content files"));
-        }
-        if total > MAX_TOTAL {
-            return Err(format!("content is over {} MiB", MAX_TOTAL >> 20));
-        }
-        files.sort();
-        files.dedup();
-        let mut content = Content {
-            source,
-            fetched,
-            files,
-=======
         Self::read_inner(&ContentSource::open(path)?, manifest, Some(declared), false)
     }
 
@@ -1850,7 +1718,6 @@ impl Content {
             source: source.source.clone(),
             from_admission,
             files: source.names(),
->>>>>>> sunrise/main
             blocks: Vec::new(),
             items: Vec::new(),
             effects: Vec::new(),
@@ -1871,13 +1738,8 @@ impl Content {
     pub fn declared(namespace: &str) -> Content {
         Content {
             source: Source::Code,
-<<<<<<< sync-sunrise-1
-            fetched: None,
-            files: Vec::new(),
-=======
             from_admission: false,
             files: Arc::default(),
->>>>>>> sunrise/main
             blocks: Vec::new(),
             items: Vec::new(),
             effects: Vec::new(),
@@ -2090,16 +1952,9 @@ impl Content {
         Ok(self.reader().read(name)?)
     }
 
-<<<<<<< sync-sunrise-1
-    /// A reader of its content files. A packaged mod's archive is opened
-    /// once for all of them (opening it reads its whole index).
-    pub fn reader(&self) -> Result<FileReader<'_>, String> {
-        reader(&self.source, &self.fetched)
-=======
     /// A reader of its content files, using the same archive from which the files were listed.
     pub fn reader(&self) -> FileReader<'_> {
         self.source.reader()
->>>>>>> sunrise/main
     }
 
     /// Read and validate declarations, enforcing the namespace fence if not checked at admission.
@@ -2155,10 +2010,7 @@ impl Content {
             };
             rows.push((format!("{namespace}:{path}"), name.clone()));
         }
-<<<<<<< sync-sunrise-1
-=======
         let reader = self.source.reader();
->>>>>>> sunrise/main
         let mut ids = BTreeSet::new();
         // One reader for every declaration: a packaged mod's archive opened per file read its
         // whole index each time (Create's 900 declarations in 10,000 files: half a minute on a
@@ -2922,13 +2774,6 @@ fn sign_wall_refusals<'a>(blocks: &'a [&'a Block]) -> impl Iterator<Item = (&'a 
                 None
             }
         }
-<<<<<<< sync-sunrise-1
-    }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-=======
     })
 }
 
@@ -2942,7 +2787,6 @@ impl Source {
     }
 }
 
->>>>>>> sunrise/main
 fn open_zip(path: &Path) -> Result<zip::ZipArchive<std::fs::File>, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     zip::ZipArchive::new(file).map_err(|e| e.to_string())
@@ -3025,14 +2869,7 @@ mod tests {
             .unwrap()
             .set_len(MAX_FILE + 1)
             .unwrap();
-<<<<<<< sync-sunrise-1
-        let mut reader = FileReader {
-            own: OwnFiles::Dir(&dir),
-            fetched: None,
-        };
-=======
         let reader = FileReader(FileLocation::Dir(&dir));
->>>>>>> sunrise/main
         let error = reader.path(name).unwrap_err();
         assert!(error.contains("is over"), "{error}");
         let error = reader.read(name).unwrap_err();
@@ -4321,7 +4158,6 @@ capabilities = ["registries"]
     }
 
     #[test]
-<<<<<<< sync-sunrise-1
     fn a_kinetic_block_names_its_part_its_models_and_a_render_shape() {
         let block = |json: &str| {
             let files: &[(&str, &[u8])] = &[("data/ruby/sunrise/block/part.json", json.as_bytes())];
@@ -4381,7 +4217,6 @@ capabilities = ["registries"]
         // A part the game does not know is not read at all.
         assert!(
             block(r#"{"template":"minecraft:iron_chain","kinetic":{"part":"flywheel"}}"#).is_err()
-=======
     fn a_server_mod_is_refused_for_registry_files_but_not_for_assets() {
         let server = MANIFEST_TEXT.replace("side = \"both\"", "side = \"server\"");
         let manifest = Manifest::parse(&server).unwrap();
@@ -4411,7 +4246,6 @@ capabilities = ["registries"]
         assert_eq!(
             content.files.as_ref(),
             ["assets/ruby/lang/en_us.json", "data/ruby/recipe/gem.json"]
->>>>>>> sunrise/main
         );
     }
 

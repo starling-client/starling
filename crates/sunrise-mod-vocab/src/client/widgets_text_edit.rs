@@ -120,19 +120,9 @@ impl TextEdit {
     /// `EditBox.insertText`: `text`, filtered as `StringUtil.filterText` does, replaces the
     /// selection, cut to what the maximum length leaves room for.
     pub fn insert_text(&mut self, text: &str) {
-        let filtered = filter_text(text, self.multiline);
-        self.insert_filtered(&filtered);
-    }
-
-    /// Passwords are not Minecraft chat: a section sign is a legal credential.
-    pub fn insert_password(&mut self, text: &str) {
-        let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
-        self.insert_filtered(&filtered);
-    }
-
-    fn insert_filtered(&mut self, filtered: &str) {
         self.clamp();
         let (a, b) = self.selected();
+        let filtered = filter_text(text, self.multiline);
         let selected_units: usize = self
             .value
             .chars()
@@ -143,7 +133,7 @@ impl TextEdit {
         let room = self
             .max_length
             .saturating_sub(utf16_len(&self.value) - selected_units);
-        let insert = utf16_prefix(filtered, room);
+        let insert = utf16_prefix(&filtered, room);
         let (ba, bb) = (byte_index(&self.value, a), byte_index(&self.value, b));
         self.value.replace_range(ba..bb, &insert);
         let pos = a + char_len(&insert);

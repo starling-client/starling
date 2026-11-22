@@ -25,13 +25,8 @@ as Parts, not a separate manifest channel list.
 
 ```rust,ignore
 use mod_api::{
-<<<<<<< sync-sunrise-1
-    Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadHandleError, PayloadId,
-    Registrar, RegistrationContext, sunrise_mod,
-=======
     Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadHandleError, PayloadId, Registrar,
     RegistrationContext, sunrise_mod,
->>>>>>> sunrise/main
 };
 use std::sync::Arc;
 
@@ -175,13 +170,8 @@ same registrar as typed payloads; no Part and no manifest entry are needed:
 
 ```rust,ignore
 use mod_api::{
-<<<<<<< sync-sunrise-1
-    Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadHandleError, PayloadId,
-    Registrar, RegistrationContext,
-=======
     Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadHandleError, PayloadId, Registrar,
     RegistrationContext,
->>>>>>> sunrise/main
 };
 use std::sync::Arc;
 
@@ -192,21 +182,12 @@ impl IPayloadHandler for VoiceSecret {
         bytes: PayloadBytes,
         context: &mut dyn IPayloadContext,
     ) -> Result<(), PayloadHandleError> {
-<<<<<<< sync-sunrise-1
-        let failed = |e: &dyn std::fmt::Debug| PayloadHandleError::Failed(format!("{e:?}"));
-        let player = context.player().map_err(|e| failed(&e))?;
-        let host = context.server_host().map_err(|e| failed(&e))?;
-        // Answer on the same channel; above 1,048,576 bytes this is PayloadTooLarge.
-        let id = PayloadId("voicechat:secret".into());
-        player.send_payload(host, &id, bytes).map_err(|e| failed(&e))?;
-=======
         let player = context.player().map_err(|e| PayloadHandleError::Failed(format!("{e:?}")))?;
         let host = context.server_host().map_err(|e| PayloadHandleError::Failed(format!("{e:?}")))?;
         // Answer on the same channel; above 1,048,576 bytes this is PayloadTooLarge.
         let id = PayloadId("voicechat:secret".into());
         player.send_payload(host, &id, bytes)
             .map_err(|e| PayloadHandleError::Failed(format!("{e:?}")))?;
->>>>>>> sunrise/main
         Ok(())
     }
 }

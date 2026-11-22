@@ -251,17 +251,6 @@ pub trait DrawContext {
     fn model_3d(&mut self, subject: Gui3dSubject<'_>, view: Gui3dView) -> Result<(), Gui3dError> {
         Err(Gui3dError::Unavailable)
     }
-    /// Draws the living entity `entity` standing in `view.rect`, `view.size` GUI pixels a
-    /// block, turned as `view.look` says: vanilla's
-    /// `InventoryScreen.renderEntityInInventoryFollowsMouse` (`GuiEntityLook::At` the cursor)
-    /// and `renderEntityInInventory` (`GuiEntityLook::Turned`), as a mob page, an entity icon
-    /// or a carried mob shows one. It is drawn with its type's model, as in the world, full
-    /// bright and lit by the two lights of `Lighting.ENTITY_IN_UI`, with a depth of its own,
-    /// and cut off at the box. A client's call from a drawing hook (`screen_draw`,
-    /// `gui_render_post`); [`GuiEntityError`] says why nothing was drawn.
-    fn entity(&mut self, entity: &GuiEntity, view: GuiEntityView) -> Result<(), GuiEntityError> {
-        unimplemented!("DrawContext::entity")
-    }
     /// `Screen.renderMenuBackground`: draws the tiled menu background (32x32) across `rect`
     /// (`[x, y, w, h]` in GUI pixels). If `in_world` is true, uses the dark translucent
     /// texture (`gui/inworld_menu_background`); otherwise uses the opaque dirt-like

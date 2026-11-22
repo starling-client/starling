@@ -598,95 +598,6 @@ impl Index {
                 }
                 check_version(p, v, self.releases.as_deref(), local_files)?;
                 let mut pairs = std::collections::HashSet::new();
-<<<<<<< sync-sunrise-1
-                for b in &v.native_binaries {
-                    if b.build.len() > MAX_NATIVE_BUILD
-                        || b.build.bytes().any(|c| c.is_ascii_control())
-                        || b.build.is_empty()
-                        || b.build.trim() != b.build
-                        || b.target.split('-').count() < 3
-                        || !b.target.bytes().all(|c| {
-                            c.is_ascii_lowercase() || c.is_ascii_digit() || b"-_.".contains(&c)
-                        })
-                        || b.target.split('-').any(str::is_empty)
-                    {
-                        return Err(at("invalid native build or canonical target triple".into()));
-                    }
-                    if !pairs.insert((&b.build, &b.target)) {
-                        return Err(at("duplicate native build and target".into()));
-                    }
-                    let f = &b.file;
-                    if !plain_name(&f.name) || f.size == 0 || f.size > MAX_FILE {
-                        return Err(at("invalid native binary file".into()));
-                    }
-                    if !(local_files && f.url.starts_with("file:///")) {
-                        https(&f.url).map_err(at)?;
-                    }
-                    hex64(&f.sha256).map_err(at)?;
-                    let signature = f
-                        .signature
-                        .as_deref()
-                        .ok_or_else(|| at("native binary needs a signature".into()))?;
-                    minisign_verify::Signature::decode(signature)
-                        .map_err(|e| at(format!("native signature: {e}")))?;
-                }
-                let f = &v.file;
-                // Starling: a native mod may also be the `.hnmod` the registry's index publishes and
-                // Starling compiles (0.8.0's extension): one refused entry left the whole catalog
-                // empty.
-                let extension_ok = p
-                    .kind
-                    .extension()
-                    .is_none_or(|e| f.name.ends_with(&format!(".{e}")))
-                    || (p.kind == Kind::NativeMod && f.name.ends_with(".hnmod"));
-                if !plain_name(&f.name) || !extension_ok {
-                    return Err(at(format!(
-                        "{:?} is not a plain file name for a {}",
-                        f.name,
-                        p.kind.name()
-                    )));
-                }
-                if !(local_files && f.url.starts_with("file:///")) {
-                    https(&f.url).map_err(at)?;
-                }
-                hex64(&f.sha256).map_err(at)?;
-                if f.size == 0 || f.size > MAX_FILE {
-                    return Err(at(format!(
-                        "size {} is not 1 byte to {} MiB",
-                        f.size,
-                        MAX_FILE >> 20
-                    )));
-                }
-                match (&p.key, &f.signature) {
-                    (Some(_), None) => {
-                        return Err(at("unsigned, but the project has a key".into()));
-                    }
-                    (None, Some(_)) => return Err(at("signed, but the project has no key".into())),
-                    (Some(_), Some(sig)) => {
-                        minisign_verify::Signature::decode(sig)
-                            .map_err(|e| at(format!("signature: {e}")))?;
-                    }
-                    (None, None) => {}
-                }
-                for r in &v.requires {
-                    let found = self
-                        .project(&r.id)
-                        .and_then(|q| q.versions.iter().find(|w| w.version == r.version));
-                    match found {
-                        Some(w) if w.file.sha256 == r.sha256 => {}
-                        Some(_) => {
-                            return Err(at(format!(
-                                "{} {}: another file than the index's",
-                                r.id, r.version
-                            )));
-                        }
-                        None => {
-                            return Err(at(format!(
-                                "needs {} {}, which is not in the index",
-                                r.id, r.version
-                            )));
-                        }
-=======
                 for binary in &v.native_binaries {
                     let at = |e| {
                         format!(
@@ -696,7 +607,6 @@ impl Index {
                     };
                     if !pairs.insert((&binary.build, &binary.target)) {
                         return Err(at("duplicate native build and target".to_owned()));
->>>>>>> sunrise/main
                     }
                     check_binary(p, binary, local_files).map_err(at)?;
                 }
