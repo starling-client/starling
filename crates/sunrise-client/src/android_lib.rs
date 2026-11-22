@@ -29,28 +29,12 @@ fn android_main(app: AndroidApp) {
     sunrise_client::android::main(app, install_platform, start);
 }
 
-/// What the desktop's mod host installs before the engine starts (sunrise-mod-host's `main_with`,
-/// crates/sunrise-mod-host/src/loading.rs), in its order: the engine's seal, the mods'
-/// instrumentation, the engine platform socket (packages, registration data, parts, profiler) and
-/// the render points. The phone starts the engine from here instead of through `main_with`, which
-/// loads native libraries next to an executable the phone does not have; without these the game
-/// stops at its first mod guard ("engine platform socket is not installed").
+/// What the desktop's mod host installs before the engine starts (sunrise-mod-host's `main_with`),
+/// in its order: the Mods button, the mods' instrumentation, the engine platform socket and the
+/// render points. The phone starts the engine from here instead of through `main_with`; without
+/// these the game stops at its first mod guard ("engine platform socket is not installed").
 fn install_platform() -> Result<(), String> {
-    sunrise_engine_slots::install_seal(mod_points::__private::seal)
-        .map_err(|error| format!("engine seal: {error}"))?;
-    mod_platform::__private::initialize()
-        .map_err(|error| format!("mod instrumentation is unavailable: {error}"))?;
-    sunrise_engine_slots::install_platform(sunrise_engine_slots::Platform {
-        install_packages: mod_platform::__private::install_packages,
-        install_registration_data: mod_platform::__private::install_registration_data,
-        install_parts: mod_platform::__private::install_parts,
-        profiler_is_enabled: mod_platform::__private::profiler::is_enabled,
-        profiler_start: mod_platform::__private::profiler::start,
-        profiler_stop: mod_platform::__private::profiler::stop,
-        profiler_summary: mod_platform::__private::profiler::summary,
-        profiler_firefox_profile: mod_platform::__private::profiler::firefox_profile,
-    })
-    .map_err(|error| error.to_string())?;
+    sunrise_mod_host::install_platform()?;
     mod_render::render::install();
     Ok(())
 }
@@ -65,11 +49,10 @@ const NATIVE_LIBRARIES: &str = "native-libs";
 /// `load_code`). A build of this library with native mods compiled in
 /// (packaging/android/native_build.sh) has none in that folder.
 fn start(startup: sunrise_client::entry::Startup) {
-    let (entries, slots, native) = native_libraries();
+    let (entries, native) = native_libraries();
     sunrise_client::entry::start(
         native,
-        move |native, launch| sunrise_mod_host::load_code(entries, &slots, native, launch),
-        sunrise_mod_host::code_runtime(),
+        move |native, launch| sunrise_mod_host::load_code(entries, native, launch),
         startup,
     );
 }
@@ -79,7 +62,6 @@ fn start(startup: sunrise_client::entry::Startup) {
 /// out is left out with a line in logcat, and the game starts without those mods.
 fn native_libraries() -> (
     Vec<mod_platform::ModEntry>,
-    Vec<sunrise_mod_host::SlotListener>,
     sunrise_mod_package::runtime::Runtime,
 ) {
     let Some(private) = std::env::var_os("SUNRISE_PRIVATE") else {
@@ -101,7 +83,7 @@ fn native_libraries() -> (
             sunrise_client::android::set_native_libs_opened(
                 opened.built.iter().map(|built| built.id).collect(),
             );
-            (opened.entries, opened.slots, native)
+            (opened.entries, native)
         }
         Err(error) => {
             // Their patch copies are installed already; none of their hooks will be called.

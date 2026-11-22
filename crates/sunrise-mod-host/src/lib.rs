@@ -7,7 +7,7 @@ pub mod native_libraries;
 pub use native_libraries::{GAME_BUILD_ID, Opened, RUSTC_VERSION, main, open, packages_beside};
 
 mod loading;
-pub use loading::{load_code, main_with};
+pub use loading::{install_platform, load_code, main_with};
 
 mod mods_button;
 
