@@ -37,7 +37,7 @@
   Sunrise (with the link), unofficial, under Sunrise's licence (LICENSE is Sunrise's file), and credit Horizon where
   the text now wrongly says Sunrise. Links rebrand.py broke: Vasysik/sunrise-android is Vasysik/horizon-android
   (THIRD_PARTY_NOTICES.md, sync-check.yml, gfx/*.rs comments, starling-account).
-- Cargo.lock is Sunrise's: add Starling's crates back with `cargo metadata` on the build machine (not --locked once).
+- Cargo.lock: Starling's crates are in it again (taken from the build machine after build 14).
 - .github/workflows: ours as they were, renamed by rebrand.py; check every name it changed that isn't a crate (env vars HORIZON_* -> SUNRISE_*, artifact names, branch names fixed by hand) when CI first runs.
 - Shader pack crate (sunrise-render-shaderpack): Starling's edits to pack_post, pack_uniforms, pack_entities and
   pack_lines are carried (exact context, then five by hand: Pass.prepass, shadow_every/shadow_wait, programs()/report(),
@@ -54,9 +54,10 @@
   a conflict (Starling hadn't changed them since the base); they are back from Starling's side, declared in lib.rs.
   The list of every file Starling had that the merged tree lacks is in the tools folder (gone-after-merge.txt, 1531
   paths, mostly Sunrise's own moves): check it against what Starling's code still names once the build runs.
-- FEATURE TO RE-PORT: the Stats performance overlay (`Overlay::Stats`, stats_overlay.rs, our perf_overlay.rs edits in
-  ours-diffs). Sunrise moved the overlay to the crate sunrise-perf-overlay and its key out of sunrise-graphics.txt;
-  graphics.rs took that. Anything of ours still naming `g.overlay`/`Overlay::Stats` must go through the new crate.
+- The Stats overlay is back on its own (stats_overlay.rs keeps its frames, game/starling/perf.rs its switch): the
+  three-finger tap and `overlay stats|off`. Still owed: the choice is not saved (it was `overlay:stats` in
+  sunrise-graphics.txt, a key the crate sunrise-perf-overlay owns now), and the compact frames counter under the touch
+  Back button over menus is gone (Sunrise's layer draws at the top right, over the utility buttons: check on a phone).
 - ui.rs: `load_skin` (Starling's low-budget skin) is called from startup_menu.rs's set_root; a pack reload in a world must call it too (packs/mod.rs is Sunrise's).
 - options_ui.rs: the wardrobe's drag on the skin preview (the `Page::Skin && self.wardrobe_enabled` block of the click
   handler) is out: Sunrise's click handler now returns `(Vec<Event>, bool)` and lost its splitscreen pages. Put the
@@ -134,3 +135,33 @@
   `stats_overlay.rs` is in the tree but not compiled (it reads `perf_overlay::FrameSummary`, which Sunrise's
   sunrise-perf-overlay crate doesn't have). Create World's kept options no longer keep the world type across the
   restart for a world's content mods.
+
+## What the build rounds dropped (builds 6 to 14), to put back or decide
+
+`cargo ndk check -p sunrise-android` passes at build 14. These went to get there:
+
+- Create port: removed whole (kinetics, machines, basins, the 15 files of game/starling, their fields and draws).
+- Old mod hooks (native_compat, starling_mod_api, old_mod_net): removed. Mods built for 0.8.0's hooks don't load.
+- Server stick mode (`ServerStick` per server, the prompt dialog, stick_memory): the connection code is Sunrise's, so
+  `remote_stick_mode` is gone and the touch stick asks nothing (`picked.unwrap_or(false)`). stick_memory.rs is still
+  there, unused. Re-port onto Sunrise's remote/mod.rs.
+- SRV lookups on Android (`sunrise_protocol::set_name_servers`, resolver's NAME_SERVERS): the protocol crate is
+  Sunrise's. A server address that needs its SRV record may not resolve on a phone. Re-port (small).
+- Custom name tags of other entities on a server (`remote_name_tags`, `r.names`) and `camera_text_axes`: names.rs is
+  Sunrise's whole.
+- Deferred file writes (`save::later`, `save::read_file`): gone with Sunrise's save code; advancements read the file.
+- 3D skin layers (`three_d_skin_layers`, `skin_3d`): Sunrise removed them; the wardrobe no longer prepares them.
+- Mods page: the Modrinth-assets line and "Its assets could not be downloaded" (mod_assets), and the loading screen's
+  "building" note for content mods; `.hnmod` bundles are no longer listed (only Sunrise's flat package reads).
+- Split screen (split_guest, split_window, the pad router): Sunrise removed it; Starling's guards on it are gone.
+- The launcher row leaves the game through `begin_closing_save` (Sunrise's title has no event loop to exit).
+- HUD: the safe area starts at the hotbar; the spyglass, crosshair and sleep overlay take the whole screen. Sunrise
+  draws the crosshair in its layer walk; Starling's two conditions are on it (touch hides it, Bedrock creative's gap).
+- Toggle keys: sneak and sprint held by the touch controls go through `touch_set_toggle` onto the vanilla mappings'
+  state. Check on a phone: sneak button modes (hold, toggle), flying down, sprint button, a keyboard's Shift/Ctrl.
+- Background save: a typed request to the server thread (`OwnerRequest::SaveForBackground`), since Sunrise's server
+  takes no closures outside tests.
+- Bedrock Inventory in creative: `Creative::show` in place of writing `selected`. Check both windows and the tooltips.
+- The player's preview on the title screen (wardrobe): `MobData` as the render data when there is no world.
+- pad/mod.rs: Starling's version over Sunrise's (touch pad, keypad). Compare once more with Sunrise's for what it
+  added since (the disabled-controllers path calls `pad_menu_frame` there).

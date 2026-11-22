@@ -113,8 +113,6 @@ checksum = "e9d4ee0d472d1cd2e28c97dfa124b3d8d992e10eb0a035f33f5d12e3a177ba3b"
 [[package]]
 name = "android-activity"
 version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f2a1bb052857d5dd49572219344a7332b31b76405648eabac5bc68978251bcd"
 dependencies = [
  "android-properties",
  "bitflags 2.13.2",
@@ -821,6 +819,21 @@ checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "crc-fast"
@@ -1754,6 +1767,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "image"
+version = "0.25.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+dependencies = [
+ "bytemuck",
+ "byteorder-lite",
+ "color_quant",
+ "gif",
+ "image-webp",
+ "moxcms",
+ "num-traits",
+ "png",
+ "zune-core 0.5.3",
+ "zune-jpeg 0.5.15",
+]
+
+[[package]]
 name = "image-webp"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1977,6 +2008,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "junction"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cfc352a66ba903c23239ef51e809508b6fc2b0f90e3476ac7a9ff47e863ae95"
+dependencies = [
+ "scopeguard",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2186,6 +2227,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
 
 [[package]]
+name = "lzma-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "297e814c836ae64db86b36cf2a557ba54368d03f6afcd7d947c266692f71115e"
+dependencies = [
+ "byteorder",
+ "crc",
+]
+
+[[package]]
 name = "lzma-rust2"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2319,6 +2370,16 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "moxcms"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
+dependencies = [
+ "num-traits",
+ "pxfm",
 ]
 
 [[package]]
@@ -3441,6 +3502,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pxfm"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4269,6 +4336,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "starling-account"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "lzma-rs",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.10.9",
+ "tar",
+ "ureq",
+]
+
+[[package]]
+name = "starling-catalog"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.10.9",
+ "sunrise-mod-package",
+ "sunrise-platform",
+ "sunrise-port-pack",
+ "ureq",
+ "zip",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4289,6 +4386,19 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sunrise-addresses"
 version = "0.1.0"
+
+[[package]]
+name = "sunrise-android"
+version = "0.1.0"
+dependencies = [
+ "jni 0.21.1",
+ "sunrise-client",
+ "sunrise-mod-api",
+ "sunrise-mod-host",
+ "sunrise-mod-package",
+ "sunrise-mod-render",
+ "winit",
+]
 
 [[package]]
 name = "sunrise-assets"
@@ -4359,18 +4469,23 @@ dependencies = [
  "fs4",
  "gilrs",
  "glam",
+ "image",
  "indexmap",
+ "jni 0.21.1",
  "libc",
  "log",
  "naga",
  "png",
  "pollster",
+ "regex",
  "rustix 1.1.5",
  "serde",
  "serde_json",
  "sha1",
  "sha2 0.10.9",
  "socket2 0.6.5",
+ "starling-account",
+ "starling-catalog",
  "sunrise-assets",
  "sunrise-bench",
  "sunrise-client-core",
@@ -4396,6 +4511,7 @@ dependencies = [
  "sunrise-optifine",
  "sunrise-perf",
  "sunrise-perf-format",
+ "sunrise-port-pack",
  "sunrise-protocol",
  "sunrise-server-files",
  "sunrise-shader-api",
@@ -4408,6 +4524,7 @@ dependencies = [
  "tempfile",
  "toml",
  "ureq",
+ "url",
  "wgpu",
  "winit",
  "zip",
@@ -4450,6 +4567,7 @@ dependencies = [
  "png",
  "sunrise-client-core",
  "sunrise-core",
+ "sunrise-dualsense",
  "sunrise-mod-api-macros",
  "sunrise-theme",
  "winit",
@@ -4462,6 +4580,7 @@ dependencies = [
  "ab_glyph",
  "bytemuck",
  "chrono",
+ "crc32fast",
  "dunce",
  "flate2",
  "fs4",
@@ -4481,6 +4600,7 @@ dependencies = [
  "sha1",
  "sha2 0.10.9",
  "stacker",
+ "starling-account",
  "sunrise-assets",
  "sunrise-bench",
  "sunrise-client-core",
@@ -4503,6 +4623,7 @@ dependencies = [
  "sunrise-optifine",
  "sunrise-perf",
  "sunrise-perf-format",
+ "sunrise-prepare",
  "sunrise-protocol",
  "sunrise-server-files",
  "sunrise-shader-api",
@@ -4533,6 +4654,7 @@ dependencies = [
  "glam",
  "half",
  "image-webp",
+ "junction",
  "libc",
  "log",
  "lz4_flex",
@@ -4585,7 +4707,7 @@ dependencies = [
  "wgpu",
  "winit",
  "zip",
- "zune-jpeg",
+ "zune-jpeg 0.4.21",
 ]
 
 [[package]]
@@ -5133,6 +5255,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "regex",
+ "rustix 1.1.5",
  "sha1",
  "sha2 0.10.9",
  "sunrise-core",
@@ -5842,6 +5965,8 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "socks",
  "url",
  "webpki-roots 0.26.11",
@@ -6655,8 +6780,6 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
 dependencies = [
  "ahash",
  "android-activity",
@@ -7048,10 +7171,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f423a2c17029964870cfaabb1f13dfab7d092a62a29a89264f4d36990ca414a"
 
 [[package]]
+name = "zune-core"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
+
+[[package]]
 name = "zune-jpeg"
 version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29ce2c8a9384ad323cf564b67da86e21d3cfdff87908bc1223ed5c99bc792713"
 dependencies = [
- "zune-core",
+ "zune-core 0.4.12",
+]
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+dependencies = [
+ "zune-core 0.5.3",
 ]
