@@ -747,9 +747,10 @@ impl Game<'_> {
         let started = std::thread::Builder::new()
             .name("catalog search".into())
             .spawn(move || {
-                // The native mods Compile v2 can't play on this build are left off the shelf.
+                // The mods this build can't play (a native mod Compile v2 can't build, a wasm mod)
+                // are left off the shelf.
                 if shelf == Shelf::Mods {
-                    starling_catalog::hide_native_mods(
+                    starling_catalog::hide_mods(
                         horizon_client::starling_store::catalog_hidden()
                             .iter()
                             .cloned(),
