@@ -1322,6 +1322,41 @@ mod native_hit_effects;
 #[path = "game/modding/native_hit_sounds_tests.rs"]
 mod native_hit_sounds_tests;
 mod native_hooks;
+// Starling's own game modules (game/starling/): Sunrise names each of its modules here, so these are named too.
+#[path = "game/starling/build_mining.rs"]
+mod build_mining;
+#[path = "game/starling/creative_shift.rs"]
+mod creative_shift;
+#[path = "game/starling/diagnostics.rs"]
+mod diagnostics;
+#[path = "game/starling/files_offer.rs"]
+mod files_offer;
+#[path = "game/starling/imports.rs"]
+mod imports;
+#[path = "game/starling/input_mode.rs"]
+mod input_mode;
+#[path = "game/starling/mobile_controls/mod.rs"]
+mod mobile_controls;
+#[path = "game/starling/mod_catalog.rs"]
+mod mod_catalog;
+#[path = "game/starling/native_builds.rs"]
+mod native_builds;
+#[path = "game/starling/native_compat.rs"]
+mod native_compat;
+#[path = "game/starling/own_skin.rs"]
+mod own_skin;
+#[path = "game/starling/perf.rs"]
+mod perf;
+#[path = "game/starling/perf_lab.rs"]
+mod perf_lab;
+#[path = "game/starling/setup/mod.rs"]
+mod setup;
+#[path = "game/starling/touch/mod.rs"]
+mod touch;
+#[path = "game/starling/update_offer.rs"]
+mod update_offer;
+#[path = "game/starling/world_content.rs"]
+mod world_content;
 #[path = "game/modding/native_hotbar_slot.rs"]
 mod native_hotbar_slot;
 #[cfg(test)]
