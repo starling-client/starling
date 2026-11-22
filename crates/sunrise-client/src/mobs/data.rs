@@ -194,6 +194,10 @@ pub struct MobData {
     pub frame_models: super::render::BakedFrameModels,
     /// Replaced when the resource packs change (the rest of `MobData` never is).
     pub villager_hats: std::sync::RwLock<super::villager_hats::VillagerHats>,
+    /// Starling: the packs' custom armour drawn by a core shader (ItemsAdder's, keyed by the
+    /// leather's dye colour: `custom_armor`), by the leather layer's texture; replaced with the
+    /// resource packs.
+    pub armor_atlases: std::sync::RwLock<HashMap<String, crate::custom_armor::ArmorAtlas>>,
     /// The packs' custom entity models (OptiFine CEM); replaced when the resource packs change.
     pub cem: std::sync::RwLock<std::sync::Arc<super::cem::CemModels>>,
     /// The packs' random entity textures, replaced with them too.
@@ -241,6 +245,7 @@ impl MobData {
         .unwrap_or_default();
         data.villager_hats =
             std::sync::RwLock::new(super::villager_hats::VillagerHats::load(source));
+        data.armor_atlases = std::sync::RwLock::new(crate::custom_armor::load_from(source));
         let random = sunrise_optifine::random_textures::RandomTextures::scan(source);
         let blinks = sunrise_optifine::blink::Blinks::scan(source, &random);
         let mut emissive = sunrise_optifine::emissive::Emissive::scan(source, &random);
@@ -366,6 +371,7 @@ impl MobData {
             heightmaps,
             animations,
             villager_hats: Default::default(),
+            armor_atlases: Default::default(),
             frame_models: Default::default(),
             cem: Default::default(),
             random_textures: Default::default(),
@@ -430,6 +436,7 @@ impl MobData {
             heightmaps: HashMap::new(),
             animations: HashMap::new(),
             villager_hats: Default::default(),
+            armor_atlases: Default::default(),
             frame_models: Default::default(),
             cem: Default::default(),
             random_textures: Default::default(),

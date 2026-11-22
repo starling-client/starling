@@ -2344,6 +2344,21 @@ fn render_selected(
         let overlay = layer.equipment_overlay.unwrap_or(overlay);
         let start = out.len();
         let first_job = skin.as_deref().map(|skin| skin.frame.jobs.len());
+        // Starling: a pack's custom armour in the leather texture (`custom_armor`), picked by the
+        // dye colour the layer carries; its animation runs on the mob's age.
+        let (uv, color) = match armor_atlases.get(layer.texture.as_ref()) {
+            Some(armor)
+                if ["#helmet", "#chestplate", "#leggings", "#boots"]
+                    .iter()
+                    .any(|piece| layer.model.ends_with(piece)) =>
+            {
+                let c = layer.color;
+                let rgb = (c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16) & 0xFF;
+                let day = (m.age as f32 + alpha).rem_euclid(24000.0) / 24000.0;
+                crate::custom_armor::layer_look(Some(armor), Some(rgb), uv, day)
+            }
+            _ => (uv, layer.color),
+        };
         put(
             &mut skin,
             &part,
@@ -2351,7 +2366,7 @@ fn render_selected(
             draw_poses,
             uv,
             layer.scroll,
-            layer.color,
+            color,
             light,
             overlay,
             out,

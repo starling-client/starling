@@ -611,6 +611,14 @@ impl Game<'_> {
             ] = frame_models;
             game.waypoint_styles = waypoint_styles;
             game.armor_stand_assets.apply_resources(armor_stand_assets);
+            // Starling: mobs and players wear the reloaded packs' custom armour (ItemsAdder's).
+            *game
+                .res
+                .mob_data()
+                .armor_atlases
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                sunrise_client::custom_armor::load_from(&game.armor_stand_assets.root);
             game.armor_stand_assets.extensions = item_extensions;
             game.random_tick_sections.clear();
             game.portals.sections.clear();
