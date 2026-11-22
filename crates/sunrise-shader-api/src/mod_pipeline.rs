@@ -197,7 +197,7 @@ fn compose_checked(file: &str, text: &str, textured: bool) -> Result<String, Vec
         .map_err(|e| vec![located(&composed, None, e.message().to_owned())])?;
     let info = validate(&composed, &module)?;
     let mut problems = cost_problems(cost(&module), file, "pipeline shader");
-    problems.extend(translate(&module, &info, None, file));
+    problems.extend(translate(&module, &info, None, file, false));
     if problems.is_empty() {
         Ok(composed.text)
     } else {

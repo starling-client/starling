@@ -305,6 +305,7 @@ fn build_stage(
         &info,
         Some(&pack.manifest.options),
         file,
+        pack.manifest.ray_tracing.is_some(),
     ));
     if !problems.is_empty() {
         return Err(problems);
