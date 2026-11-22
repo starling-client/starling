@@ -25,11 +25,9 @@ use sunrise_client::{
     text::{Style, Text},
 };
 
-/// Where overlay roots are built (beside options.txt).
+/// Where overlay roots are built (beside options.txt, or in the private folder: `logging::cache_dir`).
 pub fn cache_dir() -> PathBuf {
-    std::env::current_dir()
-        .unwrap_or_default()
-        .join(".sunrise-cache/resourcepacks")
+    sunrise_client::logging::cache_dir().join("resourcepacks")
 }
 pub fn packs_dir() -> PathBuf {
     std::env::current_dir()
@@ -38,12 +36,20 @@ pub fn packs_dir() -> PathBuf {
 }
 /// `Blaze3D.openPath`: the desktop's handler on the folder (the default file manager).
 pub fn open_folder(dir: &Path) {
+    // Starling: Android's file manager, through the activity.
+    if sunrise_client::platform::open_folder(dir).is_some() {
+        return;
+    }
     if let Err(e) = sunrise_client::desktop::open_path(dir) {
         log::warn!("Sunrise: could not open {}: {e}", dir.display());
     }
 }
 /// `Blaze3D.openUri`: the system browser on the link.
 pub fn open_uri(uri: &str) {
+    // Starling: Android's browser, through the activity.
+    if sunrise_client::platform::open_link(uri).is_some() {
+        return;
+    }
     if let Err(error) = sunrise_client::desktop::open_uri(uri) {
         log::warn!("Sunrise: could not open URI {uri}: {error}");
     }

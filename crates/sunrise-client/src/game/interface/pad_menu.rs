@@ -587,9 +587,12 @@ impl Game<'_> {
             return;
         };
         let id = window.id();
+        // Starling: `at` is in the interface's own space (the menus' safe area on a phone); the
+        // window's pointer is not.
+        let [ox, oy] = self.interface_origin();
         let at = (
-            at.0.clamp(0.0, projection.gui.size[0] as f32 - 1.0),
-            at.1.clamp(0.0, projection.gui.size[1] as f32 - 1.0),
+            at.0.clamp(-ox, projection.gui.size[0] as f32 - ox - 1.0) + ox,
+            at.1.clamp(-oy, projection.gui.size[1] as f32 - oy - 1.0) + oy,
         );
         let position = projection.window_pointer(at);
         self.pad_synthetic_event(

@@ -2395,7 +2395,12 @@ impl Game<'_> {
         if let Some(server) = &self.integrated {
             server.tell(OwnerRequest::ReloadMods(Box::new(reload)));
         } else if self.remote.is_none() {
+            // Starling: with no server yet (the title screen) the reload runs on this game, where
+            // the switches are the player's: they keep what the player chose, a mod waiting for a
+            // restart or a switch made during the reload too, not only what loaded.
+            let wanted = self.settings.mods.enabled.clone();
             self.apply_mods_reload(reload);
+            self.settings.mods.enabled = wanted;
         }
     }
     /// The server's side of a live switch: the data packs reload from the new root.
