@@ -1,13 +1,7 @@
 [workspace]
-<<<<<<< sync-sunrise-1
-exclude = ["crates/sunrise-telemetry-server", "launcher", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/winit", "third_party/android-activity", "tools/fixtures/paper-trace-mod"]
+exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/android-activity", "third_party/winit", "tools/fixtures/paper-trace-mod"]
 members = [
     "crates/starling-catalog",
-    "crates/sunrise-guest-stack",
-=======
-exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "tools/fixtures/paper-trace-mod"]
-members = [
->>>>>>> sunrise/main
     "crates/sunrise-mod-vocab",
     "crates/sunrise-game-discovery",
     "crates/sunrise-telemetry",
@@ -29,13 +23,8 @@ members = [
     "crates/sunrise-hdr",
     "crates/sunrise-world",
     "crates/sunrise-client",
-<<<<<<< sync-sunrise-1
     # Starling: the game as a NativeActivity library; empty on other targets.
     "crates/sunrise-android",
-    "crates/sunrise-engine-slots",
-    "crates/sunrise-mod-points",
-=======
->>>>>>> sunrise/main
     "crates/sunrise-internals",
     "crates/sunrise-client-lib",
     "crates/sunrise-gameplay",

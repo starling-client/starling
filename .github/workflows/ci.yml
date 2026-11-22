@@ -1,5 +1,4 @@
 name: checks
-<<<<<<< sync-sunrise-1
 # Every pull request and every push to the branches below, on GitHub's runners, in two jobs side by side: lint (the
 # public-tree check, the Python tests, rustfmt and clippy) and verify (the Rust tests and the API signature audit), as
 # in Sunrise (a pull request that changes no Rust finishes in seconds). Sunrise's vanilla parity jobs need a runner
@@ -7,47 +6,21 @@ name: checks
 on:
   push:
     # starling and integration in starling-client/starling (android: Sunrise Android's, and JuanLuci/starling's);
-    # sync-sunrise-7, where Starling's pull requests go now, so its runs save the Rust cache they read.
-    branches: [android, starling, integration, sync-sunrise-7]
+    # sync-horizon-7, where Starling's pull requests go now, so its runs save the Rust cache they read.
+    branches: [android, starling, integration, sync-horizon-7, sync-sunrise-1]
   pull_request:
     types: [opened, synchronize, reopened]
-=======
-# verify: a full check on GitHub's runners of main every 6 hours, of a ref by hand (`gh workflow run checks -f
-# verify=true`), and of a pull request when a maintainer adds the label `ci:verify`. A push to a pull request gets
-# dyna-checks' cheap checks only (format, verify-static), and rollups, syncs and main's pushes its heavy gate on Dyna's
-# runners (.github/workflows/dyna-ci.yml, tools/ci/pr_gate.py): a fork's pull requests ran verify on every push and held
-# the organisation's hosted runners ahead of the release jobs (2026-11-18). The label stays on the pull request: a
-# fork's run gets a read-only token, so nothing here can remove it, and no write token is ever given to a fork's code
-# (no pull_request_target). To run it again, remove the label and add it again. The scheduled run also tries main on the
-# newest stable Rust and saves the Rust caches it reads. A dispatch without `verify` runs only the by-hand jobs at the
-# end. See docs/release-flow.md.
-on:
-  pull_request:
-    types: [labeled]
-  schedule:
-    - cron: '41 */6 * * *'
->>>>>>> sunrise/main
   workflow_dispatch:
-    inputs:
-      verify:
-        description: Run verify on this ref instead of the by-hand jobs
-        type: boolean
-        default: false
 permissions:
   contents: read
 concurrency:
-<<<<<<< sync-sunrise-1
   # A new push to a pull request replaces its running checks; a branch's pushed runs all finish.
   group: checks-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-=======
-  group: checks-${{ github.sha }}
->>>>>>> sunrise/main
 env:
   # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
   SUNRISE_TELEMETRY_URL: "off"
 jobs:
-<<<<<<< sync-sunrise-1
   # Two jobs, which build different things (clippy's checks, and the tests' builds) and so share no build output: side
   # by side a run takes the longer of them, about half of the one job's 43-47 minutes it was. Sunrise kept one job for
   # its organisation's shared runner pool; starling-client's holds 20 at once with Compile's builds.
@@ -58,59 +31,19 @@ jobs:
   # themselves). There the build folder persists (CARGO_TARGET_DIR, outside the checkout), so the apt packages,
   # Python and the Rust cache steps are GitHub's only.
   #
-  # The Rust cache of each job is saved by the pushes to android, starling and sync-sunrise-7 (pull requests read the
-  # one of the branch they go to): before sync-sunrise-7 saved one, its pull requests built their dependencies anew.
+  # The Rust cache of each job is saved by the pushes to android, starling and sync-horizon-7 (pull requests read the
+  # one of the branch they go to): before sync-horizon-7 saved one, its pull requests built their dependencies anew.
   lint:
     runs-on: ${{ vars.SELF_HOSTED_CI == 'all' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "linux", "playsunrise-ci"]') || 'ubuntu-latest' }}
     timeout-minutes: 75
-=======
-  # Which jobs a maintainer-requested fork check needs, from the complete base/head diff
-  # (tools/ci/rust_changes.py). Every verification part uses this one decision. Missing event commits, an
-  # unavailable diff, or a failed selection keep all parts. Scheduled and manual verification stay full.
-  changes:
-    if: github.event.label.name == 'ci:verify' && github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    outputs:
-      rust_required: ${{ steps.selection.outputs.rust_required }}
-      tooling_required: ${{ steps.selection.outputs.tooling_required }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Fetch this commit's history for selection
-        timeout-minutes: 11
-        env:
-          FETCH_STEP: Fetch this commit's history for selection
-          # The diff reads commits and two trees, which Git fetches when it first reads them (tools/ci/history_fetch.sh).
-          HISTORY_FILTER: tree:0
-        run: bash tools/ci/history_fetch.sh
-      - name: Select the jobs this pull request needs
-        id: selection
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 tools/ci/rust_changes.py --all "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
-  # verify runs as three jobs side by side, so a run takes as long as its slowest part (the Rust tests), not the sum:
-  # one job doing them in turn took 14-21 minutes on GitHub's runners (main's run 43595807302: 859 s). `verify` waits
-  # for the three and passes only when each passed. It runs even in a cancelled run
-  # (`always()`), so it fails there instead of being skipped. A failed part re-runs alone ("Re-run failed jobs").
-  #
-  verify-tree:
-    name: verify (tree and tools)
-    needs: changes
-    if: >-
-      !cancelled() && (github.event_name == 'schedule' || inputs.verify ||
-      github.event.label.name == 'ci:verify' && (needs.changes.outputs.tooling_required != 'false' || needs.changes.outputs.rust_required != 'false'))
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
->>>>>>> sunrise/main
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v7
+        if: runner.environment == 'github-hosted'
         with:
           python-version: '3.12'
-<<<<<<< sync-sunrise-1
       - name: Does this pull request need Rust checks?
         if: github.event_name == 'pull_request'
         id: rust
@@ -134,82 +67,39 @@ jobs:
           fi
       - name: Test offline research tooling
         run: python -m unittest discover -s tests -v
-=======
-      - name: Keep game artifacts out of Git
-        run: |
-          python tools/check_public_tree.py
-          python tools/check_public_tree.py --history
-      # docs/layers.md: a crate depends only on its own layer or a lower one; today's exceptions only shrink.
-      - name: Crates follow the layers
-        run: python3 tools/check_layers.py
-      # docs/layers.md#built-in-addresses: every built-in outside address in the Sunrise layer's home; the rest only shrinks.
-      - name: Built-in addresses stay in their home
-        run: python3 tools/check_addresses.py
-      - name: Check the mod API type boundary (including negative control)
-        run: python3 tools/ci/check_api_boundary.py --source-only
-      - name: Vocabulary state has explicit ownership
-        run: python3 tools/check_mod_vocabulary_state.py
-      - name: Test offline research tooling
-        run: python -m unittest discover -s tests -v
-  verify-lint:
-    name: verify (format and lint)
-    needs: changes
-    if: >-
-      !cancelled() && (github.event_name == 'schedule' || inputs.verify ||
-      github.event.label.name == 'ci:verify' && (needs.changes.outputs.rust_required != 'false'))
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
->>>>>>> sunrise/main
       - name: Install Rust toolchain and the ALSA and udev headers the client links against
+        if: steps.rust.outputs.required != 'false'
+        env:
+          HOSTED: ${{ runner.environment == 'github-hosted' }}
         run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+          if [ "$HOSTED" = true ]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+          fi
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-<<<<<<< sync-sunrise-1
       - uses: Swatinem/rust-cache@v2
         if: steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
-=======
-      # Dependencies checked by clippy, saved by the scheduled runs on main.
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
->>>>>>> sunrise/main
         with:
           shared-key: lint
-          save-if: ${{ github.ref == 'refs/heads/android' || github.ref == 'refs/heads/starling' || github.ref == 'refs/heads/sync-sunrise-7' }}
+          save-if: ${{ github.ref == 'refs/heads/android' || github.ref == 'refs/heads/starling' || github.ref == 'refs/heads/sync-horizon-7' }}
       - name: Check formatting and lint
+        if: steps.rust.outputs.required != 'false'
         run: |
           cargo +stable fmt --all -- --check
           find crates/sunrise-mod-api/src crates/sunrise-mod-vocab/src -name '*.rs' -print0 | xargs -0 rustup run stable rustfmt --edition 2024 --check --config skip_children=true
           find crates/sunrise-client/src/game -name '*.rs' -print0 | xargs -0 rustup run stable rustfmt --edition 2024 --config skip_children=true --check
           rustup run stable rustfmt --edition 2024 --check crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/*.rs crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/*/*.rs
-          cargo +stable clippy --workspace --all-targets --locked -- -D warnings
+          rustup run stable rustfmt --edition 2024 --check crates/sunrise-mod-wasm/wire-loopback/tests/wire_loopback/*.rs
+          cargo +stable clippy --workspace --all-targets -- -D warnings
           # The server build (released as sunrise-engine): the game without sound or controllers.
-<<<<<<< sync-sunrise-1
           cargo +stable clippy -p sunrise-client -p sunrise-game -p sunrise-mod-host --all-targets --no-default-features -- -D warnings
   verify:
     runs-on: ${{ vars.SELF_HOSTED_CI == 'all' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "linux", "playsunrise-ci"]') || 'ubuntu-latest' }}
     # Since sync 7 a full run took 43-47 minutes on GitHub's runners, so 45 cancelled half of them.
     timeout-minutes: 75
-=======
-          cargo +stable clippy -p sunrise-client -p sunrise-game -p sunrise-mod-host --all-targets --locked --no-default-features -- -D warnings
-      - name: Check generated mod API signatures
-        run: python3 tools/ci/check_api_boundary.py
-  verify-test:
-    name: verify (Rust tests)
-    needs: changes
-    if: >-
-      !cancelled() && (github.event_name == 'schedule' || inputs.verify ||
-      github.event.label.name == 'ci:verify' && (needs.changes.outputs.rust_required != 'false'))
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
->>>>>>> sunrise/main
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-<<<<<<< sync-sunrise-1
       - uses: actions/setup-python@v7
         if: runner.environment == 'github-hosted'
         with:
@@ -221,11 +111,11 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 tools/ci/rust_changes.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
-=======
->>>>>>> sunrise/main
       - name: Install Rust toolchain and the ALSA and udev headers the client links against
+        if: steps.rust.outputs.required != 'false'
+        env:
+          HOSTED: ${{ runner.environment == 'github-hosted' }}
         run: |
-<<<<<<< sync-sunrise-1
           if [ "$HOSTED" = true ]; then
             sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
           fi
@@ -235,27 +125,15 @@ jobs:
         if: steps.rust.outputs.required != 'false' && runner.environment == 'github-hosted'
         with:
           shared-key: verify
-          save-if: ${{ github.ref == 'refs/heads/android' || github.ref == 'refs/heads/starling' || github.ref == 'refs/heads/sync-sunrise-7' }}
+          save-if: ${{ github.ref == 'refs/heads/android' || github.ref == 'refs/heads/starling' || github.ref == 'refs/heads/sync-horizon-7' }}
       # Libraries, binaries and integration tests, then doc tests: not the ~275 examples, which clippy in lint already
       # type-checks and Sunrise's parity jobs build and run (they were most of this step's build and link time).
       # cargo test, not nextest: nextest's process per test reloads each binary's shared tables for every test, and on
-=======
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      # Dependencies and the workspace's own build, saved by the scheduled runs on main.
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: verify
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Libraries, binaries and integration tests, then doc tests: not the ~275 examples, which verify-lint's clippy
-      # type-checks.
-      # cargo test --locked, not nextest: nextest's process per test reloads each binary's shared tables for every test, and on
->>>>>>> sunrise/main
       # these 4-core runners it was no faster (#4978).
       - name: Build the runtime holder test actor
+        if: steps.rust.outputs.required != 'false'
         run: cargo +stable build -p sunrise-mod-package --features runtime-process --example holder_actor
       - name: Test Rust core and voxel kernel correctness
-<<<<<<< sync-sunrise-1
         if: steps.rust.outputs.required != 'false'
         run: |
           cargo +stable test --workspace --lib --bins --tests
@@ -265,124 +143,3 @@ jobs:
       - name: Check generated mod API signatures
         if: steps.rust.outputs.required != 'false'
         run: python3 tools/ci/check_api_boundary.py
-=======
-        run: |
-          cargo +stable test --locked --workspace --lib --bins --tests
-          # The full content-root tests (#[ignore]d: minutes each on a laptop). The same build as above; they need the
-          # prepared vanilla data, so without it they pass at once. Keep the target selection identical to avoid
-          # recompiling the workspace with a different dependency graph.
-          cargo +stable test --locked --workspace --lib --bins --tests mod_content::tests:: -- --ignored
-          cargo +stable test --locked --workspace --doc
-  verify:
-    needs: [verify-tree, verify-lint, verify-test]
-    # Skipped with its parts on a dispatch of the by-hand jobs and on another label; otherwise it runs even in a
-    # cancelled run.
-    if: always() && (github.event_name == 'schedule' || inputs.verify || github.event.label.name == 'ci:verify')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Every part of verify passed or had nothing to do
-        env:
-          TREE: ${{ needs.verify-tree.result }}
-          LINT: ${{ needs.verify-lint.result }}
-          TEST: ${{ needs.verify-test.result }}
-        run: |
-          echo "tree and tools: $TREE, format and lint: $LINT, Rust tests: $TEST"
-          for result in "$TREE" "$LINT" "$TEST"; do
-            [ "$result" = success ] || [ "$result" = skipped ] || exit 1
-          done
-  # Compile and test Windows ARM64 on an actual ARM64 host, and inspect the resulting PE headers. By hand only
-  # (`gh workflow run checks --ref <branch>`): GitHub's runner queue is the bottleneck, and main's runs gate the
-  # releases (tools/release_train.py waits for them), so neither pull requests nor main's pushes start this
-  # 90-minute job. The Nightly builds and checks these binaries on every run.
-  windows-arm64:
-    name: Windows ARM64 game
-    if: github.event_name == 'workflow_dispatch' && !inputs.verify
-    runs-on: windows-11-vs2026-arm
-    timeout-minutes: 90
-    env:
-      RUSTFLAGS: -C target-feature=+crt-static
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Use every runner core for Cargo
-        shell: pwsh
-        run: |
-          $cores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
-          "CARGO_BUILD_JOBS=$cores" >> $env:GITHUB_ENV
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: windows-arm64-game
-      - name: Check LLVM assembler used by ring
-        shell: pwsh
-        run: |
-          $llvmBin = Join-Path $env:ProgramFiles 'LLVM\bin'
-          if (-not (Get-Command clang -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $llvmBin 'clang.exe'))) {
-            $env:PATH = "$llvmBin;$env:PATH"
-            "PATH=$env:PATH" >> $env:GITHUB_ENV
-          }
-          $clang = Get-Command clang -ErrorAction Stop
-          Write-Output "Using $($clang.Source)"
-          & $clang.Source --version
-      - name: Build both game executables and the shipped tools for native Windows ARM64
-        run: >-
-          cargo build --release --locked --target aarch64-pc-windows-msvc
-          -p sunrise-game --bin sunrise-client -p sunrise-official --bin sunrise-official
-          -p sunrise-client-lib --bin sunrise-ctl -p sunrise-perf --bin sunrise-perf
-          -p sunrise-prepare --bin sunrise-prepare -p sunrise-server --bin sunrise-server
-          -p sunrise-port-pack --bin sunrise-port-pack
-      - name: Verify both game executables reserve 8 MiB of main stack
-        # This job builds the dispatched ref using that ref's workflow and validation tools.
-        run: >-
-          python tools/check_pe_arch.py --stack-reserve 8388608 arm64
-          target/aarch64-pc-windows-msvc/release/sunrise-client.exe
-          target/aarch64-pc-windows-msvc/release/sunrise-official.exe
-      - name: Verify the shipped tools' PE machine
-        run: >-
-          python tools/check_pe_arch.py arm64
-          target/aarch64-pc-windows-msvc/release/sunrise-ctl.exe
-          target/aarch64-pc-windows-msvc/release/sunrise-perf.exe
-          target/aarch64-pc-windows-msvc/release/sunrise-prepare.exe
-          target/aarch64-pc-windows-msvc/release/sunrise-server.exe
-          target/aarch64-pc-windows-msvc/release/sunrise-port-pack.exe
-      - name: Check game DLL imports
-        run: python tools/check_imports.py target/aarch64-pc-windows-msvc/release/sunrise-official.exe target/aarch64-pc-windows-msvc/release/sunrise-ctl.exe target/aarch64-pc-windows-msvc/release/sunrise-perf.exe target/aarch64-pc-windows-msvc/release/sunrise-prepare.exe target/aarch64-pc-windows-msvc/release/sunrise-server.exe target/aarch64-pc-windows-msvc/release/sunrise-port-pack.exe
-      - name: Start every game executable
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $client = 'target/aarch64-pc-windows-msvc/release/sunrise-official.exe'
-          $output = & $client --help 2>&1
-          if ($LASTEXITCODE -ne 0 -or ($output -join "`n") -notmatch '--resources') { throw 'sunrise-client --help failed' }
-          foreach ($binary in @('sunrise-ctl.exe', 'sunrise-perf.exe', 'sunrise-prepare.exe', 'sunrise-server.exe', 'sunrise-port-pack.exe')) {
-            $path = "target/aarch64-pc-windows-msvc/release/$binary"
-            $output = & $path --help 2>&1
-            if ($LASTEXITCODE -ne 0 -or -not $output) { throw "$binary --help failed" }
-          }
-          foreach ($binary in @('sunrise-prepare.exe', 'sunrise-server.exe', 'sunrise-port-pack.exe')) {
-            $path = "target/aarch64-pc-windows-msvc/release/$binary"
-            $output = & $path --version 2>&1
-            if ($LASTEXITCODE -ne 0 -or -not $output) { throw "$binary --version failed" }
-            Write-Output ($output -join "`n")
-          }
-  jfr-analysis:
-    if: github.event_name == 'workflow_dispatch' && !inputs.verify
-    runs-on: [self-hosted, linux, sunrise-game]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '25'
-      - name: Verify streaming JFR analysis against the JDK exporter
-        run: python tools/test_jfr.py
-      - name: Verify ZGC pause and allocation event interpretation
-        run: python tools/test_jfr.py --gc zgc
->>>>>>> sunrise/main

@@ -1,12 +1,12 @@
 name: sync-check
-# Temporary, for the sync with Ari's fork of Horizon (sync-sunrise-7): a pushed commit of this branch gets the Python
+# Temporary, for the sync with Ari's fork of Horizon (sync-horizon-7): a pushed commit of this branch gets the Python
 # tests, `cargo check` of the workspace and of sunrise-android for arm64-v8a, each on its runner, and each step
 # summary lists the errors, cut short. With workflow_dispatch `full`, also clippy (warnings denied, as ci.yml) and the
 # Rust tests. The PC has no build and there is no VM. Delete before the branch merges.
 
 on:
   push:
-    branches: [sync-sunrise-7]
+    branches: [sync-horizon-7]
   workflow_dispatch:
     inputs:
       full:

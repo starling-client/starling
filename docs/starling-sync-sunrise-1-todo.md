@@ -31,3 +31,11 @@
     horizon.rs, the Horizon registry browser; our 12-line diff is in ours-diffs), `.hmod` -> `.smod`,
     `horizon-mod.toml` -> `sunrise-mod.toml`, the folders `horizon-mods`/`horizon-native-mods`.
   - Players' folders from 0.9.0 keep the old names: migrate or read both.
+- launcher/: Sunrise moved its launcher to another repository (43d0b834b4). starling-catalog compiles
+  launcher/src/browser*, so that tree (17 files, as Starling had it) is back and is Starling's to carry now.
+- README.md and CONTRIBUTING.md are Starling's as they were, renamed by rebrand.py: they must say the fork is based on
+  Sunrise (with the link), unofficial, under Sunrise's licence (LICENSE is Sunrise's file), and credit Horizon where
+  the text now wrongly says Sunrise. Links rebrand.py broke: Vasysik/sunrise-android is Vasysik/horizon-android
+  (THIRD_PARTY_NOTICES.md, sync-check.yml, gfx/*.rs comments, starling-account).
+- Cargo.lock is Sunrise's: add Starling's crates back with `cargo metadata` on the build machine (not --locked once).
+- .github/workflows: ours as they were, renamed by rebrand.py; check every name it changed that isn't a crate (env vars HORIZON_* -> SUNRISE_*, artifact names, branch names fixed by hand) when CI first runs.

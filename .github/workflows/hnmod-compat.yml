@@ -7,7 +7,7 @@ name: hnmod-compat
 # By hand only (each run is a few hours of runner time): Actions > hnmod-compat > Run workflow, or
 #   gh workflow run hnmod-compat.yml --ref BRANCH
 # and, while it is not on the default branch yet, through sync-check.yml:
-#   gh workflow run sync-check.yml --ref sync-sunrise-7 -f full=false -f compat=true
+#   gh workflow run sync-check.yml --ref sync-horizon-7 -f full=false -f compat=true
 # GitHub's runners hold no secrets here (contents: read, no secrets used), so mods with crates of their own run too.
 on:
   workflow_dispatch:

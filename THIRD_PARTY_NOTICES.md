@@ -160,10 +160,14 @@ note permits without affecting the app's license; no kernel code is compiled in.
 `third_party/libmimalloc-sys` is [libmimalloc-sys](https://github.com/purpleprotocol/mimalloc_rust)
 0.1.49 by Octavian Oncescu, with the [mimalloc](https://github.com/microsoft/mimalloc) v3 sources it
 bundles (Copyright (c) 2018-2025 Microsoft Corporation, Daan Leijen), both under the MIT license
-<<<<<<< sync-sunrise-1
-(`LICENSE.txt` and `c_src/mimalloc/v3/LICENSE` in that folder). It holds only the v3 sources. One
-change: `mi_popcount` in `include/mimalloc/bits.h` uses mimalloc's portable bit count on MSVC
-x86/x64 instead of the POPCNT instruction, which CPUs before Nehalem lack (#7264).
+(`LICENSE.txt` and `c_src/mimalloc/v3/LICENSE` in that folder). It holds only the v3 sources. Three
+changes: `mi_popcount` in `include/mimalloc/bits.h` uses mimalloc's portable bit count on MSVC
+x86/x64 instead of the POPCNT instruction, which CPUs before Nehalem lack (#7264);
+`build.rs` reruns when a file under `c_src/mimalloc/v3` changes, so a kept build directory never links stale
+sources (#3299); and
+`_mi_arenas_page_free` in `src/arena.c` lowers the `malloc_huge` statistic when a huge page is freed, at
+every `MI_STAT` level as `src/page.c` raises it, instead of `mi_stat_free` (`src/free.c`) and
+`_mi_theap_page_destroy` (`src/theap.c`) lowering it only with detailed statistics (#3299).
 ## Create
 
 `crates/sunrise-client/src/game/kinetic_machines.rs` ports
@@ -189,16 +193,6 @@ repository: a shared port fetches them from Modrinth on the player's device.
 The shape of the horizon a shader pack's sky draws (`gfx/pack_sky.rs`) comes from
 [Iris Features](https://github.com/FatulDev/Sunrise-Iris-Compatibility-Mod), a native mod for
 Horizon, Copyright (c) 2026 Riley-Neeb, under the MIT license (`licenses/iris-features-MIT.txt`).
-=======
-(`LICENSE.txt` and `c_src/mimalloc/v3/LICENSE` in that folder). It holds only the v3 sources. Three
-changes: `mi_popcount` in `include/mimalloc/bits.h` uses mimalloc's portable bit count on MSVC
-x86/x64 instead of the POPCNT instruction, which CPUs before Nehalem lack (#7264);
-`build.rs` reruns when a file under `c_src/mimalloc/v3` changes, so a kept build directory never links stale
-sources (#3299); and
-`_mi_arenas_page_free` in `src/arena.c` lowers the `malloc_huge` statistic when a huge page is freed, at
-every `MI_STAT` level as `src/page.c` raises it, instead of `mi_stat_free` (`src/free.c`) and
-`_mi_theap_page_destroy` (`src/theap.c`) lowering it only with detailed statistics (#3299).
->>>>>>> sunrise/main
 
 ## Pixelify Sans
 
@@ -535,9 +529,7 @@ translated from x86-64 assembly to Rust, with the same floating-point operations
 ones through the `safe_arch` crate) and the tables as typed Rust arrays. The copyright line and license notice also
 head the file.
 
-<<<<<<< sync-sunrise-1
 ## Sunrise Android renderer paths
-
 What only Adreno on Android's Vulkan takes here is adapted from
 [Vasysik/sunrise-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates/sunrise-client-render/src),
 under the MIT license (the same [LICENSE](LICENSE) as this repository).
@@ -547,7 +539,6 @@ after solid terrain (`gfx/late_sky.rs` and the far-plane vertex entries in `terr
 (`gfx/flat.rs`; its commit 1a115395f8) and the cheaper terrain shaders (`gfx/solid_paths.rs`,
 `fs_cutout_static` and `SETTLED_TERRAIN` in `terrain.wgsl`; its commits 202c962884, 3c9856cc93 and
 9771fbce2b).
-
 The fork takes them on every Android Vulkan GPU it allows; here they follow `splits_solid`, which
 holds on Adreno, but for the sky after solid terrain, which every GPU behind Android's Vulkan takes
 (`late_sky::wanted`), as in the fork. Starling's sunrise fan is geometry, so it has a far-plane
@@ -555,13 +546,10 @@ entry of its own. The
 fork's two specialization constants are one here, which also leaves out the distant tiles' sampling,
 and its terrain shaders also cover flat frames. The indirect offset fix in 1a115395f8 doesn't apply:
 Starling's solid passes don't rebase the indirect buffer.
-
 Drawing each section with a call of its own on Android, rather than with indirect multi-draws
 (`indirect_draws_wanted` in `gfx.rs`), follows the same revision's commit 77b9e17f76, which turned
 indirect multi-draws off on every Android GPU.
-
 ## Sunrise Android documents provider
-
 The game folder's place in Android's Files app (`packaging/android/java/io/github/juanluci/starling/GameFolderProvider.java`
 and `GameFolder.java`) is adapted from the documents provider in [Vasysik/sunrise-android at
 fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/packaging/android/java/dev/sunrise/android)
@@ -569,9 +557,7 @@ and its `crates/sunrise-client/src/android/document_store.rs`, under the MIT lic
 [LICENSE](LICENSE) as this repository). Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
 The port is plain Java over Starling's one game folder, in place of the fork's Rust store of
 profiles and fixed folders that its launcher screens share.
-
 ## Sunrise Android control system and editor
-
 The Android control engine, MCPE/GoyControl layouts and presets, visual editor,
 control hub, virtual pointer and auxiliary keyboard are adapted from
 [Vasysik/sunrise-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606),
@@ -581,27 +567,18 @@ Source: `crates/sunrise-client-render/src/touch.rs`, `touch/{layout,editor,custo
 integration in `game/android_input.rs`, `game/pad.rs` and `game.rs`. The
 physical D-pad/keypad profile is from `sunrise-client-render/src/keypad.rs`
 and its editable bindings in `options_ui.rs`.
-
 The port uses Starling's input, IME, inventory, controller and renderer interfaces.
 Its UI rasterization shares Starling's existing runtime atlas allocator; it does
 not add a second font texture. Starling's chat shortcuts and slot gestures are
 retained. No Minecraft textures or prepared resources are included by this port.
-
 ## Sunrise Android account profiles and Ely.by
-
 Provider-aware profile selection and Ely.by authentication, refresh, 2FA and session routing are adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606), specifically `launcher/src/account.rs`, `launcher/src/account/ely.rs`, `crates/sunrise-client/src/android/login.rs` (behavior reference) and `crates/sunrise-client-render/src/auth.rs`. MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors; the repository LICENSE retains the license text. The integration preserves Starling's Microsoft public client and sealed secret store, adds provider-separated keys and offline profile metadata, and uses Starling's existing title widgets rather than the Android launcher's panel.
 ## Sunrise Android wardrobe
-
 Per-account skin selection and the Microsoft profile skin upload are adapted from [Vasysik/horizon-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/horizon-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606), specifically `launcher/src/skins.rs`, `launcher/src/skins/library.rs`, `launcher/src/skins/cloud.rs` and `crates/sunrise-client/src/android/wardrobe.rs` (behavior reference). MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors; the repository LICENSE retains the license text. Starling keeps its `skins/` folder and Skin Customization page in place of the wardrobe's image store and launcher panel, keys each choice by the profile, uploads through its own sealed session, and sends Ely.by accounts to ely.by as Horizon Android does.
-
 The mobile attack gauge side and offhand spacing in `crates/sunrise-client-render/src/hud_layout.rs` are adapted from the same Sunrise Android commit fa548eb7abe91c194d3780e4580b9746323cd606 under MIT.
-`crates/sunrise-client-render/src/keypad.rs` is adapted from Starling's keypad profile
-(`crates/sunrise-client-render/src/keypad.rs`) at the same commit.
-=======
 ```
 Copyright (c) 2014, Intel Corporation
 All rights reserved.
->>>>>>> sunrise/main
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
