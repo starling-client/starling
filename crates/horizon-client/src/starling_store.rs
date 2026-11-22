@@ -703,6 +703,7 @@ mod tests {
                             Failure {
                                 job: job.clone(),
                                 id: "veinminer".into(),
+                                version: "0.3.0".into(),
                                 error: "error[E0425]".into(),
                                 settled: true,
                             },
