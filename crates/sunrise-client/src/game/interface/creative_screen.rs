@@ -419,7 +419,8 @@ impl Game<'_> {
             self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
         }
         // CreativeModeInventoryScreen.checkTabHovering: a tab says its name.
-        if let Some(i) = self.creative_screen.hovered_tab((ox, oy), self.cursor)
+        if self.bedrock_items.is_none()
+            && let Some(i) = self.creative_screen.hovered_tab((ox, oy), self.cursor)
             && let Some(t) = tabs.get(i)
         {
             let title = self.creative_tab_title(t);
@@ -603,7 +604,9 @@ impl Game<'_> {
         let creative = &self.creative_screen;
         let clicked = creative.tabs.iter().position(|t| {
             let (tx, ty) = Creative::tab_position(t);
-            creative.on_page(t)
+            // Starling: Bedrock Inventory's own window has no tabs.
+            !panel
+                && creative.on_page(t)
                 && cx >= ox + tx
                 && cx < ox + tx + 26.0
                 && cy >= oy + ty

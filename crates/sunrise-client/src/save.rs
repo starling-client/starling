@@ -260,7 +260,8 @@ pub fn upgrade_older_world_with(
     world: &Path,
     progress: &sunrise_world::datafix::progress::UpgradeProgress,
 ) -> Result<()> {
-    let Some(root) = read_dat(&world.join("level.dat")) else {
+    // Starling: a world whose level.dat is missing opens from level.dat_old.
+    let Some(root) = read_level_dat(world) else {
         return Ok(());
     };
     let version = root.get("Data").map_or(i64::from(DATA_VERSION), |d| {
@@ -4764,7 +4765,7 @@ impl Level {
     ) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
-        let mut root = compound_or_empty(read_dat(&dir.join("level.dat")));
+        let mut root = compound_or_empty(read_level_dat(dir));
         let legacy = root
             .get("Data")
             .is_some_and(|d| d.get("Player").is_some() || d.get("WorldGenSettings").is_some());

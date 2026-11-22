@@ -841,13 +841,10 @@ impl Game<'_> {
     fn batch_for_size(&self) -> Option<HudBatch> {
         #[cfg(test)]
         if let Some(size) = self.recipe_ui.test_viewport {
-            return Some(HudBatch::new(size, self.settings.gui_scale_inputs()));
+            return Some(self.interface_batch(size));
         }
         let r = self.renderer.as_ref()?;
-        Some(HudBatch::new(
-            [r.config.width, r.config.height],
-            self.settings.gui_scale_inputs(),
-        ))
+        Some(self.interface_batch([r.config.width, r.config.height]))
     }
 
     // ---- clicks ----

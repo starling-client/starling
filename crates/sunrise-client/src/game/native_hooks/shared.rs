@@ -132,10 +132,7 @@ impl Game<'_> {
             return self.screen_view_now();
         };
         let renderer = self.renderer.as_ref()?;
-        let batch = HudBatch::new(
-            [renderer.config.width, renderer.config.height],
-            self.settings.gui_scale_inputs(),
-        );
+        let batch = self.interface_batch([renderer.config.width, renderer.config.height]);
         Some(ScreenView::from(mod_api::__private::built::ScreenView {
             id,
             menu: None,
@@ -1503,10 +1500,7 @@ impl Game<'_> {
             return None;
         }
         let renderer = self.renderer.as_ref()?;
-        let batch = HudBatch::new(
-            [renderer.config.width, renderer.config.height],
-            self.settings.gui_scale_inputs(),
-        );
+        let batch = self.interface_batch([renderer.config.width, renderer.config.height]);
         if self.screen != Screen::Playing {
             return Some(self.screen_view(&batch, self.screen));
         }

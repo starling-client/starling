@@ -12361,7 +12361,7 @@ impl Game<'_> {
                 .renderer
                 .as_ref()
                 .map_or([1, 1], |r| [r.config.width, r.config.height]);
-            let b = HudBatch::new(size, self.settings.gui_scale_inputs());
+            let b = self.interface_batch(size);
             if button == MouseButton::Middle {
                 // The world list takes any button; middle selects without joining.
                 return Ok(self.preset_editor_mouse_clicked(code, double_click)

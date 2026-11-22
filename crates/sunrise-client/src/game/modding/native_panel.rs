@@ -415,10 +415,7 @@ impl Game<'_> {
     }
     fn browser_batch(&self) -> Option<HudBatch> {
         let r = self.renderer.as_ref()?;
-        Some(HudBatch::new(
-            [r.config.width, r.config.height],
-            self.settings.gui_scale_inputs(),
-        ))
+        Some(self.interface_batch([r.config.width, r.config.height]))
     }
     /// The mod showing a panel, with its items made into stacks once per
     /// change; none while no mod shows one or no container screen is up.
