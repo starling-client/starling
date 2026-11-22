@@ -15,13 +15,13 @@ type Color = wgpu::Color;
 /// `gfx/pack_shadow.rs` and `gfx/native_shadow.rs`), MIT, copyright (c) 2026 Ludovic Marie and
 /// the Horizon contributors.
 #[cfg(target_os = "android")]
-pub(super) fn shadow_side_limit(device_max: u32) -> u32 {
+pub fn shadow_side_limit(device_max: u32) -> u32 {
     device_max.min(4096)
 }
 
 /// The largest shadow map side this device makes: `device_max` here (see the Android one).
 #[cfg(not(target_os = "android"))]
-pub(super) fn shadow_side_limit(device_max: u32) -> u32 {
+pub fn shadow_side_limit(device_max: u32) -> u32 {
     device_max
 }
 

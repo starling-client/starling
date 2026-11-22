@@ -51,7 +51,7 @@ pub(crate) fn parse_nine_slice(v: &serde_json::Value) -> Option<NineSlice> {
 static BUTTON_TAKES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 static PRESSED_LABEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-pub fn load_skin(root: &ResourceSource) {
+pub fn load_skin(root: &sunrise_assets::resource_source::ResourceSource) {
     use std::sync::atomic::Ordering::Relaxed;
     let skin: serde_json::Value = root
         .read("assets/starling/skin.json")
@@ -134,17 +134,7 @@ pub fn sprite_sized(
     h: f32,
     color: u32,
 ) {
-    let sliced = NINE_SLICE
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .is_some_and(|m| m.contains_key(sprite))
-        || sprite.starts_with("gui/sprites/widget/");
-    if sliced {
-        nine_slice(batch, atlas, sprite, x, y, w, h, color);
-    } else if let Some(r) = atlas.sprites.get(sprite).copied() {
-        batch.rect_uv(x, y, w, h, r, color);
-    }
+    nine_slice(batch, atlas, sprite, x, y, w, h, color);
 }
 /// `GuiGraphicsExtractor.blitSprite`: a sprite over `w` × `h` as its `gui.scaling` says: the
 /// corners at their size and the edges and centre tiled (or stretched with `stretch_inner`), all
@@ -1637,7 +1627,8 @@ impl EditBox {
         if !self.editable {
             return;
         }
-        self.edit.insert_password(text);
+        let plain: String = text.chars().filter(|c| !c.is_control()).collect();
+        self.edit.insert_text(&plain);
         self.moved();
     }
     /// Delete `n` characters (negative: backwards) or the selection. A

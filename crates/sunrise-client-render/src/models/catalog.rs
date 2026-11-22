@@ -152,38 +152,11 @@ pub struct StateModels {
     alternative_models: Vec<Option<Box<[u32]>>>,
     /// Every transformed model once, with the variant it was baked from.
     baked: Vec<(Variant, BakedModel)>,
-    /// The kinetic parts' models no blockstate names, by model and turns: their place in `baked`.
-    partials: BTreeMap<VariantKey, u32>,
     /// Standalone models by id: their index in `baked`.
     standalone: BTreeMap<String, u32>,
 }
 fn key(variant: &Variant) -> VariantKey {
     (variant.model.clone(), variant.rotations, variant.uv_lock)
-}
-/// The models the kinetic blocks of a content root turn or move besides their own (`half`,
-/// `extra`, `head`, `pole` and `models` in its kinetic.json, which sunrise-client's mod_content
-/// writes); none for vanilla's.
-fn partial_models(root: &crate::resource_source::ResourceSource) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    if let Ok(bytes) = root.read("kinetic.json") {
-        let parts: BTreeMap<String, Value> = serde_json::from_slice(&bytes).unwrap_or_default();
-        for part in parts.values() {
-            for k in ["half", "extra", "head", "pole"] {
-                out.extend(part[k].as_str().map(str::to_owned));
-            }
-            // A part's other models (a belt's).
-            for m in part["models"].as_array().into_iter().flatten() {
-                out.extend(m.as_str().map(str::to_owned));
-            }
-        }
-    }
-    // Any block's models besides its own (block-models.json: a blaze burner's blaze).
-    if let Ok(bytes) = root.read("block-models.json") {
-        let blocks: BTreeMap<String, Vec<String>> =
-            serde_json::from_slice(&bytes).unwrap_or_default();
-        out.extend(blocks.into_values().flatten());
-    }
-    out
 }
 /// Bakes model `name` of `library`, turned and UV-locked as a variant says.
 fn bake_variant(
@@ -581,15 +554,8 @@ impl StateModels {
             single_models,
             alternative_models,
             baked,
-            partials,
             standalone: BTreeMap::new(),
         }
-    }
-    /// A kinetic part's model no blockstate names, baked at these quarter turns about x and y
-    /// (z 0).
-    pub fn partial(&self, model: &str, turns: [u8; 3]) -> Option<&BakedModel> {
-        let i = self.partials.get(&(model.to_owned(), turns, false))?;
-        Some(&self.baked[*i as usize].1)
     }
     /// Bakes `names`, models no blockstate needs to name (vanilla's
     /// standalone models, NeoForge's `ModelEvent.RegisterStandalone`), as

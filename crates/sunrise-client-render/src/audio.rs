@@ -2265,6 +2265,7 @@ impl Audio {
         m.channels.insert(
             id,
             Channel {
+                fx: fx::VoiceFx::default(),
                 samples: Some((samples, rate, 1)),
                 position: 0.0,
                 state: State::Playing,

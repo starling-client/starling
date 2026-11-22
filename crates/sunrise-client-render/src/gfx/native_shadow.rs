@@ -197,7 +197,7 @@ pub fn fitted(device: &wgpu::Device, settings: &Settings) -> Settings {
     Settings {
         resolution: settings
             .resolution
-            .min(super::pack_shadow::shadow_side_limit(
+            .min(sunrise_render_shaderpack::pack_shadow::shadow_side_limit(
                 device.limits().max_texture_dimension_2d,
             )),
         ..settings.clone()

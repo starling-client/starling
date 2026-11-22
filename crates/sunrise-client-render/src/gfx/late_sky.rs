@@ -38,13 +38,13 @@ pub(super) struct LateSky {
 }
 
 impl LateSky {
-    /// `celestial`: the usual pipeline's descriptor. None where the device refuses one of them:
-    /// the sky keeps its usual order.
+    /// `celestial`: the bodies' pipeline at the far plane (`Celestial::late`). None where the device
+    /// refuses one of them: the sky keeps its usual order.
     pub fn new(
         terrain: &TerrainModule<'_>,
         layout: &wgpu::PipelineLayout,
         sunrise: (&[Option<wgpu::VertexBufferLayout<'_>>], wgpu::BlendState),
-        celestial: &wgpu::RenderPipelineDescriptor<'_>,
+        celestial: Option<wgpu::RenderPipeline>,
         stars: &super::stars::Stars,
     ) -> Option<Self> {
         let sky = |label, vertex, fragment, buffers, blend| {
@@ -59,20 +59,7 @@ impl LateSky {
                 sunrise.0,
                 Some(sunrise.1),
             )?,
-            celestial: terrain.kept.try_create_render_pipeline(
-                &wgpu::RenderPipelineDescriptor {
-                    label: Some("Late celestial bodies"),
-                    vertex: wgpu::VertexState {
-                        entry_point: Some("vs_entity_sky"),
-                        ..celestial.vertex.clone()
-                    },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                        ..celestial.depth_stencil.clone()?
-                    }),
-                    ..celestial.clone()
-                },
-            )?,
+            celestial: celestial?,
             stars: stars.late_pipeline(terrain.kept, terrain.format)?,
             dark_disc: sky(
                 "Late dark disc",

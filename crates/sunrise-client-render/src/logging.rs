@@ -390,7 +390,7 @@ impl Writer {
                         && let Err(e) = latest.archive_last_run()
                     {
                         let _ = writeln!(
-                            stderr.lock(),
+                            stderr,
                             "Sunrise: could not archive the last run's log: {e}"
                         );
                     }

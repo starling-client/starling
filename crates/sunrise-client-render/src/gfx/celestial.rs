@@ -105,6 +105,64 @@ impl Celestial {
         Self { added, sun }
     }
 
+    /// Starling: the celestial bodies at the far plane, tested against the depth solid terrain left
+    /// (`late_sky`): `added` with the far-plane vertex entry and a depth test. None where the
+    /// device refuses it, and the sky keeps its usual order.
+    pub(super) fn late(
+        kept: &super::reuse::On<'_>,
+        layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+        vertex: &[Option<wgpu::VertexBufferLayout<'_>>],
+        (format, linear): (wgpu::TextureFormat, bool),
+    ) -> Option<wgpu::RenderPipeline> {
+        use wgpu::{BlendFactor as F, BlendOperation as Op};
+        let component = |src_factor, dst_factor| wgpu::BlendComponent {
+            src_factor,
+            dst_factor,
+            operation: Op::Add,
+        };
+        kept.try_create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Late celestial bodies"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_entity_sky"),
+                compilation_options: Default::default(),
+                buffers: vertex,
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_sky_celestial"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &super::linear_blend::frame_constants(format, linear),
+                    ..Default::default()
+                },
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState {
+                        color: component(F::One, F::One),
+                        alpha: component(F::Zero, F::OneMinusSrcAlpha),
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
     /// The celestial `quads` (each its place in the buffer and what it is), with `added` bound.
     /// In Sunrise's `lifted` world (HDR lighting on the float frame, no pack, not the title) the
     /// sun's quad takes `fs_sky_sun`'s two passes instead.

@@ -27,7 +27,7 @@ impl Renderer {
     /// Adapted from Vasysik/sunrise-android (the cached path of its `Renderer::render`, commit
     /// 77b9e17f76), MIT, copyright (c) 2026 Ludovic Marie and the Horizon contributors.
     #[allow(clippy::too_many_arguments)]
-    fn draw_kept_menu(
+    pub(super) fn draw_kept_menu(
         &mut self,
         frame: &Frame,
         mut encoder: wgpu::CommandEncoder,

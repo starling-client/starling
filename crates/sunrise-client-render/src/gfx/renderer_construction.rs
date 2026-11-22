@@ -968,6 +968,7 @@ impl Renderer {
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
+            emissive_view,
         );
         let terrain_model_sampler = device.create_sampler(&terrain_model::MOVING_BLOCK_SAMPLER);
         let terrain_model_group = terrain_group(
@@ -2312,7 +2313,13 @@ impl Renderer {
                     },
                     &layout,
                     (&sunrise_buffers, sunrise_blend),
-                    &celestial_descriptor,
+                    celestial::Celestial::late(
+                        &kept,
+                        &entity_layout,
+                        &entity_shader,
+                        &entity_vertex,
+                        (frame_format, linear_light),
+                    ),
                     &stars,
                 )
             })
@@ -2324,7 +2331,6 @@ impl Renderer {
             overlay_format,
         );
         let panorama = panorama::Panorama::new(&device, frame_format, panorama_faces, gl);
-        drop(rest_step);
         drop(pipelines_step);
         reuse.finish(generation);
         if previous.is_some() {
@@ -2412,6 +2418,7 @@ impl Renderer {
             visbuf,
             sky,
             late_sky,
+            paced_elsewhere: false,
             late_sky_on,
             sky_base,
             sunrise_pipeline,

@@ -619,7 +619,9 @@ impl Renderer {
                 .contains(wgpu::Features::DEPTH_CLIP_CONTROL);
             let mut light_box = shadow_box(v);
             if clamped {
-                light_box.planes[4] = Vec4::W;
+                let mut planes = *light_box.planes();
+                planes[4] = Vec4::W;
+                light_box = sunrise_render_core::Frustum::from_planes(planes);
             }
             let light = ShadowCull::new(light_box)
                 .with_casters(v.view_casters.then(|| shadow_casters(cull_proj, v.light)))

@@ -135,7 +135,7 @@ fn emit(span: Span) {
     if RECORDING.load(Ordering::Relaxed) {
         let role = if std::thread::current().name() == Some("Server thread") {
             "server"
-        } else if HERE.with(Cell::get) || DIAGNOSTIC_HERE.with(Cell::get) {
+        } else if HERE.with(Cell::get) != 0 || DIAGNOSTIC_HERE.with(Cell::get) {
             "render"
         } else {
             "worker"
@@ -143,7 +143,7 @@ fn emit(span: Span) {
         collect(role, span);
     }
     if enabled()
-        || HERE.with(Cell::get)
+        || HERE.with(Cell::get) != 0
         || timeline::on()
         || (RECORDING.load(Ordering::Relaxed) && DIAGNOSTIC_HERE.with(Cell::get))
     {

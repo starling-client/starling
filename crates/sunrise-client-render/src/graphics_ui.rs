@@ -1320,7 +1320,7 @@ impl Item {
             Item::Vanilla(o) => o.slider_position(s),
             Item::Sunrise(h) => h.slider(s).map(f64::from),
             Item::Display(option) if option.margin_preview().is_some() => {
-                Some(option.value(s) as f32 / option.max() as f32)
+                Some(f64::from(option.value(s)) / f64::from(option.max()))
             }
             Item::Display(_) => None,
             Item::Extra(_) => None,
@@ -1360,7 +1360,7 @@ impl Item {
             Item::Vanilla(o) => crate::options_ui::set_slider(o, s, v),
             Item::Sunrise(h) => h.set_slider(s, v as f32),
             Item::Display(option) if option.margin_preview().is_some() => {
-                option.set(s, (v * option.max() as f32).round() as i32);
+                option.set(s, (v * f64::from(option.max())).round() as i32);
             }
             Item::Display(_) => {}
             Item::Extra(_) => {}

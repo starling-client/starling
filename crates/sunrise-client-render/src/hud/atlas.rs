@@ -92,9 +92,9 @@ pub const GLYPH_ROWS: u32 = 512;
 /// (Apple silicon, RADV and Intel allow 16384; NVIDIA 32768).
 pub const MAX_ATLAS_SIZE: u32 = 16384;
 /// Below this a texture at half size stops being worth what it costs to look at.
-const SMALLEST_SHRUNK_SIDE: u32 = 32;
+pub(super) const SMALLEST_SHRUNK_SIDE: u32 = 32;
 /// The interface's textures shrink only once the others are down to this side.
-const INTERFACE_WAITS_FOR_SIDE: u32 = 64;
+pub(super) const INTERFACE_WAITS_FOR_SIDE: u32 = 64;
 /// A side of a GPU's largest texture, once the renderer has found the GPU; 0 before.
 static GPU_TEXTURE_SIDE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// The renderer's word on what the GPU takes, which the atlas is packed within.
@@ -104,7 +104,7 @@ pub fn set_gpu_texture_side(side: u32) {
 /// The most an atlas may measure a side. On a phone the renderer finds the GPU while the atlas
 /// loads, and the small GPUs are there, so this waits for its word (not for ever: it only asks
 /// the driver); elsewhere a GPU not found yet counts as one that takes the most.
-fn atlas_limit() -> u32 {
+pub(super) fn atlas_limit() -> u32 {
     let side = || GPU_TEXTURE_SIDE.load(std::sync::atomic::Ordering::Relaxed);
     if cfg!(target_os = "android") {
         let start = std::time::Instant::now();
@@ -119,7 +119,7 @@ fn atlas_limit() -> u32 {
 }
 /// `image` at half its size, by every other texel: no new colors or alpha, so what was cut out
 /// stays cut out.
-fn halved((name, w, h, data): &PackedImage) -> PackedImage {
+pub(super) fn halved((name, w, h, data): &PackedImage) -> PackedImage {
     let (half_w, half_h) = (w.div_ceil(2), h.div_ceil(2));
     let mut half = Vec::with_capacity((half_w * half_h * 4) as usize);
     for y in 0..half_h {
@@ -156,7 +156,7 @@ pub const PACK_ICON_SLOTS: usize = 64;
 pub const PACK_ICON_SIZE: u32 = 128;
 // Bake the settings glyph into its plate: drawing a translucent glyph over
 // a translucent plate changes its effective alpha and darkens it twice.
-fn android_utility_sprites(images: &[PackedImage]) -> Vec<PackedImage> {
+pub(super) fn android_utility_sprites(images: &[PackedImage]) -> Vec<PackedImage> {
     const GEAR: [&str; 13] = [
         ".....###.....",
         "..##.###.##..",
@@ -522,7 +522,7 @@ pub fn touch_sprite_names() -> impl Iterator<Item = &'static str> {
 }
 
 /// [`TOUCH_SPRITES`] a pack has not drawn already (a pack's `starling:touch/jump` wins).
-fn builtin_touch_sprites(images: &[PackedImage]) -> Vec<PackedImage> {
+pub(super) fn builtin_touch_sprites(images: &[PackedImage]) -> Vec<PackedImage> {
     TOUCH_SPRITES
         .iter()
         .filter_map(|(name, png)| {

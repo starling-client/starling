@@ -433,17 +433,17 @@ impl Opt {
     pub(crate) fn kind(self, s: &Settings) -> Kind {
         let unit = |v: f64, lo: f64, hi: f64| Kind::Slider(((v - lo) / (hi - lo)).clamp(0.0, 1.0));
         match self {
-            Opt::TouchCircleSize => unit(s.touch.circle_size, 16.0, 64.0),
-            Opt::TouchDynamicAreaX => unit(s.touch.dynamic_area_x, 0.0, 1.0),
-            Opt::TouchDynamicAreaY => unit(s.touch.dynamic_area_y, 0.0, 1.0),
-            Opt::TouchHorizontalMargin => unit(s.touch.horizontal_margin, 0.0, 0.12),
-            Opt::TouchVerticalMargin => unit(s.touch.vertical_margin, 0.0, 0.12),
-            Opt::AndroidGyroSensitivity => unit(s.touch.gyro_sensitivity, 0.1, 3.0),
-            Opt::TouchSensitivity => unit(s.touch.sensitivity, 0.1, 3.0),
-            Opt::TouchSensitivityHorizontal => unit(s.touch.sensitivity_horizontal, 0.1, 3.0),
-            Opt::TouchSensitivityVertical => unit(s.touch.sensitivity_vertical, 0.1, 3.0),
-            Opt::TouchMouseSensitivity => unit(s.touch.virtual_mouse_sensitivity, 0.25, 3.0),
-            Opt::TouchButtonScale => unit(s.touch.button_scale, 0.5, 2.0),
+            Opt::TouchCircleSize => unit(f64::from(s.touch.circle_size), 16.0, 64.0),
+            Opt::TouchDynamicAreaX => unit(f64::from(s.touch.dynamic_area_x), 0.0, 1.0),
+            Opt::TouchDynamicAreaY => unit(f64::from(s.touch.dynamic_area_y), 0.0, 1.0),
+            Opt::TouchHorizontalMargin => unit(f64::from(s.touch.horizontal_margin), 0.0, 0.12),
+            Opt::TouchVerticalMargin => unit(f64::from(s.touch.vertical_margin), 0.0, 0.12),
+            Opt::AndroidGyroSensitivity => unit(f64::from(s.touch.gyro_sensitivity), 0.1, 3.0),
+            Opt::TouchSensitivity => unit(f64::from(s.touch.sensitivity), 0.1, 3.0),
+            Opt::TouchSensitivityHorizontal => unit(f64::from(s.touch.sensitivity_horizontal), 0.1, 3.0),
+            Opt::TouchSensitivityVertical => unit(f64::from(s.touch.sensitivity_vertical), 0.1, 3.0),
+            Opt::TouchMouseSensitivity => unit(f64::from(s.touch.virtual_mouse_sensitivity), 0.25, 3.0),
+            Opt::TouchButtonScale => unit(f64::from(s.touch.button_scale), 0.5, 2.0),
 
             Opt::ModSetting(i, j) => {
                 Kind::Slider(mod_setting(s, i, j).map_or(0.0, |m| f64::from(m.value.fraction())))
@@ -1149,17 +1149,17 @@ impl Opt {
         let v = v.clamp(0.0, 1.0);
         let step = |lo: f64, hi: f64| (lo + v * (hi - lo)).round();
         match self {
-            Opt::TouchCircleSize => s.touch.circle_size = step(16.0, 64.0),
-            Opt::TouchDynamicAreaX => s.touch.dynamic_area_x = (v * 100.0).round() / 100.0,
-            Opt::TouchDynamicAreaY => s.touch.dynamic_area_y = (v * 100.0).round() / 100.0,
-            Opt::TouchHorizontalMargin => s.touch.horizontal_margin = (v * 120.0).round() / 1000.0,
-            Opt::TouchVerticalMargin => s.touch.vertical_margin = (v * 120.0).round() / 1000.0,
-            Opt::AndroidGyroSensitivity => s.touch.gyro_sensitivity = 0.1 + v * 2.9,
-            Opt::TouchSensitivity => s.touch.sensitivity = 0.1 + v * 2.9,
-            Opt::TouchSensitivityHorizontal => s.touch.sensitivity_horizontal = 0.1 + v * 2.9,
-            Opt::TouchSensitivityVertical => s.touch.sensitivity_vertical = 0.1 + v * 2.9,
-            Opt::TouchMouseSensitivity => s.touch.virtual_mouse_sensitivity = 0.25 + v * 2.75,
-            Opt::TouchButtonScale => s.touch.button_scale = 0.5 + v * 1.5,
+            Opt::TouchCircleSize => s.touch.circle_size = (step(16.0, 64.0)) as f32,
+            Opt::TouchDynamicAreaX => s.touch.dynamic_area_x = ((v * 100.0).round() / 100.0) as f32,
+            Opt::TouchDynamicAreaY => s.touch.dynamic_area_y = ((v * 100.0).round() / 100.0) as f32,
+            Opt::TouchHorizontalMargin => s.touch.horizontal_margin = ((v * 120.0).round() / 1000.0) as f32,
+            Opt::TouchVerticalMargin => s.touch.vertical_margin = ((v * 120.0).round() / 1000.0) as f32,
+            Opt::AndroidGyroSensitivity => s.touch.gyro_sensitivity = (0.1 + v * 2.9) as f32,
+            Opt::TouchSensitivity => s.touch.sensitivity = (0.1 + v * 2.9) as f32,
+            Opt::TouchSensitivityHorizontal => s.touch.sensitivity_horizontal = (0.1 + v * 2.9) as f32,
+            Opt::TouchSensitivityVertical => s.touch.sensitivity_vertical = (0.1 + v * 2.9) as f32,
+            Opt::TouchMouseSensitivity => s.touch.virtual_mouse_sensitivity = (0.25 + v * 2.75) as f32,
+            Opt::TouchButtonScale => s.touch.button_scale = (0.5 + v * 1.5) as f32,
 
             Opt::ChatDelay => s.chat_delay = values::from_slider(v),
             Opt::FovEffects | Opt::DarknessPulsing => s.file.set(
@@ -4476,8 +4476,6 @@ impl OptionsUi {
                 // SkinCustomizationScreen: the seven layers, then Main Hand; in the game's own
                 // options, the player's name and skin before them.
                 let mut opts: Vec<Opt> = (0..MODEL_PART_KEYS.len()).map(Opt::ModelPart).collect();
-                // Sunrise's own: the outer layer as real pixels, not one box.
-                opts.push(Opt::SkinLayers3d);
                 opts.push(Opt::MainHand);
                 let layers = pairs(&opts);
                 if !self.skin_page {
@@ -5393,7 +5391,7 @@ impl OptionsUi {
         self.framebuffer = framebuffer;
         let mut events = Vec::new();
         if !right && self.painting() && self.painter.press(x, y, drag) {
-            return events;
+            return (events, true);
         }
         if !drag
             && matches!(
@@ -6071,7 +6069,7 @@ impl OptionsUi {
         }
         if matches!(
             self.page(),
-            Page::Packs | Page::SplitSetup | Page::SplitProfiles | Page::HdrCalibration
+            Page::Packs | Page::HdrCalibration
         ) {
             return false;
         }

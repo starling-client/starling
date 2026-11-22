@@ -135,7 +135,7 @@ impl HudBatch {
                     offset: 1.0,
                 }
             } else {
-                font.glyph_varied(ch, style, take_seed(x, y, i))
+                font.glyph_varied(ch, style, super::batch::take_seed(x, y, i))
             };
             // Font.StringRenderOutput.accept: obfuscated characters draw a
             // random glyph of the same width each frame.

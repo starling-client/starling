@@ -509,6 +509,8 @@ pub struct Renderer {
     pub(crate) readback: readback::Readback,
     pub info: wgpu::AdapterInfo,
     pub suspended: bool,
+    /// The caller waits for the GPU itself (`wait_in_flight`) once it has submitted everything.
+    pub paced_elsewhere: bool,
     /// Suspended without a window at all (`suspend`), not just minimized.
     pub detached: bool,
     /// Consecutive frames whose surface acquisition failed validation. The

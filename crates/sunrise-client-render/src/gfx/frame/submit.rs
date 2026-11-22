@@ -104,7 +104,7 @@ impl Renderer {
                 Some(copy_frame(&self.device, &mut encoder, &texture, size))
             });
         let first_frame = self.first_frame == FirstFrame::Submit;
-        if flat_frame && let Some(flat) = &mut self.flat {
+        if let Some(flat) = &mut self.flat {
             // From here the encoder is submitted either locally or in queue order.
             flat.submitted();
         }

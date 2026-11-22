@@ -888,7 +888,7 @@ impl PackScreen {
             }
         }
         if self.on_catalog(x, y) {
-            return Action::Catalog;
+            return (Action::Catalog, true);
         }
         (Action::None, false)
     }

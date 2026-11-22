@@ -54,7 +54,7 @@ fn clip_polygon(poly: &[HudVertex], axis: usize, limit: f32, keep_below: bool) -
 }
 /// Which take of a letter a hand-written font draws at the `i`th character of text at `x, y`:
 /// the same each frame for text that stays put.
-fn take_seed(x: f32, y: f32, i: usize) -> u32 {
+pub(super) fn take_seed(x: f32, y: f32, i: usize) -> u32 {
     let mut h = (x.round() as i32 as u32).wrapping_mul(0x9e37_79b9)
         ^ (y.round() as i32 as u32).wrapping_mul(0x85eb_ca6b)
         ^ (i as u32).wrapping_mul(0xc2b2_ae35);
