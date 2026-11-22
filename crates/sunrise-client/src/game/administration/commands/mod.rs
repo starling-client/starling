@@ -250,8 +250,6 @@ impl Game<'_> {
     /// Commands.performCommand for a line without its slash. A client mod's
     /// `command` hook is the caller's: this also runs on a server.
     pub(super) fn run_command(&mut self, command: &str) -> bool {
-        // Starling: the line, for the old mod command hook (native_compat.rs).
-        crate::game::native_compat::set_command_line(command);
         let d = self.ui.dispatcher.0.clone();
         let parse = d.parse(command, &self.ui.registries);
         let result = match parse.executable() {

@@ -273,6 +273,7 @@ pub fn trust_and_capabilities(id: &str) -> Vec<String> {
     if let Some(v) = p.versions.first().filter(|_| p.kind == index::Kind::Mod) {
         lines.extend(
             v.capabilities
+                .known()
                 .iter()
                 .map(|c| format!("May {}", c.describe())),
         );
@@ -429,7 +430,7 @@ impl Source for Registry {
         let mut body = p.description.clone();
         if let Some(v) = newest.filter(|v| !v.capabilities.is_empty()) {
             body.push_str("\n\n## What it may do\n\n");
-            for c in &v.capabilities {
+            for c in v.capabilities.known() {
                 body.push_str(&format!("- May {}\n", c.describe()));
             }
         }
@@ -442,7 +443,7 @@ impl Source for Registry {
                     .project(&r.id)
                     .and_then(|m| Some((m, m.versions.iter().find(|w| w.version == r.version)?)));
                 let Some((m, w)) = found else { continue };
-                let may: Vec<&str> = w.capabilities.iter().map(|c| c.describe()).collect();
+                let may: Vec<&str> = w.capabilities.known().iter().map(|c| c.describe()).collect();
                 let may = match may.is_empty() {
                     true => String::new(),
                     false => format!(": may {}", may.join(", ")),

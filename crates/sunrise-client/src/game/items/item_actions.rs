@@ -57,14 +57,6 @@ impl Game<'_> {
             _ if self.entity_targeted() => None,
             _ => self.pick(),
         };
-        // A content mod's crank takes the use: held, it turns (game/kinetics.rs), and nothing is
-        // placed against it.
-        if block_hit
-            .as_ref()
-            .is_some_and(|h| self.kinetic_crank_at(h.pos))
-        {
-            return Ok(Some(Hand::Main));
-        }
         let hands = match guest {
             Some(
                 GuestUse::OnBlock { hand, .. } | GuestUse::Item(hand) | GuestUse::Entity(hand, _),
@@ -155,10 +147,6 @@ impl Game<'_> {
                     location,
                     &mut claimed,
                 );
-            }
-            // Starling: the old hook, for the mods made for it (native_compat.rs).
-            if !claimed {
-                self.native_interact_entity(id, &kind, stack.as_ref(), &mut claimed);
             }
             if claimed {
                 self.swing_arm();

@@ -19,13 +19,6 @@ impl ClientSession for Game<'_> {
     fn client_frame_stats(&self) -> Option<ClientFrameStats> {
         self.native_client_frame_stats()
     }
-    fn client_tab_list(&self) -> Option<ClientTabList> {
-        mod_api::__private::check_access(
-            "client_tab_list",
-            mod_api::__private::LoadAccess::ClientSetup,
-        );
-        self.native_client_tab_list()
-    }
 }
 impl Commands for Game<'_> {
     fn refresh_commands(&mut self) {

@@ -276,17 +276,15 @@ pub(super) fn content_root_with_conditions(
     cache: &std::path::Path,
     inventory: &sunrise_mod_package::enabled::EnabledMods,
     sources: &super::mods::ModsState,
-    on_build: &mut dyn FnMut(),
 ) -> sunrise_client::Result<std::path::PathBuf> {
     let conditions = conditions_for_mods(sources, inventory)?;
-    sunrise_client::mod_content::resource_root_noting_build(
+    sunrise_client::mod_content::resource_root_with_conditions(
         root,
         jars,
         mods,
         cache,
         inventory,
         &conditions,
-        on_build,
     )
 }
 

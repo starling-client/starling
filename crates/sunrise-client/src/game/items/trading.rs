@@ -726,7 +726,7 @@ impl Game<'_> {
         else {
             return;
         };
-        let (_, oy) = self.inventory_origin(&self.interface_batch(size));
+        let (_, oy) = self.inventory_origin(&HudBatch::new(size, self.settings.gui_scale_inputs()));
         let y = self.cursor.1 - oy;
         if let Some(m) = self.station.as_mut().and_then(|s| s.merchant.as_mut())
             && m.dragging

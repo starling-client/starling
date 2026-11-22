@@ -303,54 +303,7 @@ pub(super) fn load_world_rest(
         threads
     );
     progress.set(8);
-    // Content mods' kinetic blocks (none without them): their networks (game/kinetics.rs).
-    let kinetics =
-        sunrise_client::kinetics::KineticTable::load(root, registry).unwrap_or_else(|e| {
-            log::warn!("Sunrise: kinetic parts not loaded: {e}");
-            Default::default()
-        });
-    // Create's basin recipes, with the crafting ones a mixer or a press takes (game/basins.rs).
-    let basin_recipes = if kinetics.is_empty() {
-        basins::BasinRecipes::default()
-    } else {
-        let crafting: Vec<basins::CraftingRecipe> = recipes
-            .crafting
-            .iter()
-            .filter_map(|(_, r)| {
-                use sunrise_client::crafting::Recipe as R;
-                let set = |i: &sunrise_client::crafting::Ingredient| {
-                    i.items.iter().map(|s| Arc::from(s.as_str())).collect()
-                };
-                let (shapeless, ingredients, result) = match r {
-                    R::Shapeless {
-                        ingredients,
-                        result,
-                    } => (true, ingredients.iter().map(set).collect(), result),
-                    R::Shaped { cells, result, .. } => {
-                        (false, cells.iter().flatten().map(set).collect(), result)
-                    }
-                    R::Special(_) | R::Mod(_) => return None,
-                };
-                Some(basins::CraftingRecipe {
-                    shapeless,
-                    ingredients,
-                    result: result.item.clone()?,
-                    count: result.count,
-                })
-            })
-            .collect();
-        let fluid_tags = basins::fluid_tags(root);
-        basins::BasinRecipes::load(
-            root,
-            &|t| items.item_tag_order.get(t).cloned().unwrap_or_default(),
-            &|t| fluid_tags.get(t).cloned().unwrap_or_default(),
-            &crafting,
-        )
-    };
     Ok(WorldRest {
-        kinetics,
-        basin_recipes,
-        create_recipes: kinetic_machines::Recipes::load(root, &items),
         stations,
         items: Arc::new(items),
         recipes,

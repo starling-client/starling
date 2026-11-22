@@ -10,9 +10,6 @@ use super::{
     scheduled_tasks::{ScheduledTasks, ServerTask, dispose_pending_task, report_failure, run_all},
 };
 use mod_api::{ScheduleError, TaskId};
-// Starling: the old name mods made for the old hooks use (native_compat.rs).
-#[allow(unused_imports)]
-pub use sunrise_client::starling_mod_api::NativeLifecycleContext;
 // Their old home, for mixin code that names them here.
 pub(super) use mod_api::{
     Authority, LifecycleContext, ServerTickPhase, TickId, WorldEpoch, WorldPhase,

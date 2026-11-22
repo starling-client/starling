@@ -580,7 +580,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map_or([1, 1], |r| [r.config.width, r.config.height]);
-        let b = self.interface_batch(size);
+        let b = HudBatch::new(size, self.settings.gui_scale_inputs());
         let fallback;
         let buttons = match self.built_command_block(b.width, b.height) {
             Some(layout) => &layout.buttons,
@@ -640,7 +640,6 @@ impl Game<'_> {
         shortcut: Option<sunrise_client::clipboard::EditShortcut>,
         text: Option<&str>,
     ) {
-        // The keys the player holds, not those Toggle Sprint and Toggle Sneak hold.
         let ctrl = self.has_control_down_with_quirk();
         let shift = self.has_shift_down();
         // Windows' AltGr is Ctrl+Alt, and its characters still type.
@@ -674,34 +673,13 @@ impl Game<'_> {
         }
         match key {
             KeyCode::Escape => self.close_command_block(),
-            KeyCode::Enter | KeyCode::NumpadEnter => self.command_block_done(),
+            KeyCode::Enter | KeyCode::NumpadEnter => {
+                if let Some(s) = self.command_block_screen.take() {
+                    self.set_command_block(&s);
+                }
+                self.close_command_block();
+            }
             _ => {}
-        }
-    }
-    /// Enter, as Done: the command block set, the screen closed.
-    pub(super) fn command_block_done(&mut self) {
-        if let Some(s) = self.command_block_screen.take() {
-            self.set_command_block(&s);
-        }
-        self.close_command_block();
-    }
-    /// The command box, for the on-screen keyboard's editor (game/touch/text_mirror.rs).
-    pub(super) fn command_box(&mut self) -> Option<&mut sunrise_client::screen_draw::TextField> {
-        self.command_block_screen
-            .as_mut()
-            .map(|s| &mut s.command.input)
-    }
-    /// The on-screen keyboard's editor's text and selection on the command
-    /// box, through the box's own typing (its filter and limit hold) and with
-    /// its suggestions following.
-    pub(super) fn command_block_set_text(&mut self, text: &str, cursor: usize, anchor: usize) {
-        let m = Measure(&self.gui.atlas.font);
-        let c = Commands {
-            dispatcher: super::chat::chat_tree(&self.remote),
-            registries: &self.ui.registries,
-        };
-        if let Some(s) = self.command_block_screen.as_mut() {
-            s.command.set_text(&m, &c, text, cursor, anchor);
         }
     }
     /// Characters typed into the command box (`StringUtil.isAllowedChatCharacter`).

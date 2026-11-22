@@ -2510,18 +2510,6 @@ impl Game<'_> {
         let models = models.into_iter().map(|(_, model)| model);
         self.baked_model_vertices(models, m, light, diffuse, tint, out);
     }
-    /// One baked model's faces at one light, untinted: what the Create parts' draws
-    /// (game/kinetics.rs) use.
-    pub(super) fn baked_model_lit(
-        &self,
-        model: &sunrise_client::models::catalog::BakedModel,
-        m: glam::Mat4,
-        light: u32,
-        diffuse: bool,
-        out: &mut Vec<Vertex>,
-    ) {
-        self.baked_model_vertices([model], m, |_| light, diffuse, |_| None, out);
-    }
     /// `tinted_block_model_vertices` for baked models given as they are (a
     /// state's, or a standalone model).
     pub(super) fn baked_model_vertices<'m>(
@@ -3140,18 +3128,18 @@ pub(super) fn emit_model_faces(
     tint: impl Fn(i32) -> Option<u32>,
     out: &mut Vec<Vertex>,
 ) {
+    use sunrise_assets::model::Direction as D;
     let mut normals = sunrise_client::item_render::FaceNormals::new(m);
     for (quad, light) in faces {
-        let n = normals.face(quad.facing);
+        let shade: u32 = match quad.facing {
+            D::Up => 255,
+            D::Down => 127,
+            D::North | D::South => 204,
+            D::West | D::East => 153,
+        };
         let mut color = if diffuse {
             u32::MAX
         } else {
-            // The terrain's shade of the face as it points now, so a turning part's faces
-            // darken and lighten as they go round: 1 up, 0.5 down, 0.8 north and south,
-            // 0.6 east and west, blended between (a face that does not turn keeps its own).
-            let s =
-                n.x * n.x * 0.6 + n.y * n.y * if n.y > 0.0 { 1.0 } else { 0.5 } + n.z * n.z * 0.8;
-            let shade = ((s * 255.0 + 0.001) as u32).min(255);
             0xFF00_0000 | shade << 16 | shade << 8 | shade
         };
         if let Some(t) = tint(quad.tint_index) {
@@ -3159,8 +3147,10 @@ pub(super) fn emit_model_faces(
                 sunrise_client::hud_layout::multiply(color, sunrise_client::mobs::render::abgr(t));
         }
         let normal = if diffuse {
-            let n = n.to_array().map(|v| (v.clamp(-1.0, 1.0) * 127.0) as i8);
-
+            let n = normals
+                .face(quad.facing)
+                .to_array()
+                .map(|v| (v.clamp(-1.0, 1.0) * 127.0) as i8);
             [n[0], n[1], n[2], 127]
         } else {
             [0; 4]

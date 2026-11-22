@@ -47,7 +47,7 @@ const MAX: u64 = 1 << 30;
 /// be a handshake per file, and a modpack brings hundreds.
 pub(super) fn agent(url: &str) -> ureq::Agent {
     let spec = crate::ha_launcher::proxy::spec_for(url);
-    sunrise_port_pack::net::keep("browser", spec.as_deref(), |proxy| {
+    crate::ha_launcher::port_net::keep("browser", spec.as_deref(), |proxy| {
         let builder = ureq::AgentBuilder::new()
             .user_agent(&format!(
                 "horizon-rust/horizon sunrise-launcher/{} (github.com/horizon-rust/horizon)",

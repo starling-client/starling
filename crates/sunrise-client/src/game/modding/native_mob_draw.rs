@@ -10,9 +10,6 @@
 //! [`Game::render_canceled`], which the frame's entity pass starts afresh. The flames of a burning
 //! entity and its shadow are queued by the frame after the entity's drawing and stay (#1285).
 pub use mod_api::game::{MobRender, PlayerRender};
-// Starling: the old names mods made for the old hooks use (native_compat.rs).
-#[allow(unused_imports)]
-pub use sunrise_client::starling_mod_api::{NativeMobRender, NativePlayerRender};
 
 use super::{Game, native_block_entity_draw::BlockEntityDraw};
 use glam::{DVec3, Mat4};

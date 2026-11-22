@@ -218,10 +218,6 @@ impl Game<'_> {
     /// `Player.rideTick` for a server player, before its moves this tick:
     /// it stays in its seat, steers its minecart, or gets out.
     pub(super) fn guest_vehicle_tick(&mut self, conn: u32) {
-        // Starling: the old hook first, which may stop the tick (native_compat.rs).
-        if !self.old_guest_vehicle_tick_went_on(conn) {
-            return;
-        }
         let Some(host) = self.lan.as_ref() else {
             return;
         };

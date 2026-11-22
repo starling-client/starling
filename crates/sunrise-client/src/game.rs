@@ -1341,8 +1341,6 @@ mod mobile_controls;
 mod mod_catalog;
 #[path = "game/starling/native_builds.rs"]
 mod native_builds;
-#[path = "game/starling/native_compat.rs"]
-mod native_compat;
 #[path = "game/starling/own_skin.rs"]
 mod own_skin;
 #[path = "game/starling/perf.rs"]

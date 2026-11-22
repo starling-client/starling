@@ -30,6 +30,7 @@ pub(crate) mod shader_catalog;
 // Sunrise's desktop launcher's catalog search, downloads and skins, as Sunrise Android shared them
 // (launcher/src at v0.7.8).
 pub(crate) mod browser;
+pub(crate) mod port_net;
 pub(crate) mod proxy;
 pub(crate) mod skins;
 // Starling's accounts under the names Sunrise's launcher gave them (account.rs).

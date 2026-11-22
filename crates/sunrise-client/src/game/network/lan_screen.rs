@@ -1630,18 +1630,6 @@ impl Game<'_> {
                 || (o.port.focused && o.view == View::Options)
         })
     }
-    /// The game rules' screen while it is open, for the keyboard's editor on Android
-    /// (touch/text_mirror.rs).
-    pub(super) fn world_rules(&mut self) -> Option<&mut RulesScreen> {
-        self.world_options.as_mut()?.rules.as_mut()
-    }
-    /// The LAN port's box while it takes the keys, for the keyboard's editor on Android.
-    pub(super) fn world_options_port(&mut self) -> Option<&mut EditBox> {
-        match self.world_options.as_mut() {
-            Some(o) if o.port.focused && o.view == View::Options => Some(&mut o.port),
-            _ => None,
-        }
-    }
     /// Digits typed into the port field (the keyboard, or a controller's
     /// on-screen keyboard), and its backspace.
     pub(super) fn world_options_text(&mut self, text: Option<&str>) {

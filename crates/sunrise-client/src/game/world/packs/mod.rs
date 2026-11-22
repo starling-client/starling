@@ -25,9 +25,11 @@ use sunrise_client::{
     text::{Style, Text},
 };
 
-/// Where overlay roots are built (beside options.txt, or in the private folder: `logging::cache_dir`).
+/// Where overlay roots are built (beside options.txt).
 pub fn cache_dir() -> PathBuf {
-    sunrise_client::logging::cache_dir().join("resourcepacks")
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join(".sunrise-cache/resourcepacks")
 }
 pub fn packs_dir() -> PathBuf {
     std::env::current_dir()
@@ -36,20 +38,12 @@ pub fn packs_dir() -> PathBuf {
 }
 /// `Blaze3D.openPath`: the desktop's handler on the folder (the default file manager).
 pub fn open_folder(dir: &Path) {
-    // Android's file manager, through the activity.
-    if sunrise_client::platform::open_folder(dir).is_some() {
-        return;
-    }
     if let Err(e) = sunrise_client::desktop::open_path(dir) {
         log::warn!("Sunrise: could not open {}: {e}", dir.display());
     }
 }
 /// `Blaze3D.openUri`: the system browser on the link.
 pub fn open_uri(uri: &str) {
-    // Android's browser, through the activity.
-    if sunrise_client::platform::open_link(uri).is_some() {
-        return;
-    }
     if let Err(error) = sunrise_client::desktop::open_uri(uri) {
         log::warn!("Sunrise: could not open URI {uri}: {error}");
     }
@@ -727,9 +721,9 @@ impl Game<'_> {
 }
 
 /// The CPU half of a pack reload (`PackReload` runs it on a worker;
-/// `apply_staged_pack` does the GPU half and the swap): the overlay root, the
-/// models and sprites, the menu bundle, the pack's tables and its CPU mip
-/// chains, the sounds, armour, villager hats, waypoint styles and language.
+/// `apply_staged_pack` does the GPU half and the swap): the overlay
+/// root, the models and sprites, the menu bundle, the pack's tables and its
+/// CPU mip chains.
 pub(super) fn stage_pack(
     vanilla_root: &Path,
     selected: &[String],

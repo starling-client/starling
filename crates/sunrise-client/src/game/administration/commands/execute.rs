@@ -253,8 +253,6 @@ impl Game<'_> {
     /// Run one command line with `source` (no error reporting): the entry
     /// for functions and `execute run`.
     pub(in crate::game) fn execute_line(&mut self, line: &str, source: Source) -> R<i32> {
-        // Starling: the line, for the old mod command hook (native_compat.rs).
-        crate::game::native_compat::set_command_line(line);
         let d = self.ui.dispatcher.0.clone();
         let parse = d.parse(line, &self.ui.registries);
         let (ctx, _) = parse.executable()?;

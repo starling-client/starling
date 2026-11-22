@@ -110,12 +110,6 @@ pub(super) struct ServerPackState {
     /// One error toast per `(hook, mod)` whose callback panicked and was disabled for the session.
     pub(super) hook_panics: Vec<(Option<SystemToast>, bool)>,
 }
-impl ServerPackState {
-    /// The prompt shows: it takes the back key and the touch controls' screen state.
-    pub(super) fn prompting(&self) -> bool {
-        self.prompt.is_some()
-    }
-}
 /// `DownloadedPackSource.createDownloadNotifier`: one batch's progress in its
 /// own `SystemToast`.
 struct PackNotifier {

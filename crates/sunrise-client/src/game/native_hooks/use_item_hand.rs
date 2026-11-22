@@ -78,14 +78,6 @@ impl Game<'_> {
     /// Dispatch the item Part and apply the result on this logical side.
     pub(in crate::game) fn use_item_in_hand(&mut self, stack: &ItemStack) -> Option<bool> {
         use mod_api::InteractionResult as Result;
-        // Starling: the old hook first, for the mods made for it (native_compat.rs): a claimed
-        // use swings the hand.
-        let mut claimed = false;
-        self.native_use_item_old(stack, &mut claimed);
-        if claimed {
-            self.swing_arm();
-            return Some(true);
-        }
         let mut result = None;
         if mod_api::__private::has_part_hook(mod_api::HookId::UseItem)
             && let Ok(snapshot) = stack.try_into_api()

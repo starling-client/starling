@@ -3,10 +3,7 @@
 use super::{Game, remote::Remote};
 #[cfg(test)]
 use mod_api::prelude::*;
-use mod_api::{
-    BlockBreakingState, BlockPos, ClientFrameStats, ClientServer, ClientTabList,
-    ClientTabListEntry, PlayerRef,
-};
+use mod_api::{BlockBreakingState, BlockPos, ClientFrameStats, ClientServer, PlayerRef};
 use std::sync::Arc;
 
 impl Game<'_> {
@@ -115,39 +112,6 @@ impl Game<'_> {
                 .latest()
                 .and_then(|time| u64::try_from(time).ok()),
         })
-    }
-
-    /// `PlayerTabOverlay`'s list, shown or not: the listed players in `getPlayerInfos` order (at
-    /// most 80), each with the name `getNameForDisplay` draws, and the header and footer.
-    /// None outside a logged-in client world.
-    pub(super) fn native_client_tab_list(&self) -> Option<ClientTabList> {
-        use super::api_values::TryIntoApi;
-        use sunrise_client::tab_list;
-        let players: Vec<_> = self
-            .native_session()?
-            .listed_tab_players()
-            .cloned()
-            .collect();
-        let board = &self.score.board;
-        let entries = tab_list::sorted_players(&players, board)
-            .into_iter()
-            .map(|p| {
-                let display = tab_list::name_for_display(p, board)
-                    .try_into_api()
-                    .unwrap_or_else(|_| mod_api::Text::literal(p.name.clone()));
-                // `GameType.byId`: an unknown id is survival.
-                let mode =
-                    mod_api::GameMode::from_id(p.game_mode).unwrap_or(mod_api::GameMode::Survival);
-                ClientTabListEntry::new(p.name.clone(), p.uuid, mode, p.latency, display)
-            })
-            .collect();
-        let text =
-            |t: &Option<sunrise_client::text::Text>| t.as_ref().and_then(|t| t.try_into_api().ok());
-        Some(ClientTabList::new(
-            entries,
-            text(&self.tab_list.header),
-            text(&self.tab_list.footer),
-        ))
     }
 
     pub(super) fn native_local_status(&self, player: PlayerRef) -> Option<()> {

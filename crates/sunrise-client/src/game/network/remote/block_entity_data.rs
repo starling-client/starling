@@ -12,20 +12,6 @@ impl Game<'_> {
         source: BlockEntityDataSource,
         tag: &Tag,
     ) {
-        // Starling: a content mod's machine (kinetics.rs). Its tag is kept as the chunk keeps the
-        // block entities it does not model, for the window to draw what the machine holds.
-        if kind == sunrise_client::lan::chunks::MACHINE_ENTITY_TYPE {
-            if let Tag::Compound(fields) = tag
-                && !fields.is_empty()
-            {
-                let mut full = fields.clone();
-                for (k, v) in ["x", "y", "z"].into_iter().zip(pos) {
-                    full.insert(k.into(), Tag::Int(v));
-                }
-                crate::game::spill::put_saved_entity(&mut self.world, pos, Tag::Compound(full));
-            }
-            return;
-        }
         let key = (pos[0], pos[1], pos[2]);
         let Some(name) = self
             .remote

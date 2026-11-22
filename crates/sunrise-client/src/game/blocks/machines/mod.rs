@@ -1103,104 +1103,6 @@ impl Game<'_> {
         }
         rest
     }
-
-    /// Starling (Create's funnels): the item handler at `pos` seen from `face` taking `stack`
-    /// (`ItemHandlerHelper.insertItemStacked`): a machine's (processing.rs) or a container's as a
-    /// hopper fills it. None when nothing there holds items; else what did not go in.
-    pub(in crate::game) fn inventory_insert(
-        &mut self,
-        pos: [i32; 3],
-        face: Direction,
-        stack: ItemStack,
-    ) -> Option<Option<ItemStack>> {
-        if let Some(rest) = self.machine_insert(pos, stack.clone()) {
-            return Some(rest);
-        }
-        let view = self.containers().view((pos[0], pos[1], pos[2]), false)?;
-        Some(self.add_item(None, &view, stack, Some(face)))
-    }
-
-    /// Starling (Create's chutes): whether a container (a block entity with slots, or a double
-    /// chest) is at `pos`.
-    pub(in crate::game) fn has_container(&self, pos: [i32; 3]) -> bool {
-        self.containers()
-            .view((pos[0], pos[1], pos[2]), false)
-            .is_some()
-    }
-
-    /// Starling (Create's funnels): `ItemHelper.extract` up to `max` of the first item the
-    /// handler at `pos` gives from `face` (`ExtractionCountMode.UPTO`). None when nothing there
-    /// holds items; else what came out, if anything.
-    pub(in crate::game) fn inventory_extract(
-        &mut self,
-        pos: [i32; 3],
-        face: Direction,
-        max: u32,
-    ) -> Option<Option<ItemStack>> {
-        if self.machine_kind(pos).is_some() {
-            let mut out: Option<ItemStack> = None;
-            while out.as_ref().is_none_or(|o| o.count < max) {
-                let Some(Some(one)) = self.machine_take_one(pos) else {
-                    break;
-                };
-                match &mut out {
-                    Some(o) if o.same_item_same_components(&one) => o.count += 1,
-                    Some(_) => {
-                        // Another item: back where it came from.
-                        let _ = self.machine_insert(pos, one);
-                        break;
-                    }
-                    None => out = Some(one),
-                }
-            }
-            return Some(out);
-        }
-        let view = self.containers().view((pos[0], pos[1], pos[2]), false)?;
-        let mut out: Option<ItemStack> = None;
-        for slot in view.slots_for_face_iter(Some(face)) {
-            let Some(stack) = self.containers().get(&view, slot).cloned() else {
-                continue;
-            };
-            if !self.containers().can_take(&view, slot, &stack, face) {
-                continue;
-            }
-            if out
-                .as_ref()
-                .is_some_and(|o| !o.same_item_same_components(&stack))
-            {
-                continue;
-            }
-            let have = out.as_ref().map_or(0, |o| o.count);
-            let limit = max.min(self.containers().max_stack(&stack));
-            let n = stack.count.min(limit.saturating_sub(have));
-            if n == 0 {
-                break;
-            }
-            let Some(target) = self.slot_mut_at(&view, slot) else {
-                continue;
-            };
-            if let Some(current) = target.as_mut() {
-                current.count -= n;
-                if current.count == 0 {
-                    *target = None;
-                }
-            }
-            match &mut out {
-                Some(o) => o.count += n,
-                None => {
-                    out = Some(ItemStack {
-                        count: n,
-                        ..stack.clone()
-                    })
-                }
-            }
-        }
-        if out.is_some() {
-            self.view_changed(&view);
-        }
-        Some(out)
-    }
-
     /// Remove one item from a slot (`removeItem(slot, 1)`).
     fn take_one(&mut self, view: &View, slot: usize) -> Option<ItemStack> {
         if view.kind == Kind::Pot {
@@ -1717,12 +1619,6 @@ impl Game<'_> {
             return false;
         };
         let front = offset(pos, facing);
-        if let Some(took) = self.eject_into_crusher(front, hopper) {
-            return took;
-        }
-        if let Some(took) = self.eject_into_machine(front, hopper) {
-            return took;
-        }
         let face = facing.opposite();
         if let Some(part) = self.item_part_at(front, face) {
             let at = [front.0, front.1, front.2];
@@ -1758,46 +1654,6 @@ impl Game<'_> {
                 self.eject_into_part(hopper, &part, [front.0, front.1, front.2])
             }
         }
-    }
-
-    /// One item into the crushing wheel controller at `front` (game/kinetic_machines.rs: the
-    /// air between two Create crushing wheels, whose inventory takes items from a hopper), when
-    /// one is there.
-    fn eject_into_crusher(&mut self, front: Pos, hopper: &View) -> Option<bool> {
-        let at = [front.0, front.1, front.2];
-        if !self.crusher_at(at) {
-            return None;
-        }
-        for slot in 0..hopper.len() {
-            let Some(one) = self.take_one(hopper, slot) else {
-                continue;
-            };
-            if self.controller_insert(at, &one) {
-                return Some(true);
-            }
-            self.put_back(hopper, slot, one);
-            return Some(false);
-        }
-        Some(false)
-    }
-    /// One item into the content mod's machine at `front` (Create's depot, millstone, basin:
-    /// processing.rs), when one is there.
-    fn eject_into_machine(&mut self, front: Pos, hopper: &View) -> Option<bool> {
-        let at = [front.0, front.1, front.2];
-        self.machine_kind(at)?;
-        for slot in 0..hopper.len() {
-            let Some(one) = self.take_one(hopper, slot) else {
-                continue;
-            };
-            return match self.machine_insert(at, one.clone()) {
-                Some(None) => Some(true),
-                _ => {
-                    self.put_back(hopper, slot, one);
-                    Some(false)
-                }
-            };
-        }
-        Some(false)
     }
     /// Where a container is in the world for the mods: its block, or the block a chest
     /// boat or minecart is in (its view sits under a placeholder key).
@@ -1873,9 +1729,6 @@ impl Game<'_> {
             f64::from(pos.1) + 1.5,
             f64::from(pos.2) + 0.5,
         ];
-        if let Some(took) = self.suck_from_machine(above, hopper) {
-            return took;
-        }
         if let Some(took) = self.suck_from_container(above, at, hopper) {
             return took;
         }
@@ -1911,36 +1764,6 @@ impl Game<'_> {
             return false;
         }
         self.suck_item_entities(Some(pos), hopper, min, max)
-    }
-
-    /// One item from the outputs of the content mod's machine above (processing.rs), when one
-    /// with an inventory is there.
-    fn suck_from_machine(&mut self, above: Pos, hopper: &View) -> Option<bool> {
-        let at = [above.0, above.1, above.2];
-        match self.machine_kind(at)? {
-            super::machine_entities::Kind::Press | super::machine_entities::Kind::Mixer => {
-                return None;
-            }
-            _ => {}
-        }
-        // Room in the hopper first: an item taken is not put back into the machine.
-        let c = self.containers();
-        let room =
-            (0..hopper.len()).any(|i| c.get(hopper, i).is_none_or(|s| s.count < c.max_stack(s)));
-        if !room {
-            return Some(false);
-        }
-        let Some(Some(one)) = self.machine_take_one(at) else {
-            return Some(false);
-        };
-        match self.add_item(None, hopper, one, None) {
-            None => Some(true),
-            Some(rest) => {
-                // It did not fit after all (another item): back into the machine.
-                let _ = self.machine_insert(at, rest);
-                Some(false)
-            }
-        }
     }
     /// The container half of `HopperBlockEntity.suckInItems`: one item from the
     /// container at `above`, through its bottom face; with no block container

@@ -30,9 +30,6 @@ use mod_api::__private::game::*;
 pub(super) use registered_commands::NativeCommandState;
 // Their old home, for mixin code that names them here.
 use mod_api::LevelRef;
-// Starling: the old names mods made for the old hooks use (native_compat.rs).
-#[allow(unused_imports)]
-pub use sunrise_client::starling_mod_api::{NativeCommand, NativeServerPlayer};
 use mod_api::{
     ActionOutcome, ActionRefused, FakeEffect, GameMode, GlobalPos, Identifier, PlayerAction,
     PlayerActionSetup, PlayerFood, PlayerRef, PlayerRespawnConfig, ScopedActionResult,
@@ -2289,12 +2286,6 @@ impl Game<'_> {
         let call = Arc::clone(&executor.call);
         let command = self.resolve_native_command(context)?;
         let origin = self.native_command_origin(self.ui.registries.permission)?;
-        // Starling: a mod made for the old hooks hears the command's line first (native_compat.rs).
-        if let mod_api::CommandSource::Player { player, .. } = &origin
-            && self.old_perform_command(player.uuid(), self.ui.registries.permission)
-        {
-            return Ok(1);
-        }
         // Isolate journaled writes when the caller already has a transaction. An ordinary
         // command is not implicitly transactional, and writes outside the journal stay put.
         let savepoint = self.transaction_current().map(|_| self.transaction_open());

@@ -415,7 +415,10 @@ impl Game<'_> {
     }
     fn browser_batch(&self) -> Option<HudBatch> {
         let r = self.renderer.as_ref()?;
-        Some(self.interface_batch([r.config.width, r.config.height]))
+        Some(HudBatch::new(
+            [r.config.width, r.config.height],
+            self.settings.gui_scale_inputs(),
+        ))
     }
     /// The mod showing a panel, with its items made into stacks once per
     /// change; none while no mod shows one or no container screen is up.
@@ -472,10 +475,8 @@ impl Game<'_> {
             .of
             .as_ref()
             .is_some_and(|(owner, _)| owner.native_id() == "recipes");
-        // Right of both of Bedrock Inventory's windows, whichever is worked with: from the
-        // item window's edge it covered the other's crafting grid and Destroy Item slot.
         let window_right = if self.screen == Screen::Creative {
-            Self::creative_bounds(batch).1 + 3.0
+            Self::creative_origin(batch).0 + 198.0
         } else {
             (image.left + image.width) as f32
         };

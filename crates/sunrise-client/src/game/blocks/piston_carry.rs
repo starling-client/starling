@@ -38,10 +38,6 @@ impl GameLevel<'_> {
                 destroy,
                 canceled: &mut canceled,
             });
-            // Starling: the old hook, for the mods made for it (native_compat.rs).
-            if !canceled {
-                self.native_piston_move(self.dimension, piston, step, push, destroy, &mut canceled);
-            }
         }
         !canceled
     }

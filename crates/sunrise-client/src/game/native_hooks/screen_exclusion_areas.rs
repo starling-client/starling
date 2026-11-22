@@ -34,7 +34,10 @@ impl Game<'_> {
         let Some(renderer) = self.renderer.as_ref() else {
             return Vec::new();
         };
-        let batch = self.interface_batch([renderer.config.width, renderer.config.height]);
+        let batch = HudBatch::new(
+            [renderer.config.width, renderer.config.height],
+            self.settings.gui_scale_inputs(),
+        );
         let mut areas = self.screen_own_exclusion(&batch);
         self.native_screen_exclusion_areas(&view, &mut areas);
         areas.retain(|a| a.iter().all(|v| v.is_finite()) && a[2] > 0.0 && a[3] > 0.0);

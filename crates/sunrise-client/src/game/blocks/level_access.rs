@@ -990,17 +990,6 @@ impl LevelAccess for GameLevel<'_> {
     fn block_state(&self, pos: BlockPos) -> BlockStateId {
         self.world.block(pos.x, pos.y, pos.z)
     }
-    fn may_random_tick(&mut self, pos: BlockPos) -> bool {
-        let key = (pos.x >> 4, pos.z >> 4);
-        let Some(chunk) = self.world.chunks.get(&key) else {
-            return true;
-        };
-        let b = self.behaviours;
-        self.random_tick_sections
-            .may_tick(key, chunk, pos.x, pos.y, pos.z, |id| {
-                b.takes_random_tick(BlockStateId(id))
-            })
-    }
     fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
         // `Level.setBlock`: a server level of the Debug preset never changes.
         if self.debug && !self.client_side {

@@ -310,14 +310,6 @@ impl Game<'_> {
         (self.mod_book_open() || self.active_book().is_some_and(|b| self.book_open(b)))
             && self.recipe_ui.search.as_ref().is_some_and(|s| s.focused)
     }
-    /// The search box while it takes the keys, for the keyboard's editor on Android
-    /// (touch/text_mirror.rs).
-    pub(super) fn recipe_search_box(&mut self) -> Option<&mut EditBox> {
-        if !self.recipe_search_focused() {
-            return None;
-        }
-        self.recipe_ui.search.as_mut()
-    }
     /// `keyChat` focuses the search box.
     pub(super) fn recipe_focus_search(&mut self) {
         if (self.mod_book_open() || self.active_book().is_some_and(|b| self.book_open(b)))
@@ -427,7 +419,7 @@ impl Game<'_> {
     // ---- recipes and what can be crafted ----
 
     /// The grid size of the open crafting menu.
-    pub(super) fn book_grid(&self) -> (usize, usize) {
+    fn book_grid(&self) -> (usize, usize) {
         (self.craft_size, self.craft_size)
     }
     /// The items the book counts (`RecipeBookComponent.updateStackedContents`):
@@ -518,7 +510,7 @@ impl Game<'_> {
         ui.client_known = Some(known.clone());
         ui.client_version += 1;
     }
-    /// Every entry of the book, in its order (`native_recipes`, capability `recipes`).
+    /// Every entry of the book, in its order (`native_recipes`).
     pub(super) fn recipe_book_entries(&mut self) -> Vec<Entry> {
         self.ensure_book();
         self.recipe_ui
@@ -849,10 +841,13 @@ impl Game<'_> {
     fn batch_for_size(&self) -> Option<HudBatch> {
         #[cfg(test)]
         if let Some(size) = self.recipe_ui.test_viewport {
-            return Some(self.interface_batch(size));
+            return Some(HudBatch::new(size, self.settings.gui_scale_inputs()));
         }
         let r = self.renderer.as_ref()?;
-        Some(self.interface_batch([r.config.width, r.config.height]))
+        Some(HudBatch::new(
+            [r.config.width, r.config.height],
+            self.settings.gui_scale_inputs(),
+        ))
     }
 
     // ---- clicks ----
@@ -1378,7 +1373,7 @@ impl Game<'_> {
         self.place_book_recipe(book_type, entry_index, use_max);
         true
     }
-    /// Whether the open screen takes `recipes.place` and `native_place_recipe`: a crafting grid's
+    /// Whether the open screen takes `native_place_recipe`: a crafting grid's
     /// book (the inventory's or a crafting table's), or a mod menu type's
     /// crafting grid.
     pub(super) fn mod_recipe_screen(&self) -> bool {
@@ -1394,7 +1389,7 @@ impl Game<'_> {
             .and_then(|(_, menu)| sunrise_client::containers::mod_menu_type(menu))
             .is_some_and(|t| t.crafting.is_some())
     }
-    /// `native_place_recipe` and `recipes.place`: the book's click on the recipe with this display
+    /// `native_place_recipe`: the book's click on the recipe with this display
     /// id, refused as `handlePlaceRecipe` refuses it (no crafting screen,
     /// not in the player's book; an impossible one in `place_recipe`).
     pub(super) fn mod_place_recipe(&mut self, display_id: i32, all: bool) {

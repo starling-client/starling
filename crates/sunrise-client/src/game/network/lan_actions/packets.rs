@@ -731,11 +731,6 @@ impl Game<'_> {
                         g.player_on_equip(equipment, old.as_ref(), item.as_ref());
                     });
                 }
-                // TransientCraftingContainer.setItem: InventoryMenu.slotsChanged makes the grid's
-                // result again, which the tick's inventory sync sends (slot 0).
-                if (1..=4).contains(&slot) {
-                    self.guest_craft_result(conn);
-                }
             }
             // ServerboundPlayerCommandPacket OPEN_INVENTORY: the ridden
             // mount's inventory (`HasCustomInventoryScreen`).
@@ -879,10 +874,6 @@ impl Game<'_> {
                 if p.channel == sunrise_client::recipe_book::settings_sync::CHANNEL =>
             {
                 self.guest_book_settings(conn, &p.data)
-            }
-            // Starling: the old mod messages (old_mod_net.rs).
-            S::CustomPayload(p) if p.channel == sunrise_protocol::mod_net::CHANNEL => {
-                self.guest_old_mod_net(conn, &p.data)
             }
             S::CustomPayload(p) if p.channel == sunrise_client::lan::recipes::TRANSFER_CHANNEL => {
                 self.guest_recipe_transfer(conn, &p.data);
