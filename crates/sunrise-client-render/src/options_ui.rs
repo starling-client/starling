@@ -5427,7 +5427,7 @@ impl OptionsUi {
                 }
                 field.focused = true;
                 field.click(atlas, x, false, false);
-                return events;
+                return (events, true);
             }
             // A press anywhere else leaves the box.
             if field.focused {
@@ -5445,7 +5445,7 @@ impl OptionsUi {
                 }
                 field.focused = true;
                 field.click(atlas, x, false, false);
-                return events;
+                return (events, true);
             }
             field.focused = false;
         }
