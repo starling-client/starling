@@ -39,3 +39,10 @@
   (THIRD_PARTY_NOTICES.md, sync-check.yml, gfx/*.rs comments, starling-account).
 - Cargo.lock is Sunrise's: add Starling's crates back with `cargo metadata` on the build machine (not --locked once).
 - .github/workflows: ours as they were, renamed by rebrand.py; check every name it changed that isn't a crate (env vars HORIZON_* -> SUNRISE_*, artifact names, branch names fixed by hand) when CI first runs.
+- IN PROGRESS (stopped 2026-11-22, usage limit): sunrise-client-render/src/hud.rs took Sunrise's side; 10 of our 14
+  atlas/HUD edits were carried into hud/*.rs by carry.py. The 4 left are in
+  C:/workspace/starling-sync-sunrise-tools/ours-diffs/crates_sunrise-client-render_src_hud.rs.1.rej
+  (layout_within + the GPU side limit in the atlas build, full_sizes for GUI sizes, take_seed, LAST_GUI_SCALE and
+  HudBatch::new_old). hud.rs hunk 2 (tests, -> hud/tests/atlas.rs) is not carried yet.
+- Next: pack_uniforms.rs and pack_entities.rs -> crates/sunrise-render-shaderpack (same carry.py), gfx.rs, then
+  crates/sunrise-client (about 95 files).

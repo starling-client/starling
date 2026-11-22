@@ -739,3 +739,61 @@ impl HudUniform {
         }
     }
 }
+        // Downloaded Android controls can arrive after sunrise-data.bin was built.
+        // Read this small overlay from disk too, without walking every prepared asset.
+        if full {
+            let mut existing: HashSet<String> = images.iter().map(|i| i.0.clone()).collect();
+            for (base, folder, prefix) in [
+                (root, "assets/minecraft/textures/gui/bedrock", "gui/bedrock"),
+                (
+                    root,
+                    "assets/starling/textures/gui/sprites/touch",
+                    "starling:gui/sprites/touch",
+                ),
+                (
+                    defaults,
+                    "assets/minecraft/textures/gui/bedrock",
+                    "gui/bedrock",
+                ),
+                (
+                    defaults,
+                    "assets/starling/textures/gui/sprites/touch",
+                    "starling:gui/sprites/touch",
+                ),
+            ] {
+                let dir = format!("{folder}/");
+                for file in base.list(&dir) {
+                    let Some(stem) = file
+                        .strip_prefix(&dir)
+                        .and_then(|relative| relative.strip_suffix(".png"))
+                    else {
+                        continue;
+                    };
+                    let name = format!("{prefix}/{stem}");
+                    // From the disk: downloaded after the folder's data file was written.
+                    if !existing.contains(&name)
+                        && let Ok(bytes) = base.read_loose(&file)
+                        && let Ok((w, h, pixels)) = decode_bytes(&bytes)
+                    {
+                        existing.insert(name.clone());
+                        images.push((name, w, h, pixels));
+                    }
+                }
+            }
+        }
+        #[cfg(target_os = "android")]
+        if full {
+            log::info!(
+                "Android control atlas: {} original textures (root {:?}, defaults {:?})",
+                images
+                    .iter()
+                    .filter(|i| i.0.starts_with("gui/bedrock/"))
+                    .count(),
+                root,
+                defaults
+            );
+        }
+        // The menus' atlas too: the touch layout editor works before a world.
+        let touch = builtin_touch_sprites(&images);
+        images.extend(touch);
+        images.extend(android_utility_sprites(&images));

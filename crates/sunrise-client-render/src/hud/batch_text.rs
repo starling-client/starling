@@ -122,7 +122,8 @@ impl HudBatch {
             // sequence of each run of one style, which world text has.
             let first = i == 0 || world && previous != Some(style);
             previous = Some(style);
-            // The style's font (`Style.getFont`), the default one unless set.
+            // The style's font (`Style.getFont`), the default one unless set; a hand-written
+            // skin's take of the letter by where it stands.
             let mut g = if object.is_some() {
                 crate::font::Glyph {
                     rect: None,
@@ -134,7 +135,7 @@ impl HudBatch {
                     offset: 1.0,
                 }
             } else {
-                font.glyph_styled(ch, style)
+                font.glyph_varied(ch, style, take_seed(x, y, i))
             };
             // Font.StringRenderOutput.accept: obfuscated characters draw a
             // random glyph of the same width each frame.

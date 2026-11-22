@@ -124,8 +124,335 @@ pub(super) const GUI_KEY: &str = "#gui:";
 /// The prefix of the name a registered atlas's sprite is packed under.
 pub(super) const REGISTERED_KEY: &str = "#registered:";
 
+/// Starling's own touch controls (packaging/touch/make.py draws them): a button's sprite and its
+/// `_pressed`, the D-pad's cells and the stick's, as `starling:touch/<name>`.
+const TOUCH_SPRITES: &[(&str, &[u8])] = &[
+    (
+        "custom_blank",
+        include_bytes!("../../sunrise-client/assets/touch/custom_blank.png"),
+    ),
+    (
+        "custom_star",
+        include_bytes!("../../sunrise-client/assets/touch/custom_star.png"),
+    ),
+    (
+        "custom_star_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_star_pressed.png"),
+    ),
+    (
+        "custom_heart",
+        include_bytes!("../../sunrise-client/assets/touch/custom_heart.png"),
+    ),
+    (
+        "custom_heart_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_heart_pressed.png"),
+    ),
+    (
+        "custom_shield",
+        include_bytes!("../../sunrise-client/assets/touch/custom_shield.png"),
+    ),
+    (
+        "custom_shield_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_shield_pressed.png"),
+    ),
+    (
+        "custom_pickaxe",
+        include_bytes!("../../sunrise-client/assets/touch/custom_pickaxe.png"),
+    ),
+    (
+        "custom_pickaxe_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_pickaxe_pressed.png"),
+    ),
+    (
+        "custom_potion",
+        include_bytes!("../../sunrise-client/assets/touch/custom_potion.png"),
+    ),
+    (
+        "custom_potion_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_potion_pressed.png"),
+    ),
+    (
+        "custom_apple",
+        include_bytes!("../../sunrise-client/assets/touch/custom_apple.png"),
+    ),
+    (
+        "custom_apple_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_apple_pressed.png"),
+    ),
+    (
+        "custom_home",
+        include_bytes!("../../sunrise-client/assets/touch/custom_home.png"),
+    ),
+    (
+        "custom_home_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_home_pressed.png"),
+    ),
+    (
+        "custom_flag",
+        include_bytes!("../../sunrise-client/assets/touch/custom_flag.png"),
+    ),
+    (
+        "custom_flag_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_flag_pressed.png"),
+    ),
+    (
+        "custom_fire",
+        include_bytes!("../../sunrise-client/assets/touch/custom_fire.png"),
+    ),
+    (
+        "custom_fire_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_fire_pressed.png"),
+    ),
+    (
+        "custom_skull",
+        include_bytes!("../../sunrise-client/assets/touch/custom_skull.png"),
+    ),
+    (
+        "custom_skull_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_skull_pressed.png"),
+    ),
+    (
+        "custom_crown",
+        include_bytes!("../../sunrise-client/assets/touch/custom_crown.png"),
+    ),
+    (
+        "custom_crown_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_crown_pressed.png"),
+    ),
+    (
+        "custom_plus",
+        include_bytes!("../../sunrise-client/assets/touch/custom_plus.png"),
+    ),
+    (
+        "custom_plus_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_plus_pressed.png"),
+    ),
+    (
+        "custom_check",
+        include_bytes!("../../sunrise-client/assets/touch/custom_check.png"),
+    ),
+    (
+        "custom_check_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_check_pressed.png"),
+    ),
+    (
+        "custom_cross",
+        include_bytes!("../../sunrise-client/assets/touch/custom_cross.png"),
+    ),
+    (
+        "custom_cross_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_cross_pressed.png"),
+    ),
+    (
+        "custom_music",
+        include_bytes!("../../sunrise-client/assets/touch/custom_music.png"),
+    ),
+    (
+        "custom_music_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/custom_music_pressed.png"),
+    ),
+    (
+        "attack",
+        include_bytes!("../../sunrise-client/assets/touch/attack.png"),
+    ),
+    (
+        "attack_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/attack_pressed.png"),
+    ),
+    (
+        "camera",
+        include_bytes!("../../sunrise-client/assets/touch/camera.png"),
+    ),
+    (
+        "camera_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/camera_pressed.png"),
+    ),
+    (
+        "chat",
+        include_bytes!("../../sunrise-client/assets/touch/chat.png"),
+    ),
+    (
+        "chat_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/chat_pressed.png"),
+    ),
+    (
+        "command",
+        include_bytes!("../../sunrise-client/assets/touch/command.png"),
+    ),
+    (
+        "command_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/command_pressed.png"),
+    ),
+    (
+        "debug",
+        include_bytes!("../../sunrise-client/assets/touch/debug.png"),
+    ),
+    (
+        "debug_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/debug_pressed.png"),
+    ),
+    (
+        "dpad_down",
+        include_bytes!("../../sunrise-client/assets/touch/dpad_down.png"),
+    ),
+    (
+        "dpad_down_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/dpad_down_pressed.png"),
+    ),
+    (
+        "dpad_left",
+        include_bytes!("../../sunrise-client/assets/touch/dpad_left.png"),
+    ),
+    (
+        "dpad_left_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/dpad_left_pressed.png"),
+    ),
+    (
+        "dpad_middle",
+        include_bytes!("../../sunrise-client/assets/touch/dpad_middle.png"),
+    ),
+    (
+        "dpad_right",
+        include_bytes!("../../sunrise-client/assets/touch/dpad_right.png"),
+    ),
+    (
+        "dpad_right_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/dpad_right_pressed.png"),
+    ),
+    (
+        "dpad_up",
+        include_bytes!("../../sunrise-client/assets/touch/dpad_up.png"),
+    ),
+    (
+        "dpad_up_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/dpad_up_pressed.png"),
+    ),
+    (
+        "drop",
+        include_bytes!("../../sunrise-client/assets/touch/drop.png"),
+    ),
+    (
+        "drop_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/drop_pressed.png"),
+    ),
+    (
+        "inventory",
+        include_bytes!("../../sunrise-client/assets/touch/inventory.png"),
+    ),
+    (
+        "inventory_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/inventory_pressed.png"),
+    ),
+    (
+        "jump",
+        include_bytes!("../../sunrise-client/assets/touch/jump.png"),
+    ),
+    (
+        "jump_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/jump_pressed.png"),
+    ),
+    (
+        "offhand",
+        include_bytes!("../../sunrise-client/assets/touch/offhand.png"),
+    ),
+    (
+        "offhand_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/offhand_pressed.png"),
+    ),
+    (
+        "pause",
+        include_bytes!("../../sunrise-client/assets/touch/pause.png"),
+    ),
+    (
+        "pause_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/pause_pressed.png"),
+    ),
+    (
+        "pick",
+        include_bytes!("../../sunrise-client/assets/touch/pick.png"),
+    ),
+    (
+        "pick_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/pick_pressed.png"),
+    ),
+    (
+        "players",
+        include_bytes!("../../sunrise-client/assets/touch/players.png"),
+    ),
+    (
+        "players_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/players_pressed.png"),
+    ),
+    (
+        "sneak",
+        include_bytes!("../../sunrise-client/assets/touch/sneak.png"),
+    ),
+    (
+        "sneak_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/sneak_pressed.png"),
+    ),
+    (
+        "stick",
+        include_bytes!("../../sunrise-client/assets/touch/stick.png"),
+    ),
+    (
+        "stick_knob",
+        include_bytes!("../../sunrise-client/assets/touch/stick_knob.png"),
+    ),
+    (
+        "use",
+        include_bytes!("../../sunrise-client/assets/touch/use.png"),
+    ),
+    (
+        "use_pressed",
+        include_bytes!("../../sunrise-client/assets/touch/use_pressed.png"),
+    ),
+];
+
+/// The names of [`TOUCH_SPRITES`]: every sprite the touch controls draw.
+pub fn touch_sprite_names() -> impl Iterator<Item = &'static str> {
+    TOUCH_SPRITES.iter().map(|(name, _)| *name)
+}
+
+/// [`TOUCH_SPRITES`] a pack has not drawn already (a pack's `starling:touch/jump` wins).
+fn builtin_touch_sprites(images: &[PackedImage]) -> Vec<PackedImage> {
+    TOUCH_SPRITES
+        .iter()
+        .filter_map(|(name, png)| {
+            let key = format!("starling:gui/sprites/touch/{name}");
+            if images.iter().any(|(k, ..)| *k == key) {
+                return None;
+            }
+            let (w, h, mut pixels) = decode_bytes(png).ok()?;
+            if matches!(*name, "pause" | "inventory") {
+                for pixel in pixels.as_chunks_mut::<4>().0 {
+                    if pixel[0] >= 245 && pixel[1] >= 245 && pixel[2] >= 245 {
+                        pixel[..3].copy_from_slice(&[32, 32, 32]);
+                    }
+                }
+            }
+            Some((key, w, h, pixels))
+        })
+        // A slot for each custom button's own images, whichever it has now.
+        .chain(
+            (0..crate::own_buttons::pressed_slot(crate::own_buttons::SLOTS)).map(|id| {
+                let side = crate::own_buttons::SIZE;
+                let blank = || vec![0; (side * side * 4) as usize];
+                let pixels = crate::own_buttons::load(id).unwrap_or_else(blank);
+                (crate::own_buttons::sprite(id), side, side, pixels)
+            }),
+        )
+        .collect()
+}
+
 /// `MissingTextureAtlasSprite`: what a sprite the atlas lacks draws as.
 pub const MISSING_SPRITE: &str = "sunrise/missing";
+
+/// One of [`TOUCH_SPRITES`], as RGBA pixels: a place for a custom button's image to start from.
+pub fn touch_sprite(name: &str) -> Option<Vec<u8>> {
+    let (_, png) = TOUCH_SPRITES.iter().find(|(n, _)| *n == name)?;
+    decode_bytes(png).ok().map(|(_, _, pixels)| pixels)
+}
 
 /// The used width of each Standard Galactic letter (A-Z, a-z) in the
 /// `font/ascii_sga` sheet: one past its last column with a texel that isn't
@@ -600,3 +927,7 @@ impl HudAtlas {
         }
     }
 }
+        #[cfg(target_os = "android")]
+        if max <= 4096 {
+            return Self::mobile_layout(images, max);
+        }
