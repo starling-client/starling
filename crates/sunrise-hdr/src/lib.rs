@@ -6,7 +6,6 @@
 #[cfg(target_os = "linux")]
 pub mod wayland;
 
-<<<<<<< sync-sunrise-1
 /// The opt-in for wgpu's experimental features, which device creation refuses without.
 /// The game crates forbid unsafe code, so the acknowledgment lives here. Only the
 /// ray-query feature is ever asked for, with a plain device as the fallback.
@@ -50,9 +49,7 @@ pub fn ray_query_missing_extensions(adapter: &wgpu::Adapter) -> Option<Vec<&'sta
             .collect(),
     )
 }
-=======
 pub mod icc;
->>>>>>> sunrise/main
 
 /// Opens a Vulkan device with `VK_EXT_hdr_metadata` too, when the GPU offers
 /// it, so [`set_metadata`] can tell the compositor the real peak brightness.

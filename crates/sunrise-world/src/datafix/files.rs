@@ -886,19 +886,16 @@ fn upgrade_region_file(path: &Path, staging: &Path, fix: &impl Fn(&mut Tag)) -> 
     for (pos, record) in &records {
         writer.write(*pos, record)?;
     }
-<<<<<<< sync-sunrise-1
-    writer.finish_staged()?;
-=======
     // An oversized chunk's `c.X.Z.mcc` is written next to the staged region.
     let externals = writer.externals().to_vec();
-    writer.finish()?;
+    // Starling: by rename, since Android's shared storage has no hard links.
+    writer.finish_staged()?;
     // The `.mcc` files go in before the region: until it is replaced, the old
     // region reads for each chunk its own inline copy or a whole `.mcc`.
     let folder = path.parent().unwrap_or(Path::new("."));
     for staged in externals {
         fs::rename(&staged, folder.join(staged.file_name().unwrap_or_default()))?;
     }
->>>>>>> sunrise/main
     fs::rename(&temporary, path)
 }
 

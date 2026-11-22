@@ -2,7 +2,7 @@
 //! chunk availability, state metadata, suffocation predicates and context dispatch.
 use crate::{collision_context::CollisionContext, registry::BlockStateId};
 use sunrise_core::{
-    geometry::{Aabb, Collider, MovedBlock, ShapeError, ShapeOp, Vec3, VoxelShape},
+    geometry::{Aabb, ShapeError, ShapeOp, Vec3, VoxelShape},
     position::{BlockPos, ChunkPos},
 };
 
@@ -15,10 +15,6 @@ pub struct CollisionBlock {
     /// the block without asking for its shape. Providers whose shapes come
     /// from elsewhere leave it false.
     pub empty_shape: bool,
-    /// The shape is the unit cube under every context (stone, dirt): a scan
-    /// collides with it without asking for its shape. Providers whose shapes
-    /// come from elsewhere leave it false.
-    pub full_block: bool,
 }
 
 pub trait BlockCollisionWorld {
@@ -158,6 +154,37 @@ struct SectionFacts {
     reaches: bool,
 }
 
+/// Entries of the per-thread cache of moved full cubes.
+const MOVED_BLOCKS: usize = 256;
+type MovedBlocks = [Option<(BlockPos, VoxelShape)>; MOVED_BLOCKS];
+thread_local! {
+    static MOVED: std::cell::RefCell<Box<MovedBlocks>> =
+        std::cell::RefCell::new(Box::new(std::array::from_fn(|_| None)));
+}
+
+/// `shape.moved(offset)` for the full cube `shape` at block `p`: the same shape every time the
+/// block is scanned, so a crowd standing on one floor builds it once, not once per mob per
+/// tick. Direct-mapped by position; a miss builds it and takes the slot.
+fn moved_block(p: BlockPos, offset: Vec3, shape: &VoxelShape) -> VoxelShape {
+    let slot = (p.x.wrapping_mul(73_856_093)
+        ^ p.y.wrapping_mul(19_349_663)
+        ^ p.z.wrapping_mul(83_492_791)) as u32 as usize
+        % MOVED_BLOCKS;
+    MOVED.with(|cache| {
+        let Ok(mut cache) = cache.try_borrow_mut() else {
+            return shape.moved(offset);
+        };
+        if let Some((at, moved)) = &cache[slot]
+            && *at == p
+        {
+            return moved.clone();
+        }
+        let moved = shape.moved(offset);
+        cache[slot] = Some((p, moved.clone()));
+        moved
+    })
+}
+
 pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     world: &'w mut W,
     context: CollisionContext<'c>,
@@ -166,6 +193,8 @@ pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     /// the unit cube (finite bounds always make one).
     entity_shape: Option<VoxelShape>,
     only_suffocating: bool,
+    /// A boolean collision query does not need translated full-cube geometry.
+    presence_only: bool,
     start: BlockPos,
     sizes: [usize; 3],
     index: usize,
@@ -210,6 +239,7 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             bounds,
             entity_shape: None,
             only_suffocating,
+            presence_only: false,
             start,
             sizes: sizes.map(|s| s as usize),
             index: 0,
@@ -226,7 +256,8 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
     }
 
     /// Boolean collision query with the same cursor, budget, and callback order
-    /// as the ordinary iterator.
+    /// as the ordinary iterator. Avoid constructing translated geometry for a
+    /// full collision cube, since the caller only needs to know whether one exists.
     pub fn any_collision(
         world: &'w mut W,
         context: CollisionContext<'c>,
@@ -235,6 +266,7 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
         candidate_budget: usize,
     ) -> Result<bool, CollisionScanError<W::Error>> {
         let mut scan = Self::new(world, context, bounds, only_suffocating, candidate_budget)?;
+        scan.presence_only = true;
         Ok(scan.find_next()?.is_some())
     }
 
@@ -340,23 +372,7 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
         }
     }
 
-    /// The next hit as a collider: a full block stays a [`MovedBlock`]
-    /// instead of the moved shape the iterator builds for it.
-    pub fn next_collider(
-        &mut self,
-    ) -> Option<Result<(BlockPos, Collider), CollisionScanError<W::Error>>> {
-        if self.failed {
-            return None;
-        }
-        match self.find_next() {
-            Ok(hit) => hit.map(Ok),
-            Err(error) => {
-                self.failed = true;
-                Some(Err(error))
-            }
-        }
-    }
-    fn find_next(&mut self) -> Result<Option<(BlockPos, Collider)>, CollisionScanError<W::Error>> {
+    fn find_next(&mut self) -> Result<Option<BlockCollisionHit>, CollisionScanError<W::Error>> {
         while self.index < self.count {
             if self.index >= self.budget {
                 return Err(CollisionScanError::VisitBudget);
@@ -450,17 +466,23 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             if block.empty_shape {
                 continue;
             }
-            let shape = if block.full_block {
-                None
-            } else {
-                let shape = self
-                    .world
-                    .context_shape(block, p, &self.context)
-                    .map_err(CollisionScanError::World)?;
-                (!shape.is_block()).then_some(shape)
-            };
+            let shape = self
+                .world
+                .context_shape(block, p, &self.context)
+                .map_err(CollisionScanError::World)?;
             let offset = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
-            let moved = if let Some(shape) = shape {
+            let moved = if shape.is_block() {
+                // Native adds one in floating point, including at i32::MAX.
+                let top = Vec3::new(offset.x + 1.0, offset.y + 1.0, offset.z + 1.0);
+                if !self.bounds.intersects_corners(offset, top) {
+                    continue;
+                }
+                if self.presence_only {
+                    VoxelShape::block()
+                } else {
+                    moved_block(p, offset, &shape)
+                }
+            } else {
                 // Shapes whose bounds miss the box share no volume with it:
                 // joinIsNotEmpty(AND) is false without moving them.
                 if !shape
@@ -483,16 +505,12 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
                 {
                     continue;
                 }
-                Collider::Shape(moved)
-            } else {
-                // Native adds one in floating point, including at i32::MAX.
-                let top = Vec3::new(offset.x + 1.0, offset.y + 1.0, offset.z + 1.0);
-                if !self.bounds.intersects_corners(offset, top) {
-                    continue;
-                }
-                Collider::Block(MovedBlock::new(offset))
+                moved
             };
-            return Ok(Some((p, moved)));
+            return Ok(Some(BlockCollisionHit {
+                position: p,
+                shape: moved,
+            }));
         }
         Ok(None)
     }
@@ -500,12 +518,16 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
 impl<W: BlockCollisionWorld> Iterator for BlockCollisionScan<'_, '_, W> {
     type Item = Result<BlockCollisionHit, CollisionScanError<W::Error>>;
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_collider().map(|hit| {
-            hit.map(|(position, collider)| BlockCollisionHit {
-                position,
-                shape: collider.into_shape(),
-            })
-        })
+        if self.failed {
+            return None;
+        }
+        match self.find_next() {
+            Ok(hit) => hit.map(Ok),
+            Err(error) => {
+                self.failed = true;
+                Some(Err(error))
+            }
+        }
     }
 }
 impl<W: BlockCollisionWorld> std::iter::FusedIterator for BlockCollisionScan<'_, '_, W> {}

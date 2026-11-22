@@ -15,13 +15,8 @@ pub mod stages;
 pub use check::{Problem, Report, check};
 pub use inputs::Frame;
 pub use manifest::{
-<<<<<<< sync-sunrise-1
-    API, Api, Blend, LightColor, MANIFEST, Manifest, Material, OptionKind, OptionPage, PackOption,
-    PackTexture, PageItem, Primaries, RayTracing, SCHEMA, SpriteTag, Stage,
-=======
     API, Api, Blend, Coverage, LightColor, MANIFEST, Manifest, Material, OptionKind, OptionPage,
-    PackOption, PackTexture, PageItem, Primaries, SCHEMA, SpriteTag, Stage,
->>>>>>> sunrise/main
+    PackOption, PackTexture, PageItem, Primaries, RayTracing, SCHEMA, SpriteTag, Stage,
 };
 pub use package::{EXTENSION, Pack};
 pub use stages::{Composed, StageKind, compose};

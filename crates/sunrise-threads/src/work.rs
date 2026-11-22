@@ -88,7 +88,6 @@ thread_local! {
     static TICK: Cell<u64> = const { Cell::new(0) };
 }
 
-<<<<<<< sync-sunrise-1
 /// Fibonacci hashing's multiplier at the pointer's width (Starling's armv7 and x86 APKs are
 /// 32-bit).
 #[cfg(target_pointer_width = "64")]
@@ -96,26 +95,17 @@ const GOLDEN: usize = 0x9E37_79B9_7F4A_7C15;
 #[cfg(not(target_pointer_width = "64"))]
 const GOLDEN: usize = 0x9E37_79B9;
 
-/// The id of `name`, found by the address of its bytes; `verify` re-checks the text, for strings that can be freed and reused.
-=======
 /// The id of `name`, found by the address and length of its bytes; `verify` re-checks the text, for strings that can be freed and reused.
 ///
 /// The cache is two-way: each address may sit in its slot or the slot's pair, so two hot names that hash
 /// to the same slot don't evict each other on every call. A miss moves the slot's entry to its pair.
->>>>>>> sunrise/main
 #[inline]
 fn id_of(space: Space, name: &str, verify: bool) -> u16 {
     if !ON {
         return 0;
     }
     let (names, key) = (&NAMES[space as usize], name.as_ptr() as usize);
-<<<<<<< sync-sunrise-1
     let slot = (key >> 3).wrapping_mul(GOLDEN) >> (usize::BITS - 10);
-    let hit = CACHE.with(|c| c[space as usize][slot].get());
-    if hit.0 == key && hit.1 != 0 && (!verify || names.name(hit.1) == Some(name)) {
-        return hit.1;
-=======
-    let slot = (key >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (usize::BITS - 10);
     let found = |hit: (usize, usize, u16)| {
         (hit.0 == key
             && hit.1 == name.len()
@@ -131,7 +121,6 @@ fn id_of(space: Space, name: &str, verify: bool) -> u16 {
     });
     if let Some(id) = found(first).or_else(|| found(second)) {
         return id;
->>>>>>> sunrise/main
     }
     let id = names.intern(name);
     CACHE.with(|c| {

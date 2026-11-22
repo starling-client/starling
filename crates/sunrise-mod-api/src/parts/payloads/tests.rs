@@ -18,11 +18,7 @@ impl IPayloadHandler for Handler {
         &self,
         _: PayloadBytes,
         _: &mut dyn IPayloadContext,
-<<<<<<< sync-sunrise-1
-    ) -> Result<(), mod_api::PayloadHandleError> {
-=======
     ) -> Result<(), crate::PayloadHandleError> {
->>>>>>> sunrise/main
         Ok(())
     }
 }

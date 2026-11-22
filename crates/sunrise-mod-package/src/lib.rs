@@ -5,11 +5,8 @@ pub mod content;
 pub mod dependencies;
 pub mod durable;
 pub mod enabled;
-<<<<<<< sync-sunrise-1
 pub mod fetch;
-=======
 pub mod extension_tags;
->>>>>>> sunrise/main
 pub mod game_identity;
 #[cfg(all(
     feature = "runtime-process",

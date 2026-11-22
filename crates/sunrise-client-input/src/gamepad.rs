@@ -14,11 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-<<<<<<< sync-sunrise-1
 pub mod android;
-=======
 use crate::mouse::SmoothDouble;
->>>>>>> sunrise/main
 
 pub const FILE: &str = "sunrise-controller.txt";
 

@@ -352,10 +352,8 @@ impl LoadConditions {
     }
 }
 
-<<<<<<< sync-sunrise-1
 /// One answer of [`LoadConditions::registered_answers`]: inventory, file, payload, answer.
 pub type RecordedAnswer = (Vec<String>, String, String, bool);
-=======
 #[derive(Clone, Debug)]
 enum ConditionError {
     Invalid(String),
@@ -372,7 +370,6 @@ impl ConditionError {
 
 type Verdict = Result<bool, ConditionError>;
 type CachedVerdict = Arc<std::sync::OnceLock<Verdict>>;
->>>>>>> sunrise/main
 
 #[derive(Debug, Default)]
 struct CandidateDiagnostics {

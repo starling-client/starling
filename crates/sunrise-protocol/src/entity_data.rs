@@ -363,33 +363,12 @@ fn read_value(kind: i32, r: &mut Reader) -> Result<Option<Value>> {
         }
         // VillagerData: type, profession and level.
         VILLAGER_DATA => Value::Ids(vec![r.varint()?, r.varint()?, r.varint()?]),
-<<<<<<< sync-sunrise-1
         // GlobalPos.STREAM_CODEC: the dimension ResourceKey, then a BlockPos.
         OPTIONAL_GLOBAL_POS => Value::OptGlobalPos(if r.bool()? {
             Some((r.string(32767)?, crate::buf::Pos::read(r)?))
         } else {
             None
         }),
-        WOLF_VARIANT if ids::quirks().wolf_variant_holder => {
-            let holder = r.varint()?;
-            if holder <= 0 {
-                return Err(crate::Error::new(
-                    "inline legacy wolf variant is unsupported",
-                ));
-            }
-            Value::Id(holder - 1)
-        }
-        PAINTING_VARIANT if ids::quirks().components_before_1_21 => {
-            // 1.21 changed this bare registry id into a registry-or-inline holder (id + 1).
-            let id = r.varint()?;
-            Value::Id(
-                id.checked_add(1)
-                    .filter(|_| id >= 0)
-                    .ok_or_else(|| crate::Error::new("invalid legacy variant id"))?,
-            )
-        }
-=======
->>>>>>> sunrise/main
         // VarInt-encoded: direction, block states, optional ints, pose, the
         // holder-registry variants (cat to zombie nautilus, painting) and the
         // enum states (sniffer to weathering copper), arm, dye.

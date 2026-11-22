@@ -580,18 +580,13 @@ fn translate(
         private,
     } = varyings::assign(&v, &f, &mut errors);
 
-<<<<<<< sync-sunrise-1
+    // Past the pack's varyings, and past `hz_cutout` when the program draws terrain's two parts:
+    // both at the first free place made every such program invalid ("Multiple bindings at
+    // location 8"), and a phone on the Auto profile then drew its terrain without the pack (0.9.0).
     let prepass_uv = gbuffers
         .filter(|g| g.prepass_uv)
-        .map(|_| locations.len() as u32);
+        .map(|_| locations.len() as u32 + u32::from(parts.is_some()));
 
-    // Terrain's fade input is supplied without a pack declaration. Inject it only when
-    // the renderer provides the actual value; other geometry and authored globals keep
-    // their existing behavior.
-    let chunk_fade = gbuffers
-        .and_then(|g| g.attributes.iter().find(|(n, _)| n == "mc_chunkFade"))
-        .filter(|_| uses_name(&vertex.code, "mc_chunkFade") && !v.globals.contains("mc_chunkFade"));
-=======
     // Inputs the game gives that the vertex stage reads without declaring them (terrain's
     // fade, a line program's `vaPosition`...): injected only when the renderer provides the
     // value; a declared attribute and an authored global of that name keep their own.
@@ -602,7 +597,6 @@ fn translate(
         vertex,
         &v,
     );
->>>>>>> sunrise/main
     let header = |stage: &Stage| {
         let mut h = resources(&uniforms, &samplers, &images);
         match (alpha_test_ref, &part_ref) {
@@ -653,19 +647,13 @@ fn translate(
         }
         if let (Some(inputs), ShaderStage::Vertex) = (gbuffers, stage.kind) {
             h.push_str(&inputs.declarations);
-<<<<<<< sync-sunrise-1
-            h.push('\n');
+            // False in a stage that writes an image or a buffer, translated again for it.
+            writeln!(h, "\nuint hz_vertex_index;\n{RUNS_AGAIN}").unwrap();
             if let Some(at) = prepass_uv {
                 writeln!(h, "layout(location = {at}) out vec2 hz_prepass_uv;").unwrap();
             }
-            if chunk_fade.is_some() {
-                h.push_str("float mc_chunkFade;\n");
-=======
-            // False in a stage that writes an image or a buffer, translated again for it.
-            writeln!(h, "\nuint hz_vertex_index;\n{RUNS_AGAIN}").unwrap();
             for (name, _, ty) in &implicit {
                 writeln!(h, "{ty} {name};").unwrap();
->>>>>>> sunrise/main
             }
         }
         h.push_str(&stage.prelude());

@@ -129,10 +129,7 @@ pub mod component {
     pub const OMINOUS_BOTTLE_AMPLIFIER: i32 = 65;
     pub const JUKEBOX_PLAYABLE: i32 = 66;
     pub const PROVIDES_BANNER_PATTERNS: i32 = 67;
-<<<<<<< sync-sunrise-1
     pub const RECIPES: i32 = 68;
-=======
->>>>>>> sunrise/main
     pub const LODESTONE_TRACKER: i32 = 69;
     pub const FIREWORK_EXPLOSION: i32 = 70;
     pub const FIREWORKS: i32 = 71;
@@ -141,11 +138,8 @@ pub mod component {
     pub const BANNER_PATTERNS: i32 = 74;
     pub const BASE_COLOR: i32 = 75;
     pub const POT_DECORATIONS: i32 = 76;
-<<<<<<< sync-sunrise-1
-=======
     /// `Tool`: rules, default mining speed, wear per block, creative breaking.
     pub const TOOL: i32 = 28;
->>>>>>> sunrise/main
     pub const CONTAINER: i32 = 77;
     pub const BLOCK_STATE: i32 = 78;
     pub const BEES: i32 = 79;

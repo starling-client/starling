@@ -17,14 +17,9 @@ zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = "0.2"
 
-<<<<<<< sync-sunrise-1
 [target.'cfg(target_os = "android")'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "fs"] }
 
-[build-dependencies]
-sha2 = "0.10"
-=======
->>>>>>> sunrise/main
 
 [[bin]]
 name = "sunrise-prepare"

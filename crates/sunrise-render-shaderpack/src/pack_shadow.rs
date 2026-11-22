@@ -168,12 +168,6 @@ impl ShadowTargets {
         uses: ShadowUse,
         depth1: bool,
     ) -> Self {
-<<<<<<< sync-sunrise-1:crates/sunrise-client-render/src/gfx/pack_shadow.rs
-        let size = shadow.resolution.clamp(
-            1,
-            shadow_side_limit(device.limits().max_texture_dimension_2d),
-        );
-=======
         let ShadowUse {
             colors,
             doubled,
@@ -181,10 +175,10 @@ impl ShadowTargets {
             copied,
             sink,
         } = uses;
-        let size = shadow
-            .resolution
-            .clamp(1, device.limits().max_texture_dimension_2d);
->>>>>>> sunrise/main:crates/sunrise-render-shaderpack/src/pack_shadow.rs
+        let size = shadow.resolution.clamp(
+            1,
+            shadow_side_limit(device.limits().max_texture_dimension_2d),
+        );
         let copy = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
         let depth = wgpu::TextureFormat::Depth32Float;
         // A buffer bound as an image, as colortex buffers are (`PackPost::resize`).

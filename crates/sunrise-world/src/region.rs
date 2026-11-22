@@ -685,7 +685,12 @@ impl RegionWriter {
         Ok(())
     }
 
-<<<<<<< sync-sunrise-1
+    /// The `c.X.Z.mcc` files of the oversized chunks written so far, next to
+    /// the destination.
+    pub(crate) fn externals(&self) -> &[PathBuf] {
+        &self.externals
+    }
+
     pub fn finish(self) -> io::Result<()> {
         // Hard-link publication fails atomically if another writer won the name.
         self.finish_with(|temporary, destination| fs::hard_link(temporary, destination))
@@ -701,15 +706,6 @@ impl RegionWriter {
         mut self,
         publish: impl FnOnce(&Path, &Path) -> io::Result<()>,
     ) -> io::Result<()> {
-=======
-    /// The `c.X.Z.mcc` files of the oversized chunks written so far, next to
-    /// the destination.
-    pub(crate) fn externals(&self) -> &[PathBuf] {
-        &self.externals
-    }
-
-    pub fn finish(mut self) -> io::Result<()> {
->>>>>>> sunrise/main
         if self.failed {
             return Err(invalid("cannot publish a failed region writer"));
         }

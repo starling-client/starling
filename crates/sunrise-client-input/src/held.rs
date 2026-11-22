@@ -53,14 +53,6 @@ impl HeldKeys {
     pub fn raw(&self, key: &KeyCode) -> bool {
         self.held.get(key).is_some_and(|hold| hold.down())
     }
-<<<<<<< sync-sunrise-1
-    /// Starling: [`HeldKeys::raw`] under the name native mods made for Sunrise use, from when the
-    /// held keys were a `HashSet<KeyCode>` (`game.keys.contains(&KeyCode::ShiftLeft)`).
-    pub fn contains(&self, key: &KeyCode) -> bool {
-        self.raw(key)
-    }
-    /// `source` holds `key`. True when nothing held it before.
-=======
     /// Set the mapping's held flag, not a device's held flag. Its next input event takes over.
     pub fn override_down(&mut self, key: KeyCode, down: bool) {
         self.held.entry(key).or_default().override_down = Some(down);
@@ -76,6 +68,11 @@ impl HeldKeys {
                 self.held.remove(key);
             }
         }
+    }
+    /// Starling: [`HeldKeys::raw`] under the name native mods made for Sunrise use, from when the
+    /// held keys were a `HashSet<KeyCode>` (`game.keys.contains(&KeyCode::ShiftLeft)`).
+    pub fn contains(&self, key: &KeyCode) -> bool {
+        self.raw(key)
     }
     pub fn clear_overrides(&mut self) {
         self.held.retain(|_, hold| {
@@ -100,7 +97,6 @@ impl HeldKeys {
     }
     /// `source` holds `key`. True when no device held it before; a direct mapping write
     /// must not swallow the next real press.
->>>>>>> sunrise/main
     pub fn press(&mut self, key: KeyCode, source: Source) -> bool {
         let hold = self.held.entry(key).or_default();
         let new = hold.sources == 0;

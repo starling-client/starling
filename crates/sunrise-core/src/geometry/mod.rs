@@ -13,14 +13,8 @@ mod traversal;
 pub mod trig;
 use crate::position::BlockPos;
 pub use movement::{
-<<<<<<< sync-sunrise-1
-    Collider, Collides, MovedBlock, block_floor_height, candidate_step_heights,
-    entity_collision_bounds, resolve_shape_movement, resolve_step_movement,
-    try_resolve_step_movement,
-=======
     block_floor_height, candidate_step_heights, entity_collision_bounds, resolve_shape_movement,
     resolve_step_movement, try_resolve_step_movement, try_resolve_step_movement_oriented,
->>>>>>> sunrise/main
 };
 pub use shape::{ShapeError, ShapeOp, VoxelShape};
 pub use sweep::sweep_intersected_blocks;

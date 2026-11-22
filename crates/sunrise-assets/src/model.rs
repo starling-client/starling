@@ -225,16 +225,6 @@ impl CuboidModel {
     /// Like the native stream entry point, this reads one value and leaves
     /// trailing input unread. The pinned native entry point uses strict JSON.
     pub fn from_json(json: &str) -> Result<Self> {
-<<<<<<< sync-sunrise-1
-        let json = json.strip_prefix('\u{feff}').unwrap_or(json);
-        // NeoForge's composite models (mods' blocks): one model of their children's elements.
-        if json.contains("composite")
-            && let Some(flat) = flatten_composite(json)
-        {
-            return Self::from_json(&flat);
-        }
-        let raw = serde_json::Deserializer::from_str(json)
-=======
         Self::from_json_with_loaders(json, &|_| None)
     }
 
@@ -244,7 +234,6 @@ impl CuboidModel {
         loaders: &dyn Fn(&str) -> Option<LoaderProvider>,
     ) -> Result<Self> {
         let raw = serde_json::Deserializer::from_str(json.strip_prefix('\u{feff}').unwrap_or(json))
->>>>>>> sunrise/main
             .into_iter::<&RawValue>()
             .next()
             .ok_or_else(|| error("empty model input"))??;

@@ -144,19 +144,12 @@ impl<'r> BlockCollisionRegistry<'r> {
                 && !declared_nonempty
                 && !contextual.contains_key(&id)
                 && cached.cached_shape(id)?.is_some_and(VoxelShape::is_empty);
-            // Likewise the unit cube, the same shape under every context.
-            let full = !contextual.contains_key(&id)
-                && cached.cached_shape(id)?.is_some_and(VoxelShape::is_block);
             scan_flags.push(
                 u8::from(large)
                     | (u8::from(state.name == "minecraft:moving_piston") << 1)
                     | (u8::from(empty) << 2)
                     | (u8::from(contextual.contains_key(&id) || declared_collision) << 3)
-<<<<<<< sync-sunrise-1
-                    | (u8::from(full) << 4),
-=======
                     | (u8::from(published) << 4),
->>>>>>> sunrise/main
             );
             if cached.cached_shape(id)?.is_none()
                 && let Some(rule) =
@@ -207,22 +200,6 @@ impl<'r> BlockCollisionRegistry<'r> {
     pub fn cached_shapes(&self) -> &CachedCollisionRegistry<'r> {
         &self.cached
     }
-    /// Whether the state may collide outside its own cell, as a large
-    /// collision shape or a moving piston (true for unknown states).
-    pub fn reaches_outside(&self, state: BlockStateId) -> bool {
-        self.scan_flags
-            .get(state.0 as usize)
-            .is_none_or(|flags| flags & 3 != 0)
-    }
-    /// The state's shape when neither a context nor the world changes it
-    /// (what [`Self::collision_shape_with_context`] returns), borrowed.
-    pub fn plain_shape(&self, state: BlockStateId) -> Option<&VoxelShape> {
-        let flags = *self.scan_flags.get(state.0 as usize)?;
-        if flags & 8 != 0 {
-            return None;
-        }
-        self.cached.cached_shape(state).ok().flatten()
-    }
     /// Immutable cursor-filter metadata, prepared once for this registry.
     pub fn collision_block(&self, state: BlockStateId) -> io::Result<CollisionBlock> {
         let flags = self
@@ -233,7 +210,6 @@ impl<'r> BlockCollisionRegistry<'r> {
             large_collision_shape: flags & 1 != 0,
             moving_piston: flags & 2 != 0,
             empty_shape: flags & 4 != 0,
-            full_block: flags & 16 != 0,
         })
     }
     /// Whether the block entity of `state`'s block publishes the block's shapes

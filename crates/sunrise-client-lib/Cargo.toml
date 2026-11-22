@@ -13,12 +13,8 @@ description = "Reusable client systems, control tool and parity probes"
 path = "../sunrise-client/src/client_lib.rs"
 
 [dependencies]
-<<<<<<< sync-sunrise-1
 # The design system's palette and type scale (android_control_theme.rs).
 sunrise-theme = { path = "../sunrise-theme" }
-sunrise-guest-stack = { path = "../sunrise-guest-stack" }
-=======
->>>>>>> sunrise/main
 sunrise-mod-api-macros = { path = "../sunrise-mod-api-macros" }
 sunrise-hooks = { path = "../sunrise-hooks" }
 sunrise-mod-runtime = { path = "../sunrise-mod-runtime" }
@@ -82,14 +78,12 @@ xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 # Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md).
 sunrise-telemetry = { path = "../sunrise-telemetry", default-features = false }
 sunrise-bench = { path = "../sunrise-bench" }
-<<<<<<< sync-sunrise-1
 # Starling's Microsoft sign-in inside the game (`accounts.rs`): a phone has no launcher.
 starling-account = { path = "../starling-account" }
 # The game files prepared on a phone (`preparer.rs`), where no computer prepares them.
 sunrise-prepare = { path = "../sunrise-prepare" }
+# The carrier store's checksums (`carrier_store.rs`).
 crc32fast = "1"
-=======
->>>>>>> sunrise/main
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
 gilrs = { version = "0.11", optional = true }

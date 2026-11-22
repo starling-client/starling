@@ -8,13 +8,8 @@ use crate::{
     entity_obstruction::EntityIdentity,
 };
 use sunrise_core::geometry::{
-<<<<<<< sync-sunrise-1
-    Aabb, Axis, Collider, ShapeOp, Vec3, VoxelShape, entity_collision_bounds,
-    try_resolve_step_movement,
-=======
     Aabb, Axis, ShapeOp, Vec3, VoxelShape, entity_collision_bounds, oriented::OrientedCollider,
     try_resolve_step_movement_oriented,
->>>>>>> sunrise/main
 };
 
 /// How far below the feet `Entity.getAvailableSpaceBelow` looks for ground.
@@ -130,17 +125,17 @@ where
             // A box's blocks are a few dozen shapes at most: one allocation,
             // not the doubling a push-by-push list makes.
             let mut shapes = Vec::with_capacity(entities.len() + 16);
-            shapes.extend(entities.iter().cloned().map(Collider::Shape));
+            shapes.extend_from_slice(&entities);
             if let Some(border) = world
                 .movement_border(request.entity, bounds)
                 .map_err(CollisionScanError::World)?
             {
-                shapes.push(Collider::Shape(border));
+                shapes.push(border);
             }
-            let mut scan =
-                BlockCollisionScan::new(world, request.context, bounds, false, candidate_budget)?;
-            while let Some(hit) = scan.next_collider() {
-                shapes.push(hit?.1);
+            for hit in
+                BlockCollisionScan::new(world, request.context, bounds, false, candidate_budget)?
+            {
+                shapes.push(hit?.shape);
             }
             Ok(shapes)
         },
