@@ -744,11 +744,15 @@ impl Game<'_> {
                     .with_user(|| game.options.player_name());
                 title.last_server = game.settings.file.string("lastServer");
                 title.skip_multiplayer_warning = game.settings.file.bool("skipMultiplayerWarning");
-                // Gui.addInitialScreens: the accessibility onboarding comes first.
-                if game.settings.file.bool("onboardAccessibility") {
+                // Gui.addInitialScreens: the accessibility onboarding comes first. Starling: not on
+                // Android, which has no narrator, and whose players' options all still ask for it.
+                if !cfg!(target_os = "android") && game.settings.file.bool("onboardAccessibility") {
                     title.start_onboarding();
                 }
                 game.show_title(title);
+                // Starling: started again for a world's own mods (the start without a loading
+                // screen: the menu's takes it in startup_menu.rs).
+                game.pending_entry = world_content::next_entry();
             }
         }
         if std::env::var_os("SUNRISE_COMMAND_SCRIPT").is_some()

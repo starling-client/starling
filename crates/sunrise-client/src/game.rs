@@ -7308,7 +7308,7 @@ impl Game<'_> {
         // the projected fractions for input, but draw and hit-test hover at the frame's pixel.
         let pointer = self.project_window_cursor(size);
         if let Some(pointer) = pointer {
-            self.cursor = pointer.pixel();
+            self.cursor = self.in_interface(pointer.pixel());
         }
         // Off a world (title, options, Win, a prompt before joining) the HUD shows nothing to
         // keep clear of; `hud_layers` fills it in once the world's HUD draws.
@@ -7352,10 +7352,10 @@ impl Game<'_> {
         if let Some(pointer) = pointer {
             debug_assert_eq!(
                 self.cursor,
-                pointer.pixel(),
+                self.in_interface(pointer.pixel()),
                 "drawing changed the input cursor"
             );
-            self.cursor = pointer.subpixel();
+            self.cursor = self.in_interface(pointer.subpixel());
         }
         batch
     }
@@ -7528,7 +7528,10 @@ impl Game<'_> {
             }
             // Combat feel Legacy hides the attack indicator unless the player keeps it.
             let indicator = if show_hud && !self.pvp_hides_attack_indicator() {
-                self.settings.attack_indicator
+                sunrise_client::android_controls::attack_indicator(
+                    self.settings.attack_indicator,
+                    !self.touch_hides_crosshair(),
+                )
             } else {
                 0
             };
@@ -7597,7 +7600,12 @@ impl Game<'_> {
                             .filter(|_| indicator == 2)
                             .map(|(strength, _)| strength),
                     };
-                    let draws = hud_layout::hotbar(wi, hi, &inputs);
+                    let draws = hud_layout::hotbar_with_attack_side(
+                        wi,
+                        hi,
+                        &inputs,
+                        MOBILE_PLATFORM.then_some(g.settings.touch.attack_indicator_left),
+                    );
                     // `extractSlot` for each item, in order, on the path `gui_paint` takes.
                     let mut items = crate::game::gui_paint_items::HotbarItems { game: g };
                     hud_layout::paint_items(batch, &g.gui.atlas, &draws, &mut items);
@@ -11970,14 +11978,21 @@ impl Game<'_> {
         projection: sunrise_client::window::PointerProjection,
     ) {
         self.window_cursor = Some(sample);
-        self.cursor = projection.project_pointer(sample).subpixel();
+        self.cursor = self.in_interface(projection.project_pointer(sample).subpixel());
+    }
+
+    /// Starling: a pointer in the interface's own space (`interface_origin`: the menus' safe area
+    /// on a phone, nothing elsewhere).
+    fn in_interface(&self, (x, y): (f32, f32)) -> (f32, f32) {
+        let [ox, oy] = self.interface_origin();
+        (x - ox, y - oy)
     }
 
     fn refresh_window_cursor(&mut self) {
         if let Some(position) = self.window_cursor
             && let Some(projection) = self.renderer_pointer_projection()
         {
-            self.cursor = projection.project_pointer(position).subpixel();
+            self.cursor = self.in_interface(projection.project_pointer(position).subpixel());
         }
     }
 
@@ -12326,11 +12341,18 @@ impl Game<'_> {
         }
         if self.title_input_active() {
             if !pressed {
+                if left && self.screen != Screen::Options {
+                    self.release_title_player();
+                }
                 return Ok(left
                     && self.title.as_mut().is_some_and(|title| {
                         let released = title.release();
                         title.release_field() || released
                     }));
+            }
+            if left && self.title_player_at(self.cursor) {
+                self.press_title_player();
+                return Ok(true);
             }
             if !matches!(button, MouseButton::Left | MouseButton::Middle) {
                 return Ok(self.preset_editor_mouse_clicked(code, double_click));
@@ -12451,7 +12473,10 @@ impl Game<'_> {
             }
             Screen::Creative => {
                 let released = left && self.creative_screen.release();
-                self.inventory_mouse_release(!left) || released
+                let taken = self.inventory_mouse_release(!left) || released;
+                // Starling: Bedrock Inventory's window follows the pointer again.
+                self.bedrock_held = false;
+                taken
             }
             Screen::Paused if left_press && self.pause_menu => self.pause_click()?,
             Screen::WorldOptions if left_press => self.world_options_click(),
@@ -12510,6 +12535,10 @@ impl Game<'_> {
         cursor_sample: Option<sunrise_client::window::PointerSample>,
         mouse_press_millis: Option<u64>,
     ) -> bool {
+        if self.platform_keypad_event(event_loop, &mut event) {
+            return false;
+        }
+        self.platform_held_modifiers(&event);
         let before_screen =
             |game: &mut Self| game.prepare_window_event(event_loop, &event, cursor_sample);
         let handled = match &event {

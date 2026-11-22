@@ -5257,6 +5257,23 @@ impl OptionsUi {
             }
             return (Vec::new(), false);
         }
+        // Starling: a drag on the wardrobe's player turns it.
+        if self.page() == Page::Skin && self.wardrobe_enabled && !right {
+            if drag {
+                if let Some(last_x) = self.skin.drag_x {
+                    self.skin.angle = (self.skin.angle - (x - last_x) * 2.5).rem_euclid(360.0);
+                    self.skin.drag_x = Some(x);
+                    return (Vec::new(), true);
+                }
+            } else {
+                self.finish_wardrobe_drag();
+                if self.wardrobe_preview_at(size, (x, y)) {
+                    self.skin.angle = self.wardrobe_angle();
+                    self.skin.drag_x = Some(x);
+                    return (Vec::new(), true);
+                }
+            }
+        }
         if self.page() == Page::Studio {
             if right || drag {
                 return (Vec::new(), false);
