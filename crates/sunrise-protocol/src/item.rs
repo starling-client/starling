@@ -60,10 +60,7 @@ pub mod component {
     pub const MAX_DAMAGE: i32 = 2;
     pub const DAMAGE: i32 = 3;
     pub const UNBREAKABLE: i32 = 4;
-    pub const USE_EFFECTS: i32 = 5;
     pub const CUSTOM_NAME: i32 = 6;
-    pub const MINIMUM_ATTACK_CHARGE: i32 = 7;
-    pub const DAMAGE_TYPE: i32 = 8;
     pub const ITEM_NAME: i32 = 9;
     pub const ITEM_MODEL: i32 = 10;
     pub const LORE: i32 = 11;
@@ -80,114 +77,48 @@ pub mod component {
     pub const REPAIR_COST: i32 = 19;
     pub const CREATIVE_SLOT_LOCK: i32 = 20;
     pub const ENCHANTMENT_GLINT_OVERRIDE: i32 = 21;
-    pub const INTANGIBLE_PROJECTILE: i32 = 22;
-    pub const FOOD: i32 = 23;
     /// `Consumable.STREAM_CODEC`: consumeSeconds first.
     pub const CONSUMABLE: i32 = 24;
-    pub const USE_REMAINDER: i32 = 25;
-    pub const USE_COOLDOWN: i32 = 26;
-    pub const DAMAGE_RESISTANT: i32 = 27;
-    pub const TOOL: i32 = 28;
-    pub const WEAPON: i32 = 29;
     /// `AttackRange`: six floats, in the record's field order.
     pub const ATTACK_RANGE: i32 = 30;
-    pub const ENCHANTABLE: i32 = 31;
     pub const EQUIPPABLE: i32 = 32;
-    pub const REPAIRABLE: i32 = 33;
     pub const GLIDER: i32 = 34;
-    pub const TOOLTIP_STYLE: i32 = 35;
     /// `DeathProtection`: the `death_effects` a stack runs when it saves its holder.
     pub const DEATH_PROTECTION: i32 = 36;
     pub const BLOCKS_ATTACKS: i32 = 37;
-    pub const PIERCING_WEAPON: i32 = 38;
     pub const KINETIC_WEAPON: i32 = 39;
-    pub const ATTACK_ANIMATION: i32 = 40;
-    pub const INTERACT_ANIMATION: i32 = 41;
-    pub const ADDITIONAL_TRADE_COST: i32 = 42;
-    pub const BLOCK_TRANSFORMER: i32 = 43;
-    pub const VILLAGER_FOOD: i32 = 44;
     pub const STORED_ENCHANTMENTS: i32 = 45;
-    pub const DYE: i32 = 46;
+    pub const PROFILE: i32 = 72;
+    pub const BANNER_PATTERNS: i32 = 74;
+    pub const BASE_COLOR: i32 = 75;
     pub const DYED_COLOR: i32 = 47;
     pub const MAP_ID: i32 = 48;
-    pub const MAP_DECORATIONS: i32 = 49;
     pub const MAP_POST_PROCESSING: i32 = 50;
     pub const CHARGED_PROJECTILES: i32 = 51;
     pub const BUNDLE_CONTENTS: i32 = 52;
     pub const POTION_CONTENTS: i32 = 53;
-    pub const POTION_DURATION_SCALE: i32 = 54;
     pub const SUSPICIOUS_STEW_EFFECTS: i32 = 55;
     pub const WRITABLE_BOOK_CONTENT: i32 = 56;
     pub const WRITTEN_BOOK_CONTENT: i32 = 57;
     pub const TRIM: i32 = 58;
-    pub const DEBUG_STICK_STATE: i32 = 59;
-    pub const ENTITY_DATA: i32 = 60;
-    pub const BUCKET_ENTITY_DATA: i32 = 61;
-    pub const BLOCK_ENTITY_DATA: i32 = 62;
     pub const INSTRUMENT: i32 = 63;
     pub const PROVIDES_TRIM_MATERIAL: i32 = 64;
-    pub const OMINOUS_BOTTLE_AMPLIFIER: i32 = 65;
-    pub const JUKEBOX_PLAYABLE: i32 = 66;
     pub const PROVIDES_BANNER_PATTERNS: i32 = 67;
-    pub const RECIPES: i32 = 68;
     pub const LODESTONE_TRACKER: i32 = 69;
     pub const FIREWORK_EXPLOSION: i32 = 70;
     pub const FIREWORKS: i32 = 71;
-    pub const PROFILE: i32 = 72;
-    pub const NOTE_BLOCK_SOUND: i32 = 73;
-    pub const BANNER_PATTERNS: i32 = 74;
-    pub const BASE_COLOR: i32 = 75;
+    pub const BLOCK_ENTITY_DATA: i32 = 62;
+    pub const OMINOUS_BOTTLE_AMPLIFIER: i32 = 65;
+    pub const USE_REMAINDER: i32 = 25;
     pub const POT_DECORATIONS: i32 = 76;
     /// `Tool`: rules, default mining speed, wear per block, creative breaking.
     pub const TOOL: i32 = 28;
     pub const CONTAINER: i32 = 77;
-    pub const BLOCK_STATE: i32 = 78;
-    pub const BEES: i32 = 79;
     pub const SULFUR_CUBE_CONTENT: i32 = 80;
-    pub const LOCK: i32 = 81;
-    pub const CONTAINER_LOOT: i32 = 82;
-    pub const BREAK_SOUND: i32 = 83;
-    pub const COMPOSTABLE: i32 = 84;
-    pub const COOKING_FUEL: i32 = 85;
-    pub const BREWING_FUEL: i32 = 86;
-    pub const MOB_VISIBILITY: i32 = 87;
-    pub const VILLAGER_VARIANT: i32 = 88;
-    pub const WOLF_VARIANT: i32 = 89;
-    pub const WOLF_SOUND_VARIANT: i32 = 90;
-    pub const WOLF_COLLAR: i32 = 91;
-    pub const FOX_VARIANT: i32 = 92;
-    pub const SALMON_SIZE: i32 = 93;
-    pub const PARROT_VARIANT: i32 = 94;
-    pub const TROPICAL_FISH_PATTERN: i32 = 95;
-    pub const TROPICAL_FISH_BASE_COLOR: i32 = 96;
-    pub const TROPICAL_FISH_PATTERN_COLOR: i32 = 97;
-    pub const MOOSHROOM_VARIANT: i32 = 98;
-    pub const RABBIT_VARIANT: i32 = 99;
-    pub const PIG_VARIANT: i32 = 100;
-    pub const PIG_SOUND_VARIANT: i32 = 101;
-    pub const COW_VARIANT: i32 = 102;
-    pub const COW_SOUND_VARIANT: i32 = 103;
-    pub const CHICKEN_VARIANT: i32 = 104;
-    pub const CHICKEN_SOUND_VARIANT: i32 = 105;
-    pub const ZOMBIE_NAUTILUS_VARIANT: i32 = 106;
-    pub const FROG_VARIANT: i32 = 107;
-    pub const HORSE_VARIANT: i32 = 108;
     pub const PAINTING_VARIANT: i32 = 109;
-    pub const LLAMA_VARIANT: i32 = 110;
-    pub const AXOLOTL_VARIANT: i32 = 111;
-    pub const CAT_VARIANT: i32 = 112;
-    pub const CAT_SOUND_VARIANT: i32 = 113;
-    pub const CAT_COLLAR: i32 = 114;
-    pub const SHEEP_COLOR: i32 = 115;
-    pub const SHULKER_COLOR: i32 = 116;
-    pub const PROVIDES_POTTERY_PATTERN: i32 = 117;
     /// `SignText.STREAM_CODEC`: a sign item's text, front and back.
     pub const SIGN_TEXT_FRONT: i32 = 118;
     pub const SIGN_TEXT_BACK: i32 = 119;
-    pub const WAXED: i32 = 120;
-    pub const CUSHION_COLOR: i32 = 121;
-    /// The number of component types; ids at or past it are refused.
-    pub const COUNT: i32 = 122;
 }
 
 /// `EquipmentSlotGroup`'s serialized names by network id (`EquipmentSlotGroup.BY_ID`): the slot
@@ -217,9 +148,8 @@ pub struct WrittenBook {
     pub resolved: bool,
 }
 
-/// The value of one patched data component. Components Sunrise does not model
-/// are kept as `Raw` bytes; only an unknown component type makes the stack
-/// (and packet) undecodable.
+/// The value of one patched data component. Components whose stream codec
+/// Sunrise does not implement make the whole stack (and packet) undecodable.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Component {
     Int(i32),
@@ -963,56 +893,6 @@ impl Stack {
             _ => 0,
         }
     }
-    /// The stack's `use_cooldown`: its seconds and cooldown group (None: the item's id).
-    pub fn use_cooldown(&self) -> Option<(f32, Option<String>)> {
-        let Some(Component::Raw(bytes)) = self.component(component::USE_COOLDOWN) else {
-            return None;
-        };
-        let mut r = Reader::new(bytes);
-        let seconds = r.f32().ok()?;
-        let group = if r.bool().ok()? {
-            Some(r.string(32767).ok()?)
-        } else {
-            None
-        };
-        Some((seconds, group))
-    }
-    /// The stack's own `equippable` (a server's custom armour), read from its bytes.
-    pub fn equippable(&self) -> Option<Equippable> {
-        let Some(Component::Raw(bytes)) = self.component(component::EQUIPPABLE) else {
-            return None;
-        };
-        let mut r = Reader::new(bytes);
-        let slot = r.varint().ok()?;
-        // equipSound: a registry id plus one, or 0 and the sound itself.
-        if r.varint().ok()? == 0 {
-            r.string(32767).ok()?;
-            if r.bool().ok()? {
-                r.f32().ok()?;
-            }
-        }
-        let mut ident = || match r.bool().ok()? {
-            true => Some(Some(r.string(32767).ok()?)),
-            false => Some(None),
-        };
-        let asset = ident()?;
-        let overlay = ident()?;
-        Some(Equippable {
-            slot,
-            asset,
-            overlay,
-        })
-    }
-}
-/// What a stack's `equippable` says of where and how it is worn: the slot by `EquipmentSlot`'s
-/// id (0 main hand, 1 feet, 2 legs, 3 chest, 4 head, 5 off hand, 6 body, 7 saddle), the
-/// equipment asset it draws (`nexo:ruby` is `assets/nexo/equipment/ruby.json`) and the camera
-/// overlay.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Equippable {
-    pub slot: i32,
-    pub asset: Option<String>,
-    pub overlay: Option<String>,
 }
 /// ItemStack.OPTIONAL_STREAM_CODEC: `None` is the empty stack (count 0).
 pub struct Slot;
@@ -1952,539 +1832,6 @@ mod tests {
             Slot::write(&stack, &mut w);
             assert_eq!(w.data, bytes, "component {kind}");
         }
-    }
-
-    /// A stack with one `kind` component, hand-encoded after its vanilla codec
-    /// by `value`, then a plain stack.
-    fn with_component(kind: i32, value: impl FnOnce(&mut Writer)) -> (Vec<u8>, Vec<u8>) {
-        let mut v = Writer::new();
-        value(&mut v);
-        let mut w = Writer::new();
-        for x in [1, 900, 1, 0, kind] {
-            w.varint(x);
-        }
-        w.bytes(&v.data);
-        (v.data, w.data)
-    }
-    /// The component must come back as exactly its bytes, re-encode
-    /// unchanged, end where the codec ends (the next stack still decodes) and
-    /// need every one of its bytes.
-    fn raw_round_trip(kind: i32, value: impl FnOnce(&mut Writer)) {
-        let (bytes, mut data) = with_component(kind, value);
-        let end = data.len();
-        let mut w = Writer::new();
-        Slot::write(&Some(Stack::new(7, 3)), &mut w);
-        data.extend_from_slice(&w.data);
-
-        let mut r = Reader::new(&data);
-        let stack = Slot::read(&mut r).unwrap().unwrap();
-        assert_eq!(stack.added, [(kind, Component::Raw(bytes))]);
-        same_bytes_after(stack, r, &data, end);
-    }
-    /// As [`raw_round_trip`], for a component the codec reads into its own type: it re-encodes
-    /// to the same bytes.
-    fn typed_round_trip(kind: i32, value: impl FnOnce(&mut Writer)) {
-        let (_, mut data) = with_component(kind, value);
-        let end = data.len();
-        let mut w = Writer::new();
-        Slot::write(&Some(Stack::new(7, 3)), &mut w);
-        data.extend_from_slice(&w.data);
-
-        let mut r = Reader::new(&data);
-        let stack = Slot::read(&mut r).unwrap().unwrap();
-        assert!(!matches!(stack.added[..], [(_, Component::Raw(_))]));
-        same_bytes_after(stack, r, &data, end);
-    }
-    fn same_bytes_after(stack: Stack, mut r: Reader<'_>, data: &[u8], end: usize) {
-        assert_eq!(Slot::read(&mut r).unwrap(), Some(Stack::new(7, 3)));
-        assert_eq!(r.remaining(), 0);
-        let mut back = Writer::new();
-        Slot::write(&Some(stack), &mut back);
-        assert_eq!(back.data, data[..end]);
-        assert!(Slot::read(&mut Reader::new(&data[..end - 1])).is_err());
-    }
-    fn refused(kind: i32, value: impl FnOnce(&mut Writer)) {
-        let (_, data) = with_component(kind, value);
-        assert!(Slot::read(&mut Reader::new(&data)).is_err(), "{kind}");
-    }
-
-    fn text(w: &mut Writer, s: &str) {
-        w.nbt(&literal(s));
-    }
-    /// SoundEvent.STREAM_CODEC by registry id.
-    fn sound_id(w: &mut Writer, id: i32) {
-        w.varint(id + 1);
-    }
-    /// SoundEvent.STREAM_CODEC inline, with a fixed range.
-    fn sound_inline(w: &mut Writer, location: &str) {
-        w.varint(0);
-        w.string(location);
-        w.bool(true);
-        w.f32(16.0);
-    }
-    /// MobEffectInstance.STREAM_CODEC hiding a weaker instance.
-    fn effect(w: &mut Writer, id: i32) {
-        w.varint(id);
-        for details in [(1, 600, true), (0, 1200, false)] {
-            w.varint(details.0);
-            w.varint(details.1);
-            w.bool(false);
-            w.bool(true);
-            w.bool(true);
-            w.bool(details.2);
-        }
-    }
-    /// ItemStackTemplate.STREAM_CODEC with an empty patch.
-    fn template(w: &mut Writer, item: i32, count: i32) {
-        for x in [item, count, 0, 0] {
-            w.varint(x);
-        }
-    }
-
-    #[test]
-    fn food_and_simple_values() {
-        raw_round_trip(component::FOOD, |w| {
-            w.varint(4);
-            w.f32(2.4);
-            w.bool(false);
-        });
-        raw_round_trip(component::USE_EFFECTS, |w| {
-            w.bool(true);
-            w.bool(false);
-            w.f32(0.2);
-        });
-        raw_round_trip(component::WEAPON, |w| {
-            w.varint(1);
-            w.f32(5.0);
-        });
-        raw_round_trip(component::MINIMUM_ATTACK_CHARGE, |w| w.f32(0.9));
-        // A shield's base colour, read as its dye id (upstream's Component::Int).
-        typed_round_trip(component::BASE_COLOR, |w| w.varint(11));
-        // A painting variant by reference (upstream's Component::PaintingVariant).
-        typed_round_trip(component::PAINTING_VARIANT, |w| w.varint(4));
-        raw_round_trip(component::TOOLTIP_STYLE, |w| w.string("minecraft:fancy"));
-        raw_round_trip(component::ATTACK_ANIMATION, |w| {
-            w.varint(2);
-            w.varint(10);
-        });
-        raw_round_trip(component::USE_COOLDOWN, |w| {
-            w.f32(1.5);
-            w.bool(true);
-            w.string("minecraft:ender_pearl");
-        });
-        raw_round_trip(component::COOKING_FUEL, |w| {
-            w.bool(true);
-            w.i32(200);
-            w.bool(false);
-            w.string("minecraft:furnace_speed");
-        });
-        // Read into upstream's Component::StewEffects.
-        typed_round_trip(component::SUSPICIOUS_STEW_EFFECTS, |w| {
-            w.varint(1);
-            w.varint(15);
-            w.varint(160);
-        });
-    }
-
-    #[test]
-    fn profiles_read_their_whole_skin_patch() {
-        // A full GameProfile with a signed textures property, then a
-        // PlayerSkin.Patch: a body texture, no cape, an elytra texture (one
-        // Identifier each) and the slim model (a bool).
-        let (_, mut data) = with_component(component::PROFILE, |w| {
-            w.bool(true);
-            w.uuid(0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5);
-            w.string("Notch");
-            w.varint(1);
-            w.string("textures");
-            w.string("eyJ0ZXh0dXJlcyI6e319");
-            w.bool(true);
-            w.string("c2lnbmF0dXJl");
-            w.bool(true);
-            w.string("minecraft:entity/player/wide/steve");
-            w.bool(false);
-            w.bool(true);
-            w.string("minecraft:entity/equipment/wings/elytra");
-            w.bool(true);
-            w.bool(true);
-        });
-        let mut w = Writer::new();
-        Slot::write(&Some(Stack::new(7, 3)), &mut w);
-        data.extend_from_slice(&w.data);
-        let mut r = Reader::new(&data);
-        let stack = Slot::read(&mut r).unwrap().unwrap();
-        assert_eq!(
-            stack.component(component::PROFILE),
-            Some(&Component::Profile(Profile {
-                name: Some("Notch".into()),
-                id: Some(0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5),
-                properties: vec![(
-                    "textures".into(),
-                    "eyJ0ZXh0dXJlcyI6e319".into(),
-                    Some("c2lnbmF0dXJl".into()),
-                )],
-                skin: SkinPatch {
-                    body: Some("minecraft:entity/player/wide/steve".into()),
-                    cape: None,
-                    elytra: Some("minecraft:entity/equipment/wings/elytra".into()),
-                    slim: Some(true),
-                },
-            }))
-        );
-        assert_eq!(Slot::read(&mut r).unwrap(), Some(Stack::new(7, 3)));
-        assert_eq!(r.remaining(), 0);
-    }
-
-    #[test]
-    fn a_stack_names_its_own_equipment_asset() {
-        let mut w = Writer::new();
-        w.varint(4);
-        sound_inline(&mut w, "minecraft:item.armor.equip_generic");
-        w.bool(true);
-        w.string("nexo:ruby");
-        w.bool(false);
-        let mut stack = Stack::new(7, 1);
-        stack
-            .added
-            .push((component::EQUIPPABLE, Component::Raw(w.data)));
-        assert_eq!(
-            stack.equippable(),
-            Some(Equippable {
-                slot: 4,
-                asset: Some("nexo:ruby".into()),
-                overlay: None,
-            })
-        );
-        assert_eq!(Stack::new(7, 1).equippable(), None);
-    }
-
-    #[test]
-    fn equippable_and_consumable() {
-        raw_round_trip(component::EQUIPPABLE, |w| {
-            w.varint(5);
-            sound_id(w, 120);
-            w.bool(true);
-            w.string("minecraft:diamond");
-            w.bool(false);
-            w.bool(true);
-            w.varint(0);
-            w.string("minecraft:can_wear_horse_armor");
-            for b in [true, true, true, false, false] {
-                w.bool(b);
-            }
-            sound_inline(w, "minecraft:item.shears.snip");
-        });
-        raw_round_trip(component::CONSUMABLE, |w| {
-            w.f32(1.6);
-            w.varint(1);
-            sound_id(w, 300);
-            w.bool(true);
-            w.varint(5);
-            // apply_effects
-            w.varint(0);
-            w.varint(1);
-            effect(w, 3);
-            w.f32(0.5);
-            // remove_effects: two ids
-            w.varint(1);
-            w.varint(3);
-            w.varint(4);
-            w.varint(9);
-            // clear_all_effects
-            w.varint(2);
-            // teleport_randomly
-            w.varint(3);
-            w.f32(16.0);
-            w.bool(true);
-            // play_sound
-            w.varint(4);
-            sound_inline(w, "minecraft:entity.generic.burp");
-        });
-        raw_round_trip(component::DEATH_PROTECTION, |w| {
-            w.varint(1);
-            w.varint(2);
-        });
-        // An unknown consume effect type.
-        refused(component::DEATH_PROTECTION, |w| {
-            w.varint(1);
-            w.varint(5);
-        });
-    }
-
-    #[test]
-    fn tools_weapons_and_attributes() {
-        raw_round_trip(component::TOOL, |w| {
-            w.varint(2);
-            // A block tag that denies drops.
-            w.varint(0);
-            w.string("minecraft:incorrect_for_wooden_tool");
-            w.bool(false);
-            w.bool(true);
-            w.bool(false);
-            // Two block ids, mined at 8 with drops.
-            w.varint(3);
-            w.varint(10);
-            w.varint(20);
-            w.bool(true);
-            w.f32(8.0);
-            w.bool(true);
-            w.bool(true);
-            w.f32(1.0);
-            w.varint(1);
-            w.bool(true);
-        });
-        raw_round_trip(component::ATTRIBUTE_MODIFIERS, |w| {
-            w.varint(3);
-            for (attribute, id, amount, display) in [
-                (3, "minecraft:base_attack_damage", 5.0, 0),
-                (5, "minecraft:base_attack_speed", -2.4, 1),
-                (1, "example:armor", 0.5, 2),
-            ] {
-                w.varint(attribute);
-                w.string(id);
-                w.f64(amount);
-                w.varint(0);
-                w.varint(1);
-                w.varint(display);
-            }
-            text(w, "+50% armor");
-        });
-        raw_round_trip(component::BLOCKS_ATTACKS, |w| {
-            w.f32(0.25);
-            w.f32(1.0);
-            w.varint(1);
-            w.f32(90.0);
-            w.bool(true);
-            w.varint(0);
-            w.string("minecraft:is_projectile");
-            w.f32(0.0);
-            w.f32(1.0);
-            [3.0, 1.0, 1.0].into_iter().for_each(|f| w.f32(f));
-            w.bool(true);
-            w.varint(0);
-            w.string("minecraft:bypasses_shield");
-            w.bool(true);
-            sound_id(w, 1);
-            w.bool(false);
-        });
-        raw_round_trip(component::KINETIC_WEAPON, |w| {
-            w.varint(10);
-            w.varint(5);
-            w.bool(true);
-            w.varint(100);
-            w.f32(1.0);
-            w.f32(0.5);
-            w.bool(false);
-            w.bool(true);
-            w.varint(200);
-            w.f32(2.0);
-            w.f32(0.0);
-            w.f32(0.38);
-            w.f32(1.2);
-            w.bool(true);
-            sound_inline(w, "minecraft:item.spear.use");
-            w.bool(false);
-        });
-        raw_round_trip(component::PIERCING_WEAPON, |w| {
-            w.bool(true);
-            w.bool(false);
-            w.bool(false);
-            w.bool(true);
-            sound_id(w, 4);
-        });
-    }
-
-    #[test]
-    fn nesting_past_the_limit_is_refused() {
-        // Charged projectiles, each holding the next: a crossbow in a crossbow, 65 deep.
-        fn crossbows(w: &mut Writer, depth: u32) {
-            w.varint(1); // item
-            w.varint(1); // count
-            if depth == 0 {
-                w.varint(0);
-                w.varint(0);
-                return;
-            }
-            w.varint(1);
-            w.varint(0);
-            w.varint(component::CHARGED_PROJECTILES);
-            w.varint(1);
-            crossbows(w, depth - 1);
-        }
-        for (depth, ok) in [(MAX_NESTING, true), (MAX_NESTING + 1, false)] {
-            let mut w = Writer::new();
-            crossbows(&mut w, depth);
-            let read = Template::read(&mut Reader::new(&w.data));
-            assert_eq!(read.is_ok(), ok, "depth {depth}: {read:?}");
-        }
-        // A refusal leaves nothing behind for the next packet.
-        NESTING.with(|n| assert_eq!(n.get(), 0));
-    }
-
-    #[test]
-    fn bundles_and_containers_hold_nested_stacks() {
-        typed_round_trip(component::BUNDLE_CONTENTS, |w| {
-            w.varint(2);
-            template(w, 42, 3);
-            // A damaged, named stack holding its own bundle, minus a component.
-            for x in [43, 1, 3, 1, component::DAMAGE, 5, component::CUSTOM_NAME] {
-                w.varint(x);
-            }
-            text(w, "inner");
-            w.varint(component::BUNDLE_CONTENTS);
-            w.varint(1);
-            template(w, 1, 1);
-            w.varint(component::REPAIR_COST);
-        });
-        raw_round_trip(component::CONTAINER, |w| {
-            w.varint(3);
-            w.bool(true);
-            template(w, 1, 64);
-            w.bool(false);
-            w.bool(true);
-            template(w, 2, 1);
-        });
-        raw_round_trip(component::POT_DECORATIONS, |w| {
-            w.bool(true);
-            template(w, 5, 1);
-            w.bool(false);
-            w.bool(false);
-            w.bool(true);
-            template(w, 6, 1);
-        });
-        raw_round_trip(component::USE_REMAINDER, |w| template(w, 9, 1));
-    }
-
-    #[test]
-    fn direct_trims_banners_and_songs() {
-        // A trim with a direct holder is read into its own type and keeps its bytes.
-        typed_round_trip(component::TRIM, |w| {
-            w.varint(3);
-            w.varint(0);
-            w.string("minecraft:sentry");
-            text(w, "Sentry Armor Trim");
-            w.bool(false);
-        });
-        typed_round_trip(component::TRIM, |w| {
-            w.varint(0);
-            w.string("minecraft:amethyst");
-            text(w, "Amethyst Material");
-            w.varint(1);
-        });
-        raw_round_trip(component::BANNER_PATTERNS, |w| {
-            w.varint(2);
-            w.varint(6);
-            w.varint(14);
-            w.varint(0);
-            w.string("minecraft:creeper");
-            w.string("block.minecraft.banner.creeper");
-            w.varint(0);
-        });
-        raw_round_trip(component::PROVIDES_BANNER_PATTERNS, |w| {
-            w.varint(0);
-            w.string("minecraft:pattern_item/globe");
-        });
-        raw_round_trip(component::INSTRUMENT, |w| {
-            w.varint(0);
-            sound_inline(w, "minecraft:item.goat_horn.sound.0");
-            w.f32(7.0);
-            w.f32(256.0);
-            w.varint(0);
-            text(w, "Ponder");
-        });
-        raw_round_trip(component::JUKEBOX_PLAYABLE, |w| w.varint(4));
-    }
-
-    #[test]
-    fn adventure_mode_predicates() {
-        raw_round_trip(component::CAN_BREAK, |w| {
-            w.varint(2);
-            // Blocks, state properties, NBT and component matchers.
-            w.bool(true);
-            w.varint(2);
-            w.varint(1);
-            w.bool(true);
-            w.varint(2);
-            w.string("facing");
-            w.bool(true);
-            w.string("north");
-            w.string("age");
-            w.bool(false);
-            w.bool(true);
-            w.string("1");
-            w.bool(false);
-            w.bool(true);
-            w.nbt(&Tag::compound([("Lock", literal("key"))]));
-            w.varint(2);
-            w.varint(component::DAMAGE);
-            w.varint(0);
-            w.varint(component::CUSTOM_NAME);
-            text(w, "named");
-            w.varint(2);
-            w.bool(true);
-            w.varint(3);
-            w.nbt(&Tag::compound([("min", Tag::Int(1))]));
-            w.bool(false);
-            w.varint(component::ENCHANTMENTS);
-            w.nbt(&Tag::Compound(Default::default()));
-            // A block tag alone.
-            w.bool(true);
-            w.varint(0);
-            w.string("minecraft:logs");
-            w.bool(false);
-            w.bool(false);
-            w.varint(0);
-            w.varint(0);
-        });
-        raw_round_trip(component::CAN_PLACE_ON, |w| w.varint(0));
-    }
-
-    #[test]
-    fn block_and_entity_data() {
-        let tag = Tag::compound([("id", literal("minecraft:pig")), ("Age", Tag::Int(3))]);
-        raw_round_trip(component::ENTITY_DATA, |w| {
-            w.varint(12);
-            w.nbt(&tag);
-        });
-        raw_round_trip(component::BLOCK_ENTITY_DATA, |w| {
-            w.varint(7);
-            w.nbt(&tag);
-        });
-        raw_round_trip(component::BUCKET_ENTITY_DATA, |w| w.nbt(&tag));
-        raw_round_trip(component::BEES, |w| {
-            w.varint(1);
-            w.varint(9);
-            w.nbt(&tag);
-            w.varint(100);
-            w.varint(600);
-        });
-        raw_round_trip(component::BLOCK_STATE, |w| {
-            w.varint(2);
-            for s in ["facing", "east", "lit", "true"] {
-                w.string(s);
-            }
-        });
-        raw_round_trip(component::SIGN_TEXT_FRONT, |w| {
-            ["a", "b", "c", "d"].into_iter().for_each(|l| text(w, l));
-            w.bool(true);
-            ["a", "*", "c", "d"].into_iter().for_each(|l| text(w, l));
-            w.varint(15);
-            w.bool(true);
-        });
-        typed_round_trip(component::LODESTONE_TRACKER, |w| {
-            w.bool(true);
-            w.string("minecraft:overworld");
-            w.i64(crate::buf::pack_block_pos([10, 64, -5]));
-            w.bool(true);
-        });
-        // Persistent-only types go as their codec's NBT (fromCodecWithRegistries).
-        raw_round_trip(component::LOCK, |w| w.nbt(&tag));
-        raw_round_trip(component::CONTAINER_LOOT, |w| {
-            w.nbt(&Tag::compound([(
-                "loot_table",
-                literal("minecraft:chests/x"),
-            )]));
-        });
     }
 
     #[test]

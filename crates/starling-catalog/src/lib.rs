@@ -300,9 +300,9 @@ fn read_package_id(path: &Path, name: &str) -> Option<String> {
     manifest()
         .or_else(|| {
             name.ends_with(".hnmod")
-                .then(|| sunrise_mod_package::index::native::Any::read(path).ok())
+                .then(|| sunrise_mod_package::index::native::Bundle::read(path).ok())
                 .flatten()
-                .map(|bundle| bundle.id().to_owned())
+                .map(|bundle| bundle.manifest.id.clone())
         })
         .or_else(|| {
             let stem = name

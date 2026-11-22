@@ -352,12 +352,13 @@ fn update(
             return Ok(());
         }
         let new_package = sunrise_mod_package::Package::read(new)?;
-        let old_wasm = old
+        // Code is native now (Sunrise runs no wasm mods): a mod with code waits for the player.
+        let old_code = old
             .as_deref()
             .map(sunrise_mod_package::Package::read)
             .transpose()?
-            .is_some_and(|package| package.manifest.wasm.is_some());
-        if old_wasm || new_package.manifest.wasm.is_some() {
+            .is_some_and(|package| package.is_native());
+        if old_code || new_package.is_native() {
             let why = trf(
                 "{title} {version} waits for you: code mods update only when you choose to update them.",
                 &[("title", &p.name), ("version", &v.version)],

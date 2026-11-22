@@ -22,15 +22,13 @@ pub mod ids;
 pub mod item;
 pub mod menu_extra;
 pub mod mod_list;
-// Starling: the old mod messages, for the website's mods made for them (game/starling/old_mod_net.rs).
-pub mod mod_net;
 pub mod packets;
 pub mod passage_sync;
 pub mod payload_negotiation;
 pub mod quiet;
 pub mod registry;
 mod resolver;
-pub use resolver::{server_redirect, set_name_servers};
+pub use resolver::server_redirect;
 pub mod rsa;
 pub mod secure_chat;
 pub mod servers;

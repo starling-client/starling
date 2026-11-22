@@ -46,22 +46,30 @@ const MAX: u64 = 1 << 30;
 /// It is kept between downloads: a fresh agent starts a new connection pool, so one per file would
 /// be a handshake per file, and a modpack brings hundreds.
 pub(super) fn agent(url: &str) -> ureq::Agent {
+    // Starling: one agent per proxy, kept here. Sunrise's launcher keeps its own in its `proxy`
+    // module now, and the port pack's (`net::keep`) is private to that crate.
+    static KEPT: std::sync::Mutex<Vec<(Option<String>, ureq::Agent)>> =
+        std::sync::Mutex::new(Vec::new());
     let spec = crate::proxy::spec_for(url);
-    sunrise_port_pack::net::keep("browser", spec.as_deref(), |proxy| {
-        let builder = ureq::AgentBuilder::new()
-            .user_agent(&format!(
-                "{} sunrise-launcher/{} (github.com/{})",
-                crate::backend::REPO,
-                crate::backend::VERSION,
-                crate::backend::REPO
-            ))
-            .timeout_connect(std::time::Duration::from_secs(15))
-            .timeout_read(std::time::Duration::from_secs(60));
-        match proxy {
-            Some(proxy) => builder.proxy(proxy).build(),
-            None => builder.build(),
-        }
-    })
+    let mut kept = KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, agent)) = kept.iter().find(|(of, _)| *of == spec) {
+        return agent.clone();
+    }
+    let builder = ureq::AgentBuilder::new()
+        .user_agent(&format!(
+            "{} sunrise-launcher/{} (github.com/{})",
+            crate::backend::REPO,
+            crate::backend::VERSION,
+            crate::backend::REPO
+        ))
+        .timeout_connect(std::time::Duration::from_secs(15))
+        .timeout_read(std::time::Duration::from_secs(60));
+    let agent = match spec.as_deref().and_then(|spec| ureq::Proxy::new(spec).ok()) {
+        Some(proxy) => builder.proxy(proxy).build(),
+        None => builder.build(),
+    };
+    kept.push((spec, agent.clone()));
+    agent
 }
 
 /// Why a file can't be downloaded at all, before any byte is read.

@@ -1,8 +1,7 @@
 //! SynchedEntityData values (ClientboundSetEntityDataPacket): an entry index,
 //! the EntityDataSerializers id, and the serializer's value, ending with 0xFF.
-//! Every 26.3 serializer is decoded. A serializer id past the 26.3 registry
-//! has no known length, so it ends the list early; the entries before it are
-//! kept.
+//! Serializers Sunrise cannot decode end the list early; the entries before
+//! them are kept.
 use crate::{
     Result,
     buf::{Codec, Reader},
@@ -36,8 +35,6 @@ pub enum Value {
     Particle(Particle),
     /// A particle list (PARTICLES: a VarInt count, then each particle).
     Particles(Vec<Particle>),
-    /// Optional GlobalPos: the dimension Identifier and the block.
-    OptGlobalPos(Option<(String, [i32; 3])>),
     /// A `ResolvableProfile` (a mannequin's DATA_PROFILE).
     Profile(Profile),
 }
@@ -363,12 +360,6 @@ fn read_value(kind: i32, r: &mut Reader) -> Result<Option<Value>> {
         }
         // VillagerData: type, profession and level.
         VILLAGER_DATA => Value::Ids(vec![r.varint()?, r.varint()?, r.varint()?]),
-        // GlobalPos.STREAM_CODEC: the dimension ResourceKey, then a BlockPos.
-        OPTIONAL_GLOBAL_POS => Value::OptGlobalPos(if r.bool()? {
-            Some((r.string(32767)?, crate::buf::Pos::read(r)?))
-        } else {
-            None
-        }),
         // VarInt-encoded: direction, block states, optional ints, pose, the
         // holder-registry variants (cat to zombie nautilus, painting) and the
         // enum states (sniffer to weathering copper), arm, dye.
@@ -429,13 +420,6 @@ fn write_value(kind: i32, v: &Value, w: &mut Writer) {
         Value::Particles(list) => {
             w.varint(list.len() as i32);
             list.iter().for_each(|p| p.write(w));
-        }
-        Value::OptGlobalPos(p) => {
-            w.bool(p.is_some());
-            if let Some((dimension, pos)) = p {
-                w.string(dimension);
-                crate::buf::Pos::write(pos, w);
-            }
         }
         Value::Profile(p) => write_profile(p, w),
     }
@@ -498,9 +482,6 @@ impl crate::retained::OwnedHeap for Value {
                 0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
             }
             Self::OptText(field_0) => {
-                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
-            }
-            Self::OptGlobalPos(field_0) => {
                 0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
             }
             Self::Item(field_0) => {
@@ -786,92 +767,6 @@ mod tests {
                 (12, serializer::BYTE, Value::Byte(4)),
             ]
         );
-    }
-
-    /// One `kind` entry (index 10) holding `value`, then a Byte entry (11).
-    fn with_next(kind: i32, value: &[u8]) -> Vec<u8> {
-        let mut w = Writer::new();
-        w.u8(10);
-        w.varint(kind);
-        w.bytes(value);
-        w.u8(11);
-        w.varint(serializer::BYTE);
-        w.i8(-3);
-        w.u8(0xFF);
-        w.data
-    }
-    /// `value` reads back, the entry after it still decodes, and the list
-    /// writes back byte for byte.
-    fn bytes_round_trip(kind: i32, value: &[u8]) {
-        let bytes = with_next(kind, value);
-        let read = EntityData::read(&mut Reader::new(&bytes)).unwrap();
-        assert_eq!(read.len(), 2);
-        assert_eq!(read[1], (11, serializer::BYTE, Value::Byte(-3)));
-        let mut w = Writer::new();
-        EntityData::write(&read, &mut w);
-        assert_eq!(w.data, bytes);
-    }
-
-    #[test]
-    fn optional_global_pos() {
-        for value in [
-            Some(("minecraft:the_nether".to_owned(), [-300, -64, 1_000_000])),
-            None,
-        ] {
-            let mut w = Writer::new();
-            w.bool(value.is_some());
-            if let Some((dimension, pos)) = &value {
-                w.string(dimension);
-                crate::buf::Pos::write(pos, &mut w);
-            }
-            let bytes = with_next(serializer::OPTIONAL_GLOBAL_POS, &w.data);
-            let read = EntityData::read(&mut Reader::new(&bytes)).unwrap();
-            assert_eq!(
-                read,
-                vec![
-                    (
-                        10,
-                        serializer::OPTIONAL_GLOBAL_POS,
-                        Value::OptGlobalPos(value)
-                    ),
-                    (11, serializer::BYTE, Value::Byte(-3)),
-                ]
-            );
-            let mut back = Writer::new();
-            EntityData::write(&read, &mut back);
-            assert_eq!(back.data, bytes);
-        }
-    }
-
-    #[test]
-    fn resolvable_profile_writes_back_its_bytes() {
-        // Full: GAME_PROFILE (id, name, a signed property), then a
-        // PlayerSkin.Patch with a body texture and the slim model.
-        let mut w = Writer::new();
-        w.bool(true);
-        w.uuid(0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF);
-        w.string("Steve");
-        w.varint(1);
-        w.string("textures");
-        w.string("eyJ0ZXh0dXJlcyI6e319");
-        w.bool(true);
-        w.string("c2lnbmF0dXJl");
-        w.bool(true);
-        w.string("minecraft:entity/player/wide/steve");
-        w.bool(false);
-        w.bool(false);
-        w.bool(true);
-        w.bool(true);
-        bytes_round_trip(serializer::RESOLVABLE_PROFILE, &w.data);
-        // Partial: a name, no id, no properties, an empty patch.
-        let mut w = Writer::new();
-        w.bool(false);
-        w.bool(true);
-        w.string("Alex");
-        w.bool(false);
-        w.varint(0);
-        (0..4).for_each(|_| w.bool(false));
-        bytes_round_trip(serializer::RESOLVABLE_PROFILE, &w.data);
     }
 
     /// RESOLVABLE_PROFILE (a mannequin's DATA_PROFILE): both ResolvableProfile
