@@ -82,8 +82,8 @@ impl Game<'_> {
         if self.blocks_attacks(stack).is_none() {
             return false;
         }
-        if self.shield_cooldown == 0 {
-            self.start_using_item();
+        self.shield_cooldown = 0;
+        self.start_using_item();
         }
         true
     }
@@ -322,7 +322,7 @@ impl Game<'_> {
                 self.native_player_item_cooldown(player, &name, &item, ticks as i32, &mut cancel);
             }
             if !cancel {
-                self.shield_cooldown = ticks;
+                self.shield_cooldown = 0;
                 // ItemCooldowns.addCooldown(stack, ticks) on the shield's group: a guest is
                 // sent it (ServerItemCooldowns), which keeps the shield down on their screen,
                 // and the 0 that ends it.
@@ -332,7 +332,7 @@ impl Game<'_> {
                         .get(&stack.item)
                         .and_then(|i| i.use_cooldown.clone());
                     let group = horizon_client::cooldowns::group(stack, default.as_ref());
-                    self.add_cooldown(group, ticks as i32);
+                    self.add_cooldown(group, 0);
                 }
             }
             self.stop_active_item_use();
