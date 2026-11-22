@@ -165,3 +165,34 @@
 - The player's preview on the title screen (wardrobe): `MobData` as the render data when there is no world.
 - pad/mod.rs: Starling's version over Sunrise's (touch pad, keypad). Compare once more with Sunrise's for what it
   added since (the disabled-controllers path calls `pad_menu_frame` there).
+
+## Inventory of what the merged tree lacks (2026-11-22, tools: dropped.py, dropped.txt)
+
+`dropped.py` lists, per file Starling changed since the base, its added lines found nowhere in the merged tree.
+Without the Create port and the old hooks (dropped on purpose), about 1,500 lines. By weight:
+
+- game/network/remote/mod.rs (430): Starling's whole work on the connection. Sunrise split the file (session.rs,
+  tick.rs, sync.rs, skin.rs, packets_*.rs, use.rs, chat.rs, menu_interactions.rs); Starling's diff is kept in the
+  tools folder (ours-diffs/network/network.diff). To re-port, by feature:
+  - the stick's modes on servers (Free Direction's steering and held-back hits, Keys, Analog; the setback count, the
+    question dialog, stick_memory) and `interaction_rotation` for the look sent;
+  - the logs that explain a player who "cannot walk" (movement gaps, rate, trail, setbacks, the chunk under the player);
+  - the server's attributes and abilities for a player made after their packets (respawn, first teleport);
+  - custom names of any entity (`names`, drawn by names.rs's remote_name_tags);
+  - a proxy's reconfiguration (clear_remote_world, reset_listener, joined again);
+  - the creative screen's grid, armour and off hand sent as SetCreativeModeSlot (creative_menu);
+  - skins: Ely.by's for offline servers, the player's own skin and the wardrobe's cape in `skins` resolution;
+  - legacy section-sign codes in server text and chat decoration (`resolve_legacy`);
+  - a phone's budget for an overdue chunk backlog (OVERDUE_CHUNK_PACKETS_PER_FRAME);
+  - key.swapOffhand sent at the tick (swap_presses); the touch shield in remote_use_hands/RemoteUseWorld;
+  - remote_menu_clicks (a mod's slots.click), the account's name only on real servers, touch_vibrate on a break.
+- sunrise-protocol item.rs (275) and entity_data.rs (37): items and entity data as plugin servers send them.
+- save.rs (111): deferred writes (`later`). random_tick_sections.rs (75). core geometry movement.rs (118) and
+  world block_collision*.rs: the cheaper mob collisions (already listed above).
+- hud.rs (83), gfx.rs (31), options_ui.rs (30), ui.rs (11): check each against hud/*.rs and gfx/*.rs.
+- mobs/render.rs (36), spawn_rules.rs (33), ai.rs (19), living.rs (16), armor_stands.rs (30), names.rs (29),
+  stations.rs (30), menu.rs (40), item_sync.rs (11), crafting.rs (9), net.rs (15), integrated.rs (19),
+  autosave.rs (8), world_rest.rs (25, Create), machines/mod.rs (50, Create), mod_content*.rs (90, fetched assets).
+- native-mods/wrench (240): the wrench mod's mixins.
+The full list is dropped.txt in the tools folder; each line must end as re-ported, already in Sunrise, or dropped
+on purpose with a reason.
