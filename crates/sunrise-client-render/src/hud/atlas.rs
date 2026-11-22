@@ -236,283 +236,283 @@ pub const MISSING_SPRITE: &str = "sunrise/missing";
 const TOUCH_SPRITES: &[(&str, &[u8])] = &[
     (
         "custom_blank",
-        include_bytes!("../../sunrise-client/assets/touch/custom_blank.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_blank.png"),
     ),
     (
         "custom_star",
-        include_bytes!("../../sunrise-client/assets/touch/custom_star.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_star.png"),
     ),
     (
         "custom_star_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_star_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_star_pressed.png"),
     ),
     (
         "custom_heart",
-        include_bytes!("../../sunrise-client/assets/touch/custom_heart.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_heart.png"),
     ),
     (
         "custom_heart_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_heart_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_heart_pressed.png"),
     ),
     (
         "custom_shield",
-        include_bytes!("../../sunrise-client/assets/touch/custom_shield.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_shield.png"),
     ),
     (
         "custom_shield_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_shield_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_shield_pressed.png"),
     ),
     (
         "custom_pickaxe",
-        include_bytes!("../../sunrise-client/assets/touch/custom_pickaxe.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_pickaxe.png"),
     ),
     (
         "custom_pickaxe_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_pickaxe_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_pickaxe_pressed.png"),
     ),
     (
         "custom_potion",
-        include_bytes!("../../sunrise-client/assets/touch/custom_potion.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_potion.png"),
     ),
     (
         "custom_potion_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_potion_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_potion_pressed.png"),
     ),
     (
         "custom_apple",
-        include_bytes!("../../sunrise-client/assets/touch/custom_apple.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_apple.png"),
     ),
     (
         "custom_apple_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_apple_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_apple_pressed.png"),
     ),
     (
         "custom_home",
-        include_bytes!("../../sunrise-client/assets/touch/custom_home.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_home.png"),
     ),
     (
         "custom_home_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_home_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_home_pressed.png"),
     ),
     (
         "custom_flag",
-        include_bytes!("../../sunrise-client/assets/touch/custom_flag.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_flag.png"),
     ),
     (
         "custom_flag_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_flag_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_flag_pressed.png"),
     ),
     (
         "custom_fire",
-        include_bytes!("../../sunrise-client/assets/touch/custom_fire.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_fire.png"),
     ),
     (
         "custom_fire_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_fire_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_fire_pressed.png"),
     ),
     (
         "custom_skull",
-        include_bytes!("../../sunrise-client/assets/touch/custom_skull.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_skull.png"),
     ),
     (
         "custom_skull_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_skull_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_skull_pressed.png"),
     ),
     (
         "custom_crown",
-        include_bytes!("../../sunrise-client/assets/touch/custom_crown.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_crown.png"),
     ),
     (
         "custom_crown_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_crown_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_crown_pressed.png"),
     ),
     (
         "custom_plus",
-        include_bytes!("../../sunrise-client/assets/touch/custom_plus.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_plus.png"),
     ),
     (
         "custom_plus_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_plus_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_plus_pressed.png"),
     ),
     (
         "custom_check",
-        include_bytes!("../../sunrise-client/assets/touch/custom_check.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_check.png"),
     ),
     (
         "custom_check_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_check_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_check_pressed.png"),
     ),
     (
         "custom_cross",
-        include_bytes!("../../sunrise-client/assets/touch/custom_cross.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_cross.png"),
     ),
     (
         "custom_cross_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_cross_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_cross_pressed.png"),
     ),
     (
         "custom_music",
-        include_bytes!("../../sunrise-client/assets/touch/custom_music.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_music.png"),
     ),
     (
         "custom_music_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/custom_music_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/custom_music_pressed.png"),
     ),
     (
         "attack",
-        include_bytes!("../../sunrise-client/assets/touch/attack.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/attack.png"),
     ),
     (
         "attack_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/attack_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/attack_pressed.png"),
     ),
     (
         "camera",
-        include_bytes!("../../sunrise-client/assets/touch/camera.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/camera.png"),
     ),
     (
         "camera_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/camera_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/camera_pressed.png"),
     ),
     (
         "chat",
-        include_bytes!("../../sunrise-client/assets/touch/chat.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/chat.png"),
     ),
     (
         "chat_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/chat_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/chat_pressed.png"),
     ),
     (
         "command",
-        include_bytes!("../../sunrise-client/assets/touch/command.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/command.png"),
     ),
     (
         "command_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/command_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/command_pressed.png"),
     ),
     (
         "debug",
-        include_bytes!("../../sunrise-client/assets/touch/debug.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/debug.png"),
     ),
     (
         "debug_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/debug_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/debug_pressed.png"),
     ),
     (
         "dpad_down",
-        include_bytes!("../../sunrise-client/assets/touch/dpad_down.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/dpad_down.png"),
     ),
     (
         "dpad_down_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/dpad_down_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/dpad_down_pressed.png"),
     ),
     (
         "dpad_left",
-        include_bytes!("../../sunrise-client/assets/touch/dpad_left.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/dpad_left.png"),
     ),
     (
         "dpad_left_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/dpad_left_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/dpad_left_pressed.png"),
     ),
     (
         "dpad_middle",
-        include_bytes!("../../sunrise-client/assets/touch/dpad_middle.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/dpad_middle.png"),
     ),
     (
         "dpad_right",
-        include_bytes!("../../sunrise-client/assets/touch/dpad_right.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/dpad_right.png"),
     ),
     (
         "dpad_right_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/dpad_right_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/dpad_right_pressed.png"),
     ),
     (
         "dpad_up",
-        include_bytes!("../../sunrise-client/assets/touch/dpad_up.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/dpad_up.png"),
     ),
     (
         "dpad_up_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/dpad_up_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/dpad_up_pressed.png"),
     ),
     (
         "drop",
-        include_bytes!("../../sunrise-client/assets/touch/drop.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/drop.png"),
     ),
     (
         "drop_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/drop_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/drop_pressed.png"),
     ),
     (
         "inventory",
-        include_bytes!("../../sunrise-client/assets/touch/inventory.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/inventory.png"),
     ),
     (
         "inventory_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/inventory_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/inventory_pressed.png"),
     ),
     (
         "jump",
-        include_bytes!("../../sunrise-client/assets/touch/jump.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/jump.png"),
     ),
     (
         "jump_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/jump_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/jump_pressed.png"),
     ),
     (
         "offhand",
-        include_bytes!("../../sunrise-client/assets/touch/offhand.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/offhand.png"),
     ),
     (
         "offhand_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/offhand_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/offhand_pressed.png"),
     ),
     (
         "pause",
-        include_bytes!("../../sunrise-client/assets/touch/pause.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/pause.png"),
     ),
     (
         "pause_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/pause_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/pause_pressed.png"),
     ),
     (
         "pick",
-        include_bytes!("../../sunrise-client/assets/touch/pick.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/pick.png"),
     ),
     (
         "pick_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/pick_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/pick_pressed.png"),
     ),
     (
         "players",
-        include_bytes!("../../sunrise-client/assets/touch/players.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/players.png"),
     ),
     (
         "players_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/players_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/players_pressed.png"),
     ),
     (
         "sneak",
-        include_bytes!("../../sunrise-client/assets/touch/sneak.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/sneak.png"),
     ),
     (
         "sneak_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/sneak_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/sneak_pressed.png"),
     ),
     (
         "stick",
-        include_bytes!("../../sunrise-client/assets/touch/stick.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/stick.png"),
     ),
     (
         "stick_knob",
-        include_bytes!("../../sunrise-client/assets/touch/stick_knob.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/stick_knob.png"),
     ),
     (
         "use",
-        include_bytes!("../../sunrise-client/assets/touch/use.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/use.png"),
     ),
     (
         "use_pressed",
-        include_bytes!("../../sunrise-client/assets/touch/use_pressed.png"),
+        include_bytes!("../../../sunrise-client/assets/touch/use_pressed.png"),
     ),
 ];
 

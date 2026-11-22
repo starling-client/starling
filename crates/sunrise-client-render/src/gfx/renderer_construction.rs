@@ -206,9 +206,10 @@ impl Renderer {
         let gpu_timer = timing::GpuTimer::new(&device, &queue);
         let shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sunrise terrain"),
+            // Sunrise's terrain source (`terrain_shader`), lowered for OpenGL ES where that is the
+            // backend (`terrain_source`).
             source: wgpu::ShaderSource::Wgsl(
-                (include_str!("hdr_light.wgsl").to_owned() + &terrain_source::terrain_shader(gl))
-                    .into(),
+                terrain_source::for_backend(terrain_shader(), gl).into(),
             ),
         });
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {

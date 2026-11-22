@@ -13,6 +13,12 @@ pub(super) fn terrain_shader(gl: bool) -> Cow<'static, str> {
     }
 }
 
+/// `source` (the whole terrain shader, as `gfx::terrain_shader` composes it) as the backend takes
+/// it: lowered for OpenGL ES, else as it is.
+pub(super) fn for_backend(source: String, gl: bool) -> String {
+    if gl { gles_source(&source) } else { source }
+}
+
 /// GLES 3.0 cannot declare arrays of arrays. Two adjacent vec4 entries
 /// retain the original uniform byte layout and every colored-light value.
 pub(super) fn gles_uniforms(source: &str) -> String {
