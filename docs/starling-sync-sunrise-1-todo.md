@@ -221,3 +221,26 @@ Still to decide or re-port:
   equipment_piece.rs and cit_armor: try ItemsAdder/Nexo armour first, re-port only what is missing.
 - 3D skin layers; `remote_menu_clicks` for a mod's slots.click; fetched assets; the wrench mod's mixins.
 - The small files of dropped.txt (under 30 lines each) not yet read one by one.
+
+## First phone test (owner, 2026-11-22), on the APK of 8dc5da1
+
+Fixed at 513ed8b547:
+- "Sunrise terrain" failed to parse (`hdr_normal`): Starling's fs_cutout_static(_sdr) wrote a private Sunrise
+  removed. The world's renderer never came up.
+- The launcher's Mods page: Sunrise's registry (sunrise-org.github.io/sunrise-mods), no Modrinth tab, no
+  "Java mods - browsing only" status.
+- Play offline: the name the player already has is in the field.
+- Clicks landing beside the buttons in Options: the cursor is in the interface's space again (`in_interface`,
+  re-port 3); to confirm on the phone.
+
+Open:
+- Horizon's registry beside Sunrise's on the Mods page (the owner's ask). Its index parses but every entry is left
+  out: `.hmod` is not the kind's extension (`.smod`), the manifest is `horizon-mod.toml`, and native mods name
+  horizon-* crates. That is the `.hmod` layer above, plus the Compile store renaming a Horizon mod's source
+  (tools/rebrand.py) before building it against this game.
+- "Starling is ready: Launcher / Game" asked again after the launcher already asked (ChooseSetupDestination saves
+  `Chosen`, and `finish_saved_onboarding` should answer for it). Not reproduced by reading; needs the phone's log.
+- Buttons showing their lang keys for a moment before the text.
+- Controls: the search box moves while the list is dragged.
+- The setup still offers sign-in when the launcher has an account selected (only the offline name is prefilled).
+- "Configurações do Sunrise..." and other Sunrise names in the game's own menus.
