@@ -1465,7 +1465,20 @@ impl Game<'_> {
                 return;
             }
         }
+        let is_remote = self.remote.is_some();
         if let Some(screen) = self.ui.chat_screen.as_mut() {
+            if let Some(action) =
+                screen.handle_shortcut_click(&m, &c, cursor.0 as f64, cursor.1 as f64, is_remote)
+            {
+                match action {
+                    horizon_client_render::chat_shortcuts::ShortcutAction::Inserted => return,
+                    horizon_client_render::chat_shortcuts::ShortcutAction::Execute(cmd) => {
+                        self.click_command(&cmd);
+                        self.close_chat(ChatExit::Send);
+                        return;
+                    }
+                }
+            }
             if screen.click(&m, &c, cursor.0 as f64, cursor.1 as f64) {
                 self.notify_chat_suggestion_completion();
                 return;
@@ -1798,7 +1811,9 @@ impl Game<'_> {
             .chat_opened
             .map_or(0, |t| t.elapsed().as_millis() as u64);
         screen.resize(&m, &c, batch.width as i32, batch.height as i32);
-        let draws = screen.draw(&m, mouse, blink, background);
+        let mut draws = screen.draw(&m, mouse, blink, background);
+        let is_remote = self.remote.is_some();
+        screen.draw_shortcuts(&mut draws, &m, is_remote);
         let tooltip = horizon_client::screen_draw::paint(batch, &self.gui.atlas, &draws);
         self.ui.chat_screen = Some(screen);
         if in_bed {

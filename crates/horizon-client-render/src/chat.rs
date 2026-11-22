@@ -1387,6 +1387,10 @@ pub struct ChatScreen {
     /// `MouseHandler.lastClick`: a click within 250 ms of the last one on
     /// this screen is a double click.
     last_click: Option<std::time::Instant>,
+    /// Configured quick-action shortcut bar for touch and mobile devices.
+    pub shortcuts: crate::chat_shortcuts::ChatShortcutsConfig,
+    /// Horizontal scroll offset for shortcut chips.
+    pub shortcuts_scroll_x: f32,
 }
 /// Local completions waiting for the server's reply to request `id`.
 struct Awaiting {
@@ -1587,6 +1591,8 @@ impl ChatScreen {
             abilities,
             layout: SuggestLayout::CHAT,
             last_click: None,
+            shortcuts: crate::chat_shortcuts::ChatShortcutsConfig::default(),
+            shortcuts_scroll_x: 0.0,
         };
         s.update_command_info(m, c);
         s
@@ -1626,6 +1632,8 @@ impl ChatScreen {
             abilities: ChatAbilities::new(ChatVisibility::Full),
             layout: SuggestLayout::COMMAND_BLOCK,
             last_click: None,
+            shortcuts: crate::chat_shortcuts::ChatShortcutsConfig::default(),
+            shortcuts_scroll_x: 0.0,
         };
         s.update_command_info(m, c);
         s
@@ -2373,6 +2381,61 @@ impl ChatScreen {
         }
         let _ = m;
     }
+
+    /// Handles a touch/click on the quick action shortcuts bar.
+    ///
+    /// Returns `Some(ShortcutAction)` if a shortcut chip was tapped.
+    pub fn handle_shortcut_click(
+        &mut self,
+        m: &Measure,
+        c: &Commands,
+        x: f64,
+        y: f64,
+        is_remote: bool,
+    ) -> Option<crate::chat_shortcuts::ShortcutAction> {
+        let layout = crate::chat_shortcuts::ChatShortcutsLayout::compute(
+            &self.shortcuts,
+            is_remote,
+            self.input.y as f32,
+            self.shortcuts_scroll_x,
+        )?;
+        let shortcut = layout.hit_test(&self.shortcuts, x as f32, y as f32)?;
+        match shortcut.trigger {
+            crate::chat_shortcuts::ShortcutTrigger::Insert => {
+                self.input.set_value(m, &shortcut.command);
+                self.input.cursor = self.input.value.len();
+                self.update_command_info(m, c);
+                Some(crate::chat_shortcuts::ShortcutAction::Inserted)
+            }
+            crate::chat_shortcuts::ShortcutTrigger::QuickCast => Some(
+                crate::chat_shortcuts::ShortcutAction::Execute(shortcut.command.clone()),
+            ),
+        }
+    }
+
+    /// Renders the quick-action shortcut bar directly above the text input.
+    pub fn draw_shortcuts(&self, out: &mut Vec<Draw>, _m: &Measure, is_remote: bool) {
+        if let Some(layout) = crate::chat_shortcuts::ChatShortcutsLayout::compute(
+            &self.shortcuts,
+            is_remote,
+            self.input.y as f32,
+            self.shortcuts_scroll_x,
+        ) {
+            for (bounds, idx) in &layout.bounds {
+                if let Some(shortcut) = self.shortcuts.shortcuts.get(*idx) {
+                    let x0 = bounds.x as i32;
+                    let y0 = bounds.y as i32;
+                    let x1 = (bounds.x + bounds.width) as i32;
+                    let y1 = (bounds.y + bounds.height) as i32;
+                    // Dark translucent pill with border
+                    d::fill(out, x0, y0, x1, y1, -1610612736); // 0xA0000000
+                    let text = Text::literal(shortcut.label.clone());
+                    d::text(out, text, x0 + 6, y0 + 5, -1, true);
+                }
+            }
+        }
+    }
+
     /// `ChatScreen.normalizeChatMessage`.
     pub fn normalized(&self) -> String {
         let collapsed = self

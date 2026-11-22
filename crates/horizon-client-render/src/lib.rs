@@ -27,6 +27,7 @@ pub mod brewing;
 pub mod camera;
 pub mod carrier_fences;
 pub mod chat;
+pub mod chat_shortcuts;
 pub mod chunk;
 pub mod chunk_map;
 pub mod cit;
