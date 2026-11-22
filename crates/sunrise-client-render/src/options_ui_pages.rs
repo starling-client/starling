@@ -108,11 +108,11 @@ impl OptionsUi {
         // two-button Mods footer.
         let open = |key: &str, page: Page| button(0.0, 0.0, 150.0, tr(key), Act::Push(page));
         let mut rows: Vec<Row> = vec![
+            // Starling: no PvP page (its widgets and their editor are a mouse's).
             Row::Buttons(
                 open("sunrise.pages.open.extras", Page::Extras),
-                Some(open("sunrise.pages.open.pvp", Page::Pvp)),
+                Some(open("sunrise.pages.open.studio", Page::Studio)),
             ),
-            Row::Buttons(open("sunrise.pages.open.studio", Page::Studio), None),
             // No AI hides the AI Agent page and everything AI.
             if s.extras.no_ai {
                 Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)

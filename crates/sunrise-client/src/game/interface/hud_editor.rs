@@ -80,7 +80,9 @@ impl Game<'_> {
     }
     /// The editor key, from the game.
     pub(super) fn hud_editor_key_press(&mut self, name: &str) -> bool {
-        if self.screen != Screen::Playing
+        // Starling: the PvP page is gone, and its editor's key with it.
+        if cfg!(target_os = "android")
+            || self.screen != Screen::Playing
             || self.settings.extras.pvp.editor_key != name
             || name == "key.keyboard.unknown"
         {
