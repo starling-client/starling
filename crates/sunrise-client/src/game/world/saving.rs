@@ -670,7 +670,9 @@ fn log_when_written(
     let waiter = std::thread::Builder::new()
         .name("Save waiter".into())
         .spawn(move || {
-            match saves.iter().try_for_each(|save| save.flush()) {
+            let written = saves.iter().try_for_each(|save| save.flush());
+            sunrise_client::save::later::flush();
+            match written {
                 Ok(()) => log::info!(
                     "Sunrise: the world is saved ({:.2} s)",
                     started.elapsed().as_secs_f32()

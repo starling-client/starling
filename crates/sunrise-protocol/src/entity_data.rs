@@ -24,6 +24,8 @@ pub enum Value {
     Floats(Vec<f32>),
     Pos([i32; 3]),
     OptPos(Option<[i32; 3]>),
+    /// Starling: an optional GlobalPos, a dimension's key and a block position.
+    OptGlobalPos(Option<(String, [i32; 3])>),
     OptUuid(Option<u128>),
     /// Any VarInt-valued serializer (direction, block state, pose, variants ...).
     Id(i32),
@@ -355,6 +357,12 @@ fn read_value(kind: i32, r: &mut Reader) -> Result<Option<Value>> {
         } else {
             None
         }),
+        // GlobalPos.STREAM_CODEC: the dimension ResourceKey, then a BlockPos.
+        OPTIONAL_GLOBAL_POS => Value::OptGlobalPos(if r.bool()? {
+            Some((r.string(32767)?, crate::buf::Pos::read(r)?))
+        } else {
+            None
+        }),
         OPTIONAL_LIVING_ENTITY_REFERENCE => {
             Value::OptUuid(if r.bool()? { Some(r.uuid()?) } else { None })
         }
@@ -408,6 +416,13 @@ fn write_value(kind: i32, v: &Value, w: &mut Writer) {
             w.bool(p.is_some());
             if let Some(p) = p {
                 crate::buf::Pos::write(p, w);
+            }
+        }
+        Value::OptGlobalPos(p) => {
+            w.bool(p.is_some());
+            if let Some((dimension, pos)) = p {
+                w.string(dimension);
+                crate::buf::Pos::write(pos, w);
             }
         }
         Value::OptUuid(u) => {
@@ -497,6 +512,9 @@ impl crate::retained::OwnedHeap for Value {
                 0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
             }
             Self::OptPos(field_0) => {
+                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
+            }
+            Self::OptGlobalPos(field_0) => {
                 0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
             }
             Self::OptUuid(field_0) => {

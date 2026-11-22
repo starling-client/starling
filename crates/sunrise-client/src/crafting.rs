@@ -1839,6 +1839,12 @@ impl ResolvedSources {
 
     fn decode(sources: Vec<(String, Value)>, items: &Items, input: IngredientInput<'_>) -> Self {
         let mut resolved = Self::default();
+        // Starling: a file whose serializer no mod registered is left out and the rest load, as
+        // vanilla's RecipeManager does with a file it cannot parse: a content mod without its code
+        // half then loses those recipes, not the world. One line per serializer, with the first
+        // file and how many went. What a server sends is still checked whole.
+        let lenient = matches!(input, IngredientInput::File(_));
+        let mut unregistered = std::collections::BTreeMap::<String, (usize, String)>::new();
         for (name, file) in sources {
             let file = Arc::new(file);
             let Some(serializer) = file["type"].as_str() else {
@@ -1852,6 +1858,13 @@ impl ResolvedSources {
             };
             let recipe_type = match mod_kinds::recipe_type(&name, serializer) {
                 Ok(recipe_type) => recipe_type,
+                Err(failure) if lenient => {
+                    unregistered
+                        .entry(serializer.to_owned())
+                        .or_insert((0, failure))
+                        .0 += 1;
+                    continue;
+                }
                 Err(failure) => {
                     resolved.failures.push((name, failure));
                     continue;
@@ -1884,6 +1897,9 @@ impl ResolvedSources {
                 recipe_type: Some(recipe_type),
                 decoded,
             }));
+        }
+        for (count, first) in unregistered.into_values() {
+            log::error!("Sunrise: {first}; {count} recipe file(s) with it left out");
         }
         resolved
     }

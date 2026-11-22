@@ -481,9 +481,21 @@ impl Game<'_> {
             self.options.pregen || self.settings.extras.pregen,
         );
         let auth = sunrise_client::auth::current();
-        let player = auth
-            .as_ref()
-            .map_or_else(|| self.options.player_name(), |a| a.name.clone());
+        // Starling: the launcher's profile plays under its own name; else a name chosen in Skin
+        // Customization goes before the account's.
+        let player = match &auth {
+            Some(account)
+                if sunrise_client::accounts::in_game()
+                    && sunrise_client::accounts::profiles().player().is_some() =>
+            {
+                account.name.clone()
+            }
+            Some(account) => std::env::current_dir()
+                .ok()
+                .and_then(|dir| sunrise_client::offline_name::chosen(&dir))
+                .unwrap_or_else(|| account.name.clone()),
+            None => self.options.player_name(),
+        };
         let new_world = create.is_some();
         let rule_registry = create.map_or_else(
             || Arc::new(crate::game::api_values::game_rule_registry()),

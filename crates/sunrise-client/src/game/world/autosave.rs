@@ -135,10 +135,23 @@ impl Game<'_> {
         if dedicated {
             dedicated::events::record_server("saving", serde_json::json!({}));
         }
-        self.save_level(wait)?;
-        self.save_parked_levels(wait)?;
-        self.save_game_metadata()?;
-        let _ = self.finish_player_autosaves(wait);
+        if wait {
+            self.save_level(true)?;
+            self.save_parked_levels(true)?;
+            self.save_game_metadata()?;
+            let _ = self.finish_player_autosaves(true);
+            sunrise_client::save::later::flush();
+        } else {
+            // Starling, the autosave: its small files go to the background writer too, so the
+            // frame does not wait on storage.
+            sunrise_client::save::later::deferred(|| {
+                self.save_level(false)?;
+                self.save_parked_levels(false)?;
+                self.save_game_metadata()?;
+                let _ = self.finish_player_autosaves(false);
+                Result::<()>::Ok(())
+            })?;
+        }
         if wait {
             self.message = Some((
                 sunrise_client::lang::get("commands.save.success"),
