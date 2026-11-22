@@ -48,17 +48,10 @@ class PolicyFiles(unittest.TestCase):
     def test_a_manual_row_says_who_runs_it_and_why(self):
         self.write("manual-pkg.txt", "pkg a::bench by-hand manual # a microbenchmark\n"
                                       "pkg b::child subprocess manual # a child of b::parent\n"
-<<<<<<< sync-sunrise-1
                                       "pkg c::fixture pack-bench.yml manual # built by the workflow\n")
         self.assertEqual([(row.test, row.reference, row.mark) for row in ignored_tests.listed_entries()],
                          [("a::bench", "by-hand", "manual"), ("b::child", "subprocess", "manual"),
                           ("c::fixture", "pack-bench.yml", "manual")])
-=======
-                                      "pkg c::fixture daily.yml manual # built by the workflow\n")
-        self.assertEqual([(row.test, row.reference, row.mark) for row in ignored_tests.listed_entries()],
-                         [("a::bench", "by-hand", "manual"), ("b::child", "subprocess", "manual"),
-                          ("c::fixture", "daily.yml", "manual")])
->>>>>>> sunrise/main
         self.assertEqual(ignored_tests.known_failures()[("pkg", "a::bench")], "manual")
         for row, refusal in (("pkg a::bench by-hand manual\n", "WHY"), ("pkg a::bench somebody manual # x\n", "WHO"),
                              ("pkg a::bench nothing.yml manual # x\n", "no workflow")):

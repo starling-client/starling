@@ -16,10 +16,7 @@ ORIGINAL_JDK_TOOLS = {
     # Original generator of the Java character tables: calls only the public Character API and prints ranges; no JDK implementation source.
     "tools/JavaCharacterTables.java",
     "tests/java/JfrFixture.java",
-<<<<<<< sync-sunrise-1
     "tests/java/GameFolderChecks.java",
-    # Our own comparison driver; it calls the player's pinned vanilla jars at run time and carries none of their code.
-=======
     # Original differential-fuzz driver for java.lang.Math: calls only the public Math API on generated inputs (its
     # "mthtable" case applies Mth's one-line sine-table formula, as crates/sunrise-core/src/geometry/trig.rs does).
     "tools/jmath_fuzz/JmathFuzz.java",
@@ -31,7 +28,6 @@ ORIGINAL_JDK_TOOLS = {
     "tools/modified_utf8_kit/java/Mutf8Bench.java",
     # HISTORY-ONLY: this original comparison driver is no longer in the current tree.
     # Keep its old path allowed so --history/--pre-push accept its legitimate historical addition.
->>>>>>> sunrise/main
     "tools/refactors/api-pr3/JsonNbtOracle.java",
 }
 # The Android app's own classes (packaging/android/build_apk.py), Sunrise's code like the above.

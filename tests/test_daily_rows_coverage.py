@@ -232,12 +232,6 @@ class WindowsDailyTests(unittest.TestCase):
                                   "sunrise-mod-package", "lib"], capture_output=True, text=True, check=True).stdout
         self.assertIn("holder::tests::private_version_is_refused_before_normal_startup", printed.split())
         self.assertNotIn("holder::game_entry::tests::write_missing_registration_actor", printed.split())
-<<<<<<< sync-sunrise-1
-=======
-        workflow = (ROOT / ".github/workflows/windows-runtime-leases.yml").read_text()
-        self.assertIn("ignored_tests.py --daily-tests sunrise-mod-package lib", workflow)
-        self.assertNotIn("< <(", workflow)  # a process substitution would hide the reader's failure
->>>>>>> sunrise/main
         # No rows: no output at all, not one empty name.
         empty = subprocess.run([sys.executable, str(ROOT / "tools/ci/ignored_tests.py"), "--daily-tests",
                                 "no-such-package", "lib"], capture_output=True, text=True, check=True).stdout

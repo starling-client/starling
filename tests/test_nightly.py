@@ -177,15 +177,13 @@ class ScheduledTests(unittest.TestCase):
         self.assertIn("### Left out (1)", text)
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+
+
+WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 # Starling's repository drops Sunrise's nightly and release workflows (it builds its own APK).
 SUNRISE_RELEASES = unittest.skipUnless(
     (WORKFLOWS / "nightly-build.yml").exists(), "Sunrise's nightly workflows are not in this repository"
 )
-
-
-<<<<<<< sync-sunrise-1
-@SUNRISE_RELEASES
-=======
 class MuslAttachmentTests(unittest.TestCase):
     def setUp(self):
         from tests.test_ci_concurrency import yaml
@@ -422,7 +420,7 @@ class AttachTests(unittest.TestCase):
                     output.assert_not_called()
 
 
->>>>>>> sunrise/main
+@SUNRISE_RELEASES
 class FirstNightlyTests(unittest.TestCase):
     def test_fetch_succeeds_with_or_without_an_existing_nightly_tag(self):
         class ReachedGreenBase(Exception):

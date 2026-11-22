@@ -29,12 +29,8 @@ SUNRISE_CLIENT = [
     # The build script and the native hook tests read the hook targets' sources.
     "crates/sunrise-client-render/src", "crates/sunrise-world/src", "crates/sunrise-items/src",
     "docs/api/launch-reference.md", "docs/sunrise-ctl-commands.md", "docs/modding/examples/src/worldgen.rs",
-<<<<<<< sync-sunrise-1
-    "docs/parity/random-chance-seeded.jsonl", "packaging/android/bedrock-controls.json",
-    "packaging/android/build-server.txt", "packaging/executable_link.rs", "packaging/windows/exe.rs",
-=======
     "docs/parity/block-entity-client-ticks.jsonl", "docs/parity/random-chance-seeded.jsonl",
->>>>>>> sunrise/main
+    "packaging/android/bedrock-controls.json", "packaging/android/build-server.txt",
     "research-lock.json", "tests/fixture_support/item_resource_properties.rs", "tests/fixtures",
 ]
 # The generator scans these to write the mod API and the host boundary: its own sources, the vocabulary, the
@@ -63,13 +59,10 @@ READERS = {
     "sunrise-client-core": ["crates/sunrise-client/assets/sunrise/lang"],
     "sunrise-client-render": [
         "crates/sunrise-client/assets/sunrise/lang", "crates/sunrise-client/assets/sunrise/textures/gui",
-<<<<<<< sync-sunrise-1
         "crates/sunrise-client/assets/touch",
-=======
         # Its WGSL validation compiles the shader pack crate's shaders too.
         "crates/sunrise-render-shaderpack/src",
         "tools/light_storage_scenario.txt", "tools/light_storage_witness.txt",
->>>>>>> sunrise/main
     ],
     # The daily Character comparator reads the original public-JDK API helper.
     "sunrise-core": ["tools/JavaCharacterTables.java"],
@@ -98,18 +91,14 @@ READERS = {
         "crates/sunrise-theme/fonts", "crates/sunrise-theme/icons", "docs/api/server-reference.md",
     ],
     "sunrise-shader-api": ["docs/api/shaders-reference.md", "docs/api/shaders-reference-0.2.md"],
-<<<<<<< sync-sunrise-1
-    "sunrise-world": ["crates/sunrise-core", "Cargo.lock"],
     # Starling's own crates: the account tests read the research lock, the catalog its launcher's sources.
     "starling-account": ["research-lock.json"],
     "starling-catalog": ["launcher/src"],
-=======
     # Its daily stable-release test drives the release gate's Python through the real surface differ.
     "sunrise-stage": [
         "tests/stable_mod_api_integration.py", "tests/test_stable_mod_api.py", "tools/ci/nightly.py",
         "tools/release_train.py",
     ],
->>>>>>> sunrise/main
     # Commands (tokens, icons, package), not tests: listed so the scan finds nothing unexplained.
     "xtask": [
         "crates/sunrise-client/src", "crates/sunrise-mod-vocab/src/hooks", "crates/sunrise-perf/web",

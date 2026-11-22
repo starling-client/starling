@@ -20,13 +20,7 @@ class ScreenMouseDraggedHookTests(unittest.TestCase):
         hooks = hooks.replace("pub(super) fn", "fn").replace("super::glfw_", "glfw_")
         track = method(hooks, "track_drag_button")
         dispatch = method(hooks, "screen_mouse_dragged")
-<<<<<<< sync-sunrise-1
-        hud_room = (ROOT / "crates/sunrise-client/src/game/interface/hud_room.rs").read_text(encoding="utf-8")
-        interface_point = method(hud_room.replace("pub(in crate::game) fn", "fn"), "interface_point")
-        start = source.index("                        let previous = self.cursor;", source.index("WindowEvent::CursorMoved { position"))
-=======
         start = source.index("                        let projection = self.pointer_projection(size);")
->>>>>>> sunrise/main
         cursor_end = source.index("                        if self.dialog_open()", start)
         cursor = source[start:cursor_end]
         window_handler = (ROOT / "crates/sunrise-client/src/game/runtime/window_handler.rs").read_text(encoding="utf-8")
@@ -99,9 +93,6 @@ impl Game {
     }
     TRACK
     DISPATCH
-<<<<<<< sync-sunrise-1
-    INTERFACE_POINT
-=======
     POINTER_SETTER
     REFRESH_CURSOR
     fn pointer_space(&self, _: [u32; 2]) -> PointerSpace {
@@ -113,7 +104,6 @@ impl Game {
     fn renderer_pointer_projection(&self) -> Option<PointerProjection> {
         Some(self.pointer_projection(self.framebuffer))
     }
->>>>>>> sunrise/main
     fn pointer(&mut self, position: Point) -> Result<(), ()> {
         let size = self.framebuffer;
         let event = WindowEvent::CursorMoved { position };
@@ -186,9 +176,6 @@ fn lifecycle_and_cancellation() {
         assert!((*dx - 1e-8).abs() < 1e-12, "wrong delta: {dx}");
     }
 }
-<<<<<<< sync-sunrise-1
-""".replace("TRACK", track).replace("DISPATCH", dispatch).replace("INTERFACE_POINT", interface_point).replace("CURSOR", cursor).replace("FOCUS", focus)
-=======
 
 #[test]
 fn scale_change_keeps_a_stationary_pointer_on_the_same_click_target() {
@@ -209,7 +196,6 @@ fn scale_change_keeps_a_stationary_pointer_on_the_same_click_target() {
     assert!(game.calls.borrow().is_empty());
 }
 """.replace("TRACK", track).replace("DISPATCH", dispatch).replace("CURSOR_SAMPLE", sample).replace("REFRESH_CURSOR", refresh).replace("CURSOR", cursor).replace("FOCUS", focus).replace("POINTER_SETTER", set_cursor).replace("POINTER_PROJECTION", pointer_projection_sources())
->>>>>>> sunrise/main
         with tempfile.TemporaryDirectory() as folder:
             src, exe = Path(folder) / "drag.rs", Path(folder) / "drag.exe"
             src.write_text(fixture, encoding="utf-8")

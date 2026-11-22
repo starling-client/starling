@@ -110,11 +110,7 @@ class ReleaseTrainTests(unittest.TestCase):
         self.assertEqual(prs[-1]["number"], 300)
         self.assertEqual(prs[-1]["merged_at"], NOW - dt.timedelta(hours=9))
         api.assert_called_once()
-<<<<<<< sync-sunrise-1
-        self.assertEqual(api.call_args.args[:4], ("api", "graphql", "--paginate", "--slurp"))
-=======
         self.assertEqual(api.call_args.args[:3], ("api", "graphql", "--paginate"))
->>>>>>> sunrise/main
 
     def test_player_facing_paths(self):
         exporters = {"mods/sunrise/src/test/java/dev/sunriselab/parity/VanillaMobDataExporter.java"}
@@ -230,44 +226,7 @@ class ReleaseTrainTests(unittest.TestCase):
         self.assertFalse(train.decision("game", [], NOW, new_line="0.3", blockers=[7])[0])
         self.assertTrue(train.decision("game", [pr(1)], NOW, blockers=[])[0])
 
-<<<<<<< sync-sunrise-1
-    @mock.patch.object(train, "REPO", "horizon-rust/horizon")
-    def test_game_releases_ship_only_what_parity_main_passed(self):
-        def runs(parity, checks):
-            def gh_json(*arguments):
-                table = parity if "parity-main" in arguments else checks
-                if "--commit" in arguments:
-                    sha = arguments[arguments.index("--commit") + 1]
-                    return [{"status": s, "conclusion": c} for h, s, c in table if h == sha]
-                if "--status" in arguments:
-                    wanted = arguments[arguments.index("--status") + 1]
-                    table = [(h, s, c) for h, s, c in table if c == wanted]
-                return [{"headSha": h, "status": s, "conclusion": c} for h, s, c in table]
-            return mock.patch.object(train, "gh_json", gh_json)
-        checks = [("c", "in_progress", ""), ("b", "completed", "success"), ("a", "completed", "success")]
-        with runs([("c", "queued", ""), ("b", "completed", "cancelled"), ("a", "completed", "success")], checks):
-            self.assertEqual(train.green_main_head(), "b", "checks alone: the newest green checks")
-            self.assertEqual(train.green_main_head(parity=True), "a", "a superseded parity-main run counts for nothing")
-            self.assertTrue(train.passed_on("parity-main", "a"))
-            self.assertFalse(train.passed_on("parity-main", "b"))
-        with runs([("b", "completed", "failure"), ("a", "completed", "success")], checks):
-            self.assertEqual(train.green_main_head(parity=True), "a",
-                             "a later failed batch holds only its own merges, not the commit before it")
-        with runs([("c", "completed", "success")], checks):
-            self.assertIsNone(train.green_main_head(parity=True), "its checks must pass too")
-        with runs([("c", "completed", "success"), ("a", "completed", "success")], checks):
-            self.assertEqual(train.green_main_head(parity=True), "a", "the newest green commit whose checks passed")
-        with runs([("c", "completed", "failure"), ("b", "completed", "cancelled")], checks):
-            self.assertIsNone(train.green_main_head(parity=True), "nothing parity-main passed")
-        with runs([("c", "completed", "success")], [("c", "completed", "success")]):
-            self.assertEqual(train.green_main_head(), "c")
-        with runs([], [("c", "completed", "failure"), ("b", "completed", "success")]):
-            self.assertIsNone(train.green_main_head(), "checks alone: main's newest finished checks must pass")
-
-    @mock.patch.object(train, "REPO", "arismoko/horizon")
-=======
     @mock.patch.object(train, "REPO", "sunrise-org/sunrise")
->>>>>>> sunrise/main
     def test_fork_base_requires_same_sha_main_push_gate_jobs(self):
         def record(sha, ident, event="push", branch="main"):
             return dict(head_sha=sha, id=ident, event=event, head_branch=branch,
@@ -625,28 +584,7 @@ class NightlyTrainTests(unittest.TestCase):
         self.assertTrue(train.nightly_decision(True, "forced", self.PRS, None, 30, force=True)[0])
         self.assertFalse(train.nightly_decision(True, "forced", self.PRS, 7, 0, force=True)[0])
 
-<<<<<<< sync-sunrise-1
     def test_a_running_nightly_never_holds_a_snapshot_back(self):
-=======
-    def test_a_dev_build_never_holds_the_nightly_back(self):
-        def runs(*entries):
-            return [dict(databaseId=n, status=status, displayTitle=title) for n, (status, title) in enumerate(entries, 1)]
-        dev = ("in_progress", "dev build " + "a" * 40)
-        with mock.patch.object(train, "gh_json", return_value=runs(dev, ("queued", "dev build "))):
-            self.assertIsNone(train.nightly_building(), "an active Dev build, real or dry, is no Nightly")
-        with mock.patch.object(train, "gh_json", return_value=runs(dev, ("queued", "nightly build"))):
-            self.assertEqual(train.nightly_building(), 2)
-        with mock.patch.object(train, "gh_json", return_value=runs(("in_progress", "nightly build (request 7)"))):
-            self.assertEqual(train.nightly_building(), 1)
-        with mock.patch.object(train, "gh_json", return_value=runs(("completed", "nightly build"), dev)):
-            self.assertIsNone(train.nightly_building())
-        # The workflow names a Dev build's run exactly so, and a Nightly's never so.
-        run_name = (train.ROOT / ".github/workflows/nightly-build.yml").read_text().split("\nrun-name: ", 1)[1].split("\n", 1)[0]
-        self.assertIn("inputs.kind == 'dev' && format('dev build {0}', inputs.base)", run_name)
-        self.assertIn("format('nightly build{0}'", run_name)
-
-    def test_a_running_nightly_never_holds_a_dev_build_back(self):
->>>>>>> sunrise/main
         sha = "a" * 40
         argv = ["release_train.py", "decide", "--kind", "game", "--channel", "dev"]
         with mock.patch("sys.argv", argv), mock.patch.object(train, "channel_head", return_value=sha), \

@@ -519,23 +519,11 @@ fn main() {
     assert!(game.window.as_ref().unwrap().visible.get());
 }
 '''
-<<<<<<< sync-sunrise-1
-        capture = method(source, "capture").replace(
-            "sunrise_client::mouse::mouse_position_after_grab_change",
-            "mouse_position_after_grab_change")
-        # The free check `settle_after_run` asks whether to grab again (#467, #499).
-        regrab = source[source.index("fn regrab_after_run("):]
-        regrab = regrab[:regrab.index("\n}\n") + 3]
-        fixture = fixture.replace("HELPER", function(mouse, "mouse_position_after_grab_change")
-                                  + "\n" + regrab)
-        fixture = fixture.replace("METHODS", capture + "\n" +
-=======
         fixture = fixture.replace("POINTER_PROJECTION", pointer_projection_sources())
         fixture = fixture.replace("METHODS", method(source, "capture") + "\n" +
                                   method(source, "pointer_space") + "\n" +
                                   method(source, "pointer_projection") + "\n" +
                                   method(source, "set_window_cursor") + "\n" +
->>>>>>> sunrise/main
                                   method(source, "capture_loaded_world") + "\n" +
                                   method(source, "regrab_on_refocus") + "\n" +
                                   method(source, "internal_grab") + "\n" +

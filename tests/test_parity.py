@@ -2,12 +2,7 @@ import re
 import unittest
 from pathlib import Path
 
-<<<<<<< sync-sunrise-1
-# Sunrise's audit, kept beside Starling's README (docs/sunrise-parity.md).
-README = Path(__file__).resolve().parents[1] / 'docs' / 'sunrise-parity.md'
-=======
 README = Path(__file__).resolve().parents[1] / 'docs' / 'status.md'
->>>>>>> sunrise/main
 
 
 class ParityTableTests(unittest.TestCase):

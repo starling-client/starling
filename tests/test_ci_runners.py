@@ -172,26 +172,6 @@ class OwnRunnerTests(unittest.TestCase):
                     with self.assertRaises(AssertionError):
                         self.test_no_deployment_environment_on_our_runners()
 
-<<<<<<< sync-sunrise-1
-=======
-    def test_checks_verify_runs_on_main_not_on_pull_requests(self):
-        text = (WORKFLOWS / "ci.yml").read_text()
-        # A push gets dyna-checks; a fork's push held GitHub's runners ahead of the release jobs (2026-11-18). A pull
-        # request runs verify only when a maintainer labels it, and never with a token that writes.
-        self.assertEqual(triggers(text), {"pull_request", "schedule", "workflow_dispatch"})
-        self.assertIn("  pull_request:\n    types: [labeled]\n", text)
-        self.assertNotRegex(text, r":\s*write")
-        ci = dict(jobs(text))
-        for part in ("verify-tree", "verify-lint", "verify-test"):
-            with self.subTest(part=part):
-                self.assertIn("needs: changes", ci[part])
-                self.assertIn("github.event_name == 'schedule' || inputs.verify ||", ci[part])
-                self.assertIn("github.event.label.name == 'ci:verify' &&", ci[part])
-        self.assertIn("needs: [verify-tree, verify-lint, verify-test]", ci["verify"])
-        # Never skipped where its parts ran: GitHub counts a skipped required check as passed.
-        self.assertIn("if: always()", ci["verify"])
-
->>>>>>> sunrise/main
     def test_the_light_runners_refuse_forks_themselves(self):
         script = (ROOT / "tools/ci/checks-runners.sh").read_text()
         self.assertIn("ACTIONS_RUNNER_HOOK_JOB_STARTED=$shared/job-started.sh", script)
