@@ -20,6 +20,7 @@ const HOSTS: [&str; 7] = [
     "https://edge.forgecdn.net/",
     // Sunrise's registry's icons (its GitHub Pages), and the mirror kept at the address it had
     // before the repositories moved to the horizon-rust organization.
+    "https://sunrise-org.github.io/sunrise-mods/",
     "https://horizon-rust.github.io/horizon-mods/",
     "https://ludovic111.github.io/sunrise-mods/",
 ];

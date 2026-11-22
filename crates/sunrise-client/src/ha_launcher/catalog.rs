@@ -1473,9 +1473,7 @@ impl Catalog {
         // Collect both direct icon URLs and Sunrise/bundled items that need a Modrinth name search
         // for their PFP and description.
         let mut tasks: Vec<(String, String, Option<String>, Kind)> = Vec::new();
-        if self.page == Page::Mods
-            && self.config.mod_source == crate::ha_launcher::shader_catalog::Origin::Sunrise
-        {
+        if self.page == Page::Mods {
             for (id, title, _) in crate::ha_launcher::client::mod_list::ANDROID_BUNDLED {
                 if !self.icons.contains_key(id) {
                     tasks.push((id.to_owned(), title.to_owned(), None, Kind::Mod));
@@ -1724,7 +1722,9 @@ impl Catalog {
         let source = match self.page {
             Page::Packs => browser::SourceId::Modrinth,
             Page::Shaders => self.config.shader_source.source(),
-            Page::Mods => self.config.mod_source.source(),
+            // Starling: the Mods page lists the registry alone. Modrinth's are Java mods, which
+            // this game cannot run.
+            Page::Mods => browser::SourceId::Sunrise,
             _ => browser::SourceId::Sunrise,
         };
         let key = (self.page, source, self.query.trim().to_owned(), self.offset);
@@ -1744,18 +1744,8 @@ impl Catalog {
         {
             "No Sunrise shader packs match this search. Try another query or import a .sshader."
                 .into()
-        } else if self.page == Page::Mods
-            && self.config.mod_source == crate::ha_launcher::shader_catalog::Origin::Modrinth
-        {
-            format!(
-                "{} Java mods - browsing only; this Rust client cannot run Java loaders",
-                items.len()
-            )
         } else if self.page == Page::Mods {
-            format!(
-                "{} Sunrise mods available (playsunrise.net/mods) - select Install to download",
-                items.len()
-            )
+            format!("{} mods available - select Install to download", items.len())
         } else {
             format!("{} results - select Install to download", items.len())
         };

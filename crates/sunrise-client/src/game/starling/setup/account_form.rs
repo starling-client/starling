@@ -34,6 +34,11 @@ impl Form {
             rects: Cell::new([[0.; 4]; 3]),
         }
     }
+    /// The first field already holding `text` (the name the player uses, for the offline form).
+    pub fn with_first(mut self, text: &str) -> Self {
+        self.fields[0].set_value(text);
+        self
+    }
     fn count(&self) -> usize {
         if self.kind == Kind::Ely { 3 } else { 1 }
     }

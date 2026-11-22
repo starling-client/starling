@@ -1089,7 +1089,17 @@ impl Loading {
             Action::Offline => self.setup.offline_asked = true,
             Action::PlayOffline => {
                 self.setup.offline_asked = false;
-                self.setup.form = Some(Form::new(Kind::Offline));
+                // The name the player already has (an offline profile, an account, the
+                // launcher's) is in the field: one tap, not a second sign-in.
+                let known = match accounts::state() {
+                    State::OfflineProfile(name) => name,
+                    State::SignedIn(account) => account.name,
+                    _ => crate::ha_launcher::catalog::Config::load(
+                        &crate::ha_launcher::backend::data_dir(),
+                    )
+                    .name,
+                };
+                self.setup.form = Some(Form::new(Kind::Offline).with_first(known.trim()));
                 self.setup.provider = Some(Kind::Offline);
             }
             Action::NotOffline => self.setup.offline_asked = false,

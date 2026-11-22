@@ -1544,7 +1544,8 @@ impl Launcher {
                     "Resource Packs"
                 },
             );
-            if matches!(page, Page::Shaders | Page::Mods) {
+            // Starling: only shader packs have two sources; the Mods page lists the registry alone.
+            if page == Page::Shaders {
                 use crate::ha_launcher::shader_catalog::Origin;
                 let seg_w = 100.0;
                 for (i, origin) in [Origin::Sunrise, Origin::Modrinth].into_iter().enumerate() {
@@ -1644,10 +1645,7 @@ impl Launcher {
                 );
             }
 
-            let bundled: Vec<_> = if page == Page::Mods
-                && self.catalog.config.mod_source
-                    == crate::ha_launcher::shader_catalog::Origin::Sunrise
-            {
+            let bundled: Vec<_> = if page == Page::Mods {
                 let query = self.catalog.query.to_lowercase();
                 crate::ha_launcher::client::mod_list::ANDROID_BUNDLED
                     .into_iter()

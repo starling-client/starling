@@ -15,12 +15,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Where the registry publishes its index (GitHub Pages of horizon-rust/horizon-mods).
-pub const INDEX_URL: &str = "https://horizon-rust.github.io/horizon-mods/index.json";
+/// Where the registry publishes its index: Sunrise's (GitHub Pages of sunrise-org/sunrise-mods),
+/// whose `.smod` packages are what this game reads since the move to Sunrise.
+pub const INDEX_URL: &str = "https://sunrise-org.github.io/sunrise-mods/index.json";
 /// The registry's pages on the website, `<SITE>/<id>`.
 const SITE: &str = "https://playsunrise.net/mods";
 /// The report form of a project.
-const REPORT: &str = "https://github.com/horizon-rust/horizon-mods/issues/new?template=report.yml";
+const REPORT: &str = "https://github.com/sunrise-org/sunrise-mods/issues/new?template=report.yml";
 /// The loader name the browser gives registry versions, so `support` and `pick` know them.
 pub const LOADER: &str = "sunrise";
 /// How long a fetched index is used before it is fetched again.
@@ -233,7 +234,9 @@ pub const POLICY: &str = "https://playsunrise.net/mods/policy";
 /// Whether the Sunrise project made `p` (the mod policy's "Official": author Sunrise, source in
 /// the horizon-rust organisation).
 pub fn official(p: &index::Project) -> bool {
-    p.authors == ["Sunrise"] && p.source.starts_with("https://github.com/horizon-rust/")
+    p.authors == ["Sunrise"]
+        && (p.source.starts_with("https://github.com/sunrise-org/")
+            || p.source.starts_with("https://github.com/horizon-rust/"))
 }
 
 /// What the player reads about a registry project before installing it: who made it, whether its

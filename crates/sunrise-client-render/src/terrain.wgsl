@@ -771,7 +771,6 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 // `fs_solid` for a frame with nothing fading (gfx/solid_paths.rs): `faded` would leave nothing out.
 @fragment fn fs_cutout_static(wire: TerrainWire) -> @location(0) vec4<f32> {
     let in = from_wire(wire);
-    hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;
     if !SETTLED_TERRAIN {
@@ -782,9 +781,6 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 }
 @fragment fn fs_cutout_static_sdr(wire: TerrainWire) -> @location(0) vec4<f32> {
     let in = from_wire(wire);
-    if HDR_LIGHTING && globals.hdr_light.z != 0.0 {
-        hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
-    }
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;
     if !SETTLED_TERRAIN {
