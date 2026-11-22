@@ -635,17 +635,7 @@ impl Game<'_> {
                 if !self.is_published() {
                     server.set_paused(true);
                 }
-                let _ = server.post(|g| {
-                    let started = Instant::now();
-                    match g.save_game_with(false) {
-                        Ok(()) => {
-                            let mut saves = g.levels.parked_saves();
-                            saves.push(g.save.clone());
-                            log_when_written(saves, started);
-                        }
-                        Err(e) => log::warn!("Sunrise: failed to save the world: {e}"),
-                    }
-                });
+                server.tell(super::owner_link::OwnerRequest::SaveForBackground);
             } else if self.remote.is_none() {
                 log::info!("Sunrise: saving the world, the game left the screen");
                 let started = Instant::now();
@@ -656,6 +646,19 @@ impl Game<'_> {
             }
         }
         sunrise_client::logging::flush();
+    }
+
+    /// `save_for_background` on the server thread, between two ticks.
+    pub(super) fn save_for_background_here(&mut self) {
+        let started = Instant::now();
+        match self.save_game_with(false) {
+            Ok(()) => {
+                let mut saves = self.levels.parked_saves();
+                saves.push(self.save.clone());
+                log_when_written(saves, started);
+            }
+            Err(e) => log::warn!("Sunrise: failed to save the world: {e}"),
+        }
     }
 }
 

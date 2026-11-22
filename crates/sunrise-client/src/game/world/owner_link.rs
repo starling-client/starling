@@ -63,6 +63,9 @@ pub(super) enum OwnerRequest {
     MarkServerCapture(String),
     /// What agent control asks of the world.
     Control(ControlRequest),
+    /// Starling: the game left the screen on a phone: the world saved where it stands, nothing
+    /// waiting for the files (`Game::save_for_background`).
+    SaveForBackground,
     /// Tests reach into the server thread's `Game` (`Integrated::call`, `Integrated::post`).
     #[cfg(test)]
     InTest(Box<dyn FnOnce(&mut Game<'_>) + Send>),
@@ -186,6 +189,7 @@ impl Game<'_> {
             }
             OwnerRequest::MarkServerCapture(name) => self.mark_server_capture(&name),
             OwnerRequest::Control(request) => self.serve_control_request(request),
+            OwnerRequest::SaveForBackground => self.save_for_background_here(),
             #[cfg(test)]
             OwnerRequest::InTest(task) => task(self),
         }
