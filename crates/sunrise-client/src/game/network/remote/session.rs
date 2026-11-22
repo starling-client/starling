@@ -42,9 +42,14 @@ impl Game<'_> {
         let info = self
             .settings
             .client_information(client_view_distance(self.settings.render_distance));
-        // A signed-in account always plays under its own name.
+        // A signed-in account always plays under its own name on servers (an online-mode one
+        // takes no other). Starling: single player's own server, the name its world opened with
+        // (a name chosen in Skin Customization goes first).
         let auth = self.auth();
-        let name = auth.as_ref().map_or(name, |a| a.name.as_str());
+        let name = match (&auth, &local) {
+            (Some(a), None) => a.name.as_str(),
+            _ => name,
+        };
         let user = (
             name.to_owned(),
             auth.as_ref()
@@ -351,6 +356,8 @@ impl Game<'_> {
             game_mode: 0,
             chat: Vec::new(),
             chat_received: 0,
+            names: HashMap::new(),
+            starling: Default::default(),
             chat_queue: VecDeque::new(),
             signatures: Default::default(),
             chat_previous: None,
@@ -614,6 +621,8 @@ impl Game<'_> {
             game_mode: 0,
             chat: Vec::new(),
             chat_received: 0,
+            names: HashMap::new(),
+            starling: Default::default(),
             chat_queue: VecDeque::new(),
             signatures: Default::default(),
             chat_previous: None,
@@ -880,6 +889,7 @@ impl Game<'_> {
         r.game_mode = spawn.game_type;
         r.flat = spawn.flat;
         r.loaded_sent = false;
+        r.abilities = None;
         // A replacement LevelLoadingScreen starts its bar from nothing (the
         // first one carries on from the server's start).
         if self.player.is_some() {

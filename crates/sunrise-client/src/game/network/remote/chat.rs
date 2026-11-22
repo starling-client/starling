@@ -298,7 +298,8 @@ impl Game<'_> {
     }
     /// ChatType.Bound.decorate (`Decoration::Chat`) and `decorateNarration`
     /// (`Decoration::Narration`): the chat type's decoration from the
-    /// server's registry, applied to `content`.
+    /// server's registry, applied to `content`. Starling: legacy `§` codes in it (which plugins
+    /// still send) style the line, as `remote_text`'s do.
     pub(in crate::game) fn decorate_chat(
         &self,
         bound: &play::ChatTypeBound,
@@ -307,7 +308,7 @@ impl Game<'_> {
     ) -> sunrise_client::text::Text {
         use sunrise_client::scoreboard::comp_text;
         let Some(r) = self.remote.as_ref() else {
-            return comp_text(content);
+            return comp_text(content).resolve_legacy();
         };
         let chat_type = r.registries.data("minecraft:chat_type", bound.chat_type);
         comp_text(&chat_type_decorate(chat_type, decoration, bound, content))

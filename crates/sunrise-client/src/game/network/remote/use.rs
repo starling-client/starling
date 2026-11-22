@@ -369,8 +369,8 @@ impl Game<'_> {
             face: sunrise_core::geometry::Direction::ALL[face_direction(hit.face) as usize],
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
             inside: hit.inside,
-            yaw: self.yaw,
-            pitch: self.pitch,
+            yaw: self.interaction_rotation().0,
+            pitch: self.interaction_rotation().1,
             sneaking: self.remote_shift_down(),
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
@@ -560,6 +560,23 @@ impl Game<'_> {
         attempt: mod_api::InteractionAttempt,
         block_hit: Option<Hit>,
     ) {
+        // Starling: the touch controls' shield raises whichever hand holds one, and nothing else.
+        #[cfg(target_os = "android")]
+        if self.mobile.touch_shield {
+            let hand = if self
+                .offhand
+                .as_ref()
+                .is_some_and(|s| self.blocks_attacks(s).is_some())
+            {
+                Hand::Off
+            } else {
+                Hand::Main
+            };
+            if self.remote_use_item(hand) {
+                self.heights.item_used(hand);
+            }
+            return;
+        }
         // Nothing in the crosshair: an empty hand's click is heard, by mods only.
         let miss = block_hit.is_none()
             && mod_api::__private::listened(mod_api::HookId::RightClickEmpty)

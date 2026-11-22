@@ -17,17 +17,29 @@ impl Game<'_> {
     /// speed is read where the field of view needs it
     /// ([`Game::remote_walking_speed`]), the instabuild bit where the packet
     /// is handled (`Game::creative`).
+    ///
+    /// Starling: also for a LocalPlayer made after the packet came (it follows Login): without
+    /// one since the last respawn, the game mode's (GameType.updatePlayerAbilities).
     pub(super) fn apply_remote_abilities(&mut self) {
-        let (Some(player), Some(a)) = (
-            self.player.as_mut(),
-            self.remote.as_ref().and_then(|r| r.abilities.as_ref()),
-        ) else {
+        let abilities = self.remote.as_ref().and_then(|r| r.abilities.clone());
+        let spectator = self.spectator();
+        let creative = self.creative;
+        let Some(player) = self.player.as_mut() else {
             return;
         };
-        player.invulnerable = a.flags & 1 != 0;
-        player.flying = a.flags & 2 != 0;
-        player.may_fly = a.flags & 4 != 0;
-        player.flying_speed = a.flying_speed;
+        match abilities {
+            Some(a) => {
+                player.invulnerable = a.flags & 1 != 0;
+                player.flying = a.flags & 2 != 0;
+                player.may_fly = a.flags & 4 != 0;
+                player.flying_speed = a.flying_speed;
+            }
+            None => {
+                player.invulnerable = creative || spectator;
+                player.may_fly = creative || spectator;
+                player.flying = spectator;
+            }
+        }
     }
 
     /// `Abilities.getWalkingSpeed()` of the local player: the server's, on a server.

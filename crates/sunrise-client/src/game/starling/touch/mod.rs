@@ -591,7 +591,7 @@ impl Game<'_> {
     /// keys on this server (their eight directions on screen).
     fn touch_dpad(&self) -> bool {
         let picked = self.touch.config.as_ref().and_then(|c| c.dpad);
-        picked.unwrap_or(false)
+        picked.unwrap_or(self.remote_stick_mode() == Some(ServerStick::Keys))
     }
 
     /// Taps and presses on the view act on what is under the finger now: tap to interact, the

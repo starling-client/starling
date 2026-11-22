@@ -45,6 +45,8 @@ impl Game<'_> {
     }
 
     fn tick_remote_level_body(&mut self) -> Result<()> {
+        // Starling: last tick's hits and uses held back for its move (Free Direction).
+        self.send_held_back();
         // MultiPlayerGameMode.tick, first in Minecraft.tick, before the GUI and its screens tick:
         // the slot chosen since the last tick (the wheel, the last tick's number keys, the
         // server's SetHeldSlot), then its Connection.tick's ClientPacketListener.tick (the key

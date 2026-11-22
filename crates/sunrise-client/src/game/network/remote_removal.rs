@@ -75,6 +75,7 @@ impl Game<'_> {
                 r.stepped.remove(&id);
                 r.head_lerps.remove(&id);
                 r.pending_items.remove(&id);
+                r.names.remove(&id);
             }
         }
         let keep = |id: u32| {

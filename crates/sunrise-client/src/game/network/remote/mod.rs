@@ -7,6 +7,8 @@
 //! client predicts its own movement; the server stays authoritative for
 //! everything else.
 mod selector_metadata;
+// Starling: the stick's modes on servers, held-back hits, setback logs (remote/starling.rs).
+mod starling;
 use crate::game::collision_source::Mover;
 use selector_metadata::hurt_sound_for;
 mod attack_target;
@@ -134,10 +136,11 @@ pub(super) use super::villager_client::builtin_registries;
 
 mod chat_queue;
 
-/// A text component the server sent, for the HUD.
+/// A text component the server sent, for the HUD and the chat. Starling: legacy `§` codes in its
+/// strings (which plugins still send) style the text as the font's StringDecomposer does.
 pub(super) fn remote_text(tag: &Tag) -> sunrise_client::text::Text {
     use sunrise_client::scoreboard::{comp_text, tag_to_json};
-    comp_text(&tag_to_json(tag))
+    comp_text(&tag_to_json(tag)).resolve_legacy()
 }
 
 /// `Player.getVoicePitch`: a constant 1.0
@@ -205,8 +208,8 @@ impl ChunkGenerator for NoTerrain {
 
 /// A server entity the client tracks (position as last sent).
 pub(super) struct Tracked {
-    kind: String,
-    position: [f64; 3],
+    pub(super) kind: String,
+    pub(super) position: [f64; 3],
     /// `Entity.getPositionCodec`'s base: the position the server last
     /// reported (AddEntity, MoveEntity, EntityPositionSync), which a move
     /// packet's delta counts from. A TeleportEntity moves the entity but not
@@ -434,7 +437,8 @@ pub(super) struct Remote {
     last_recorded_pose: Option<crate::pose::Pose>,
     /// The last ClientboundPlayerAbilitiesPacket. Vanilla's LocalPlayer
     /// holds its abilities from the login on; here the player is made at
-    /// the first teleport, which takes them then.
+    /// the first teleport, which takes them then. Starling: None after a respawn until the server
+    /// sends them: the game mode's then (`GameType.updatePlayerAbilities`).
     abilities: Option<play::PlayerAbilities>,
     /// The old player's motion, from a Respawn with KEEP_ENTITY_DATA
     /// (`handleRespawn`: `newPlayer.setDeltaMovement(oldPlayer.getDeltaMovement())`),
@@ -521,6 +525,11 @@ pub(super) struct Remote {
     pub chat: Vec<(String, Instant)>,
     /// Lines received since joining, for the control socket's events.
     pub chat_received: u64,
+    /// Starling's own state of the connection (remote/starling.rs).
+    pub(super) starling: starling::State,
+    /// Starling: Entity.DATA_CUSTOM_NAME and DATA_CUSTOM_NAME_VISIBLE as the server set them, by
+    /// entity (holograms are armor stands with a visible name).
+    pub(super) names: HashMap<i32, (Option<sunrise_client::text::Text>, bool)>,
     /// `ChatListener.delayedMessageQueue`: player chat held back by Chat
     /// Delay, with the signature a deletion names it by and what the
     /// narrator says once it shows.
@@ -659,6 +668,10 @@ const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
 /// whatever inserting their columns costs, up to a column still decoding:
 /// the packets after a slow machine's chunks don't wait on its frames.
 const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
+/// Starling: what a frame spends on an overdue backlog's chunk packets on a phone: there one frame
+/// taking the whole backlog after a teleport was a visible hitch (a 214 ms frame on the POCO
+/// F6 Pro); four times a frame's usual share still drains it in a few frames.
+const OVERDUE_CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(4);
 /// How long a tick about to run waits for one chunk column still decoding;
 /// past it the column, and what came after it, wait for the next frame.
 const TICK_DECODE_WAIT: Duration = Duration::from_millis(250);
@@ -734,6 +747,10 @@ impl Game<'_> {
             {
                 self.remote_send_carried();
             }
+            // Starling: Free Direction holds a hit or a use for the next tick's view.
+            let Some(packet) = self.held_back_for_the_view(packet) else {
+                return;
+            };
             self.send_play(packet);
         }
     }
@@ -1507,6 +1524,7 @@ impl Game<'_> {
         if let Some(r) = self.remote.as_mut() {
             r.synced = stacks;
         }
+        self.remote_creative_grid_synced();
     }
 
     /// The slots a server packet changed since `before` are as the server has them; the
@@ -1516,6 +1534,7 @@ impl Game<'_> {
         if let Some(r) = self.remote.as_mut() {
             mark_synced(&mut r.synced, before, now);
         }
+        self.remote_creative_grid_synced();
     }
 
     // remote_mining: remote/use.rs
@@ -2103,9 +2122,30 @@ struct RemoteUseWorld<'g, 'a>(&'g mut Game<'a>, mod_api::InteractionAttempt);
 
 impl sunrise_client::interaction_input::TargetUseWorld for RemoteUseWorld<'_, '_> {
     fn use_entity(&mut self) -> bool {
+        #[cfg(target_os = "android")]
+        if self.0.mobile.touch_shield {
+            return false;
+        }
         self.0.remote_use_entity(Hand::Main)
     }
     fn use_block(&mut self) -> bool {
+        // Starling: with the touch shield up, a use reaches a block only to change it (an axe
+        // on a log), and only where the shield has no button of its own.
+        #[cfg(target_os = "android")]
+        if self.0.mobile.touch_shield {
+            let transformer = self
+                .0
+                .stack_in(self.0.selected)
+                .and_then(|s| self.0.items().get(&s.item))
+                .is_some_and(|i| i.block_transformer.is_some());
+            if self.0.mobile.controls.settings.shield_button
+                || self.0.mobile.controls.shield_held()
+                || !transformer
+                || self.0.pick().is_none()
+            {
+                return false;
+            }
+        }
         self.0.remote_use_block(Hand::Main, self.1, None)
     }
     fn use_item(&mut self) {
@@ -3247,17 +3287,5 @@ impl Game<'_> {
             .and_then(|r| r.destroying.map(|d| d.2))
             .or_else(|| self.mining.as_ref().map(|m| m.progress))
             .unwrap_or(0.)
-    }
-
-    /// Starling: a click in one of the game's own dialogs (`starling:` actions).
-    pub(super) fn starling_dialog_click(&mut self, id: &str, payload: Option<&Tag>) {
-        // The link confirmation's Open (`confirm_link`).
-        if id == "starling:open_link" {
-            if let Some(Tag::String(url)) = payload.and_then(|p| p.get("url")) {
-                self.open_link(&url.to_string_lossy());
-            }
-            return;
-        }
-        log::warn!("Sunrise: no such dialog action {id}");
     }
 }

@@ -148,7 +148,14 @@ impl Game<'_> {
             });
             forgotten_credits.clear();
             let chunk = matches!(item, Received::Chunk(_, _));
-            if chunk && !overdue && !before_tick && *chunks >= CHUNK_PACKETS_PER_FRAME {
+            // Starling: an overdue backlog takes all its chunk packets, or on a phone
+            // `OVERDUE_CHUNK_PACKETS_PER_FRAME` of them.
+            let budget = match overdue {
+                false => CHUNK_PACKETS_PER_FRAME,
+                true if cfg!(target_os = "android") => OVERDUE_CHUNK_PACKETS_PER_FRAME,
+                true => Duration::MAX,
+            };
+            if chunk && !before_tick && *chunks >= budget {
                 events.push_front(item);
                 break;
             }
@@ -389,6 +396,7 @@ impl Game<'_> {
                 self.close_dialogs();
                 if let Some(r) = self.remote.as_mut() {
                     r.joined = true;
+                    r.starling.play_began = Some(Instant::now());
                     r.profile = uuid;
                     r.profile_name = name.clone();
                     r.status = sunrise_client::lang::get_or(

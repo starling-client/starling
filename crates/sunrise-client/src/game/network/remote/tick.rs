@@ -16,6 +16,9 @@ impl Game<'_> {
         // including while waiting for chunks. Keep it outside early returns.
         if self.remote.as_ref().is_some_and(Remote::has_level) {
             self.send(S::ClientTickEnd(Empty));
+            if let Some(r) = self.remote.as_mut() {
+                r.starling.tick_ended();
+            }
         }
         Ok(())
     }
@@ -883,12 +886,29 @@ impl Game<'_> {
         } else {
             Keys::default()
         };
-        // On a server (not this game's own server thread), the stick moves as the keys it sets do
-        // (`KeyboardInput.tick`: 8 directions, full speed). The server only hears those keys
-        // (`ServerboundPlayerInputPacket`), and an anticheat that predicts from them pulls back
-        // a player moving at the stick's own angle and speed.
-        if self.integrated.is_none() && self.server_address().is_some() {
+        // A server's anticheat simulates Java's keys: eight directions at full speed
+        // (`KeyboardInput.tick`; the server only hears those keys). A stick's own angle and tilt
+        // (the touch stick's, a pad's) it refuses move after move. Starling: there the stick
+        // presses the keys it points at, or steers (`stick_steer`), or stays analog, as the
+        // player picked for the server. Single player and a LAN host keep it analog.
+        let mode = self.update_stick_mode();
+        if mode != sunrise_client::gamepad::ServerStick::Analog {
             keys.analog = None;
+        }
+        if stick.is_some() && playing {
+            self.stick_used();
+        }
+        let steer = if mode == sunrise_client::gamepad::ServerStick::Free {
+            self.stick_steer(stick.filter(|_| playing))
+        } else {
+            None
+        };
+        if steer.is_some() {
+            (keys.forward, keys.backward, keys.left, keys.right) = (true, false, false, false);
+            keys.analog = None;
+        }
+        if let Some(r) = self.remote.as_mut() {
+            r.starling.steer_yaw = steer;
         }
         let mut packet_keys = self.update_movement_input(keys);
         // LocalPlayer.applyInput and aiStep: watching through another
@@ -933,6 +953,10 @@ impl Game<'_> {
             return Ok(None);
         };
         player.fluids.boat = boat;
+        // Starling: Free Direction moves the player where the stick points.
+        if let Some(yaw) = steer {
+            player.yaw = yaw;
+        }
         player.is_passenger = riding;
         if !riding && !self.replay.playing() {
             self.previous_position = player.position;
@@ -1312,6 +1336,12 @@ impl Game<'_> {
         r.level_load.finish();
         if !r.loaded_sent {
             r.loaded_sent = true;
+            log::info!(
+                "Sunrise: the level around the player was ready {} ms after the play phase began",
+                r.starling
+                    .play_began
+                    .map_or(0, |at| at.elapsed().as_millis())
+            );
             self.send(S::PlayerLoaded(Empty));
         }
         // LevelLoadingScreen.onClose.
@@ -1348,6 +1378,19 @@ impl Game<'_> {
         // for LevelExtractor.extractPlayerState, which still sees it on the death screen.
         if self.player.is_none() || self.local_player_removed_by_death() {
             return Ok(None);
+        }
+        // Starling: a long wait for the chunk under the player is logged (it cannot move).
+        if let Some(player) = self.player.as_ref() {
+            let (cx, cz) = (
+                (player.position.x.floor() as i32) >> 4,
+                (player.position.z.floor() as i32) >> 4,
+            );
+            let lit = self.streaming.is_lit(cx, cz);
+            let chunks = self.world.chunks.len();
+            if let Some(r) = self.remote.as_mut() {
+                let skipped = r.decode_errors;
+                r.starling.waited_for_chunk(lit, (cx, cz), chunks, skipped);
+            }
         }
         // LocalPlayer.tick and sendChanges run once the client has loaded (hasClientLoaded),
         // wherever the player is: a chunk that hasn't come yet has no blocks here, as vanilla's

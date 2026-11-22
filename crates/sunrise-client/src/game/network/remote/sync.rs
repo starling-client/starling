@@ -254,6 +254,8 @@ impl Game<'_> {
             self.mining = None;
             return Ok(());
         }
+        // Starling: a short teleport back is a correction, logged and counted for the stick.
+        let moved_from = self.player.as_ref().map(|player| player.position);
         match self.player.as_mut() {
             Some(player) => {
                 player.position = position;
@@ -307,6 +309,16 @@ impl Game<'_> {
             yaw,
             pitch,
         }));
+        if let Some(r) = self.remote.as_ref() {
+            r.starling.told_rotation.set(Some((yaw, pitch)));
+        }
+        if let Some(from) = moved_from {
+            self.remote_setback(
+                [from.x, from.y, from.z],
+                [position.x, position.y, position.z],
+                p.teleport,
+            );
+        }
         // Then MultiPlayerGameMode.stopDestroyBlock: a dig the teleport (an
         // anticheat's setback, a /tp) interrupts is aborted on the wire, and the
         // attack strength starts again.
@@ -338,7 +350,11 @@ impl Game<'_> {
             p.collision.horizontal,
             p.sprinting,
         );
-        let (yaw, pitch) = (self.yaw, self.pitch);
+        // Starling: Free Direction's steering in place of the view's yaw; else the look a finger
+        // aims with (tap to interact), so the server sees the player look at what it acts on.
+        let steer = self.remote.as_ref().and_then(|r| r.starling.steer_yaw);
+        let (look_yaw, look_pitch) = self.interaction_rotation();
+        let (yaw, pitch) = (steer.unwrap_or(look_yaw), look_pitch);
         let riding = self.riding.is_some();
         let controls_camera = self.controls_camera();
         let (paddles, vehicle): (Vec<S>, Vec<S>) = self
@@ -383,10 +399,15 @@ impl Game<'_> {
             // LocalPlayer.sendPosition: no move while the view is another
             // entity's (the server keeps the player on it).
             if controls_camera
-                && let Some(packet) =
+                && let Some(packet) = {
+                    if let Some(told) = r.starling.told_rotation.take() {
+                        r.position_sender.told_rotation(told);
+                    }
                     r.position_sender
                         .update(pos, (yaw, pitch), on_ground, collision)
+                }
             {
+                r.starling.moved(pos, on_ground, r.last_input);
                 // A server that sent colliders reads how old the copy carrying the player is.
                 if !r.colliders.is_empty()
                     && let Some(hint) = r.carry_age.hint()
@@ -516,6 +537,7 @@ impl Game<'_> {
                 item,
             }));
         }
+        self.remote_creative_grid_sync();
     }
     /// `MultiPlayerGameMode.ensureHasSentCarriedItem`: the server hears of a
     /// new selected slot before anything the slot acts with.
